@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -26,7 +27,6 @@ pub async fn health_check() -> impl IntoResponse {
 pub async fn list_models(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<harness_core::models::ModelInfo>>, ApiError> {
-    use sqlx::Row;
     
     let mut all_models = Vec::new();
     
@@ -234,7 +234,6 @@ pub async fn add_endpoint(
     State(state): State<AppState>,
     Json(req): Json<AddEndpointRequest>,
 ) -> Result<Json<harness_core::models::EndpointConfig>, ApiError> {
-    use sqlx::Row;
     
     let is_local = req.base_url.contains("localhost") 
         || req.base_url.contains("127.0.0.1")
