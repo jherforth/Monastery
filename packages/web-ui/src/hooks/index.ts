@@ -1,5 +1,7 @@
 import { useCallback, useEffect } from 'react';
 
+export * from './useSnapshots';
+
 export function useKeyboardShortcuts(
   shortcuts: Record<string, (e: KeyboardEvent) => void>
 ) {

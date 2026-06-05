@@ -3,6 +3,7 @@
 mod handlers;
 mod db;
 mod middleware;
+mod snapshot_service;
 
 use axum::{Router, routing::get, routing::post};
 use tower_http::{cors::{CorsLayer, Any}, trace::TraceLayer};
@@ -10,12 +11,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::sync::Arc;
 
 use harness_core::{HarnessConfig, Error};
+use snapshot_service::SnapshotService;
 
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<HarnessConfig>,
     pub db: Arc<sqlx::SqlitePool>,
+    pub snapshot_service: Arc<SnapshotService>,
 }
 
 #[tokio::main]
@@ -42,10 +45,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = db::init_db(&config.database_path).await?;
     tracing::info!("Database initialized at {:?}", config.database_path);
     
+    // Initialize snapshot service
+    let snapshot_service = SnapshotService::new(db.clone());
+    tracing::info!("Snapshot service initialized");
+    
     // Create application state
     let state = AppState {
         config: Arc::new(config),
         db: Arc::new(db),
+        snapshot_service: Arc::new(snapshot_service),
     };
     
     // Configure CORS for web UI
@@ -67,6 +75,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects", post(handlers::create_project))
         .route("/api/projects/:id", get(handlers::get_project))
         .route("/api/discovery", get(handlers::discover_services))
+        // Snapshot routes
+        .route("/api/projects/:project_id/snapshots", get(handlers::list_snapshots))
+        .route("/api/projects/:project_id/snapshots", post(handlers::create_snapshot))
+        .route("/api/projects/:project_id/snapshots/:snapshot_id", get(handlers::get_snapshot))
+        .route("/api/projects/:project_id/snapshots/:snapshot_id", delete(handlers::delete_snapshot))
+        .route("/api/projects/:project_id/snapshots/:snapshot_id/restore", post(handlers::restore_snapshot))
+        .route("/api/projects/:project_id/snapshots/:snapshot_id/diff", get(handlers::diff_snapshots))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

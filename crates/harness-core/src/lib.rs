@@ -1,16 +1,23 @@
 //! HomeLab AI Harness - Core Library
 //! 
 //! Provides core functionality for LLM connectivity, model management,
-//! and service discovery.
+//! service discovery, and snapshot-based version control.
 
 pub mod llm;
 pub mod models;
 pub mod config;
 pub mod discovery;
 pub mod error;
+pub mod snapshot;
 
 pub use error::{Error, Result};
 pub use config::HarnessConfig;
 pub use models::{ModelInfo, ModelEndpoint, EndpointConfig};
 pub use llm::LLMClient;
 pub use discovery::ServiceDiscovery;
+pub use snapshot::{
+    Snapshot, SnapshotFile, SnapshotMetadata, SnapshotTrigger,
+    CreateSnapshotRequest, CreateSnapshotResponse,
+    RestoreSnapshotRequest, RestoreSnapshotResponse,
+    SnapshotList, SnapshotSummary, SnapshotDiff, FileDiff, FileChangeType,
+};
