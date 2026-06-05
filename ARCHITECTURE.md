@@ -1,6 +1,6 @@
 # High-Level Architecture
 
-## Tech Stack (Rust Primary + Python Secondary — per prior discussion)
+## Tech Stack (Rust Primary + Python Secondary)
 - **Frontend**: Leptos (Rust, WASM) or Dioxus — reactive UI with Monaco Editor, terminal pane, preview iframe, model selector, chat history.
 - **Backend Orchestrator**: Rust (Axum) — API server, streaming LLM proxy, WebSockets/SSE, project filesystem (in-memory + persistent via SQLite or LiteFS).
 - **AI Core**: Python microservices (FastAPI) for complex agents (LangGraph/CrewAI-style), RAG over project files, tool calling. Communicates via gRPC/HTTP.
