@@ -1,8 +1,8 @@
 ```
 # Dependencies
 node_modules/
-.venv/
 venv/
+.venv/
 __pycache__/
 .mypy_cache/
 .pytest_cache/
@@ -29,15 +29,15 @@ build/
 *.swo
 *.tmp
 
-# Logs
-*.log
-
 # System files
 .DS_Store
 Thumbs.db
 .env
 .env.local
 *.env.*
+
+# Logs
+*.log
 
 # Coverage
 coverage/
