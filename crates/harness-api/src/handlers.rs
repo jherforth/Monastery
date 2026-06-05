@@ -386,6 +386,7 @@ pub async fn create_snapshot(
         created_by: req.created_by,
         trigger: req.trigger.unwrap_or(SnapshotTrigger::Manual),
         files: req.files,
+        parent_snapshot_id: None,
     };
     
     let response = state.snapshot_service
@@ -402,7 +403,7 @@ pub struct CreateSnapshotBody {
     pub description: Option<String>,
     pub created_by: Option<String>,
     pub trigger: Option<SnapshotTrigger>,
-    pub files: Vec<harness_core::SnapshotFileInput>,
+    pub files: Vec<harness_core::snapshot::SnapshotFileInput>,
 }
 
 /// Get a specific snapshot with its files
