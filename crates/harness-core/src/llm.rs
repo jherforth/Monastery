@@ -94,7 +94,7 @@ impl LLMClient {
             crate::models::ModelInfo {
                 id: m.id.clone(),
                 name: m.id.clone(), // Use ID as name if no separate name
-                owned_by: m.owned_by.clone().unwrap_or_else(|_| String::new()),
+                owned_by: m.owned_by.clone(),
                 context_window: None, // Would need additional API call or config
                 is_local: self.config.is_local,
             }
