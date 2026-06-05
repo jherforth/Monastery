@@ -65,7 +65,7 @@ impl ServiceDiscovery {
             "harness._tcp.local.",
             "",
             port,
-            &["path=/"][..],
+            &[("path", "/")][..],
         )
         .map_err(|e| crate::error::Error::Discovery(e.to_string()))?;
         

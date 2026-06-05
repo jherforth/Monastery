@@ -60,6 +60,12 @@ futures = "0.3"
 # mDNS discovery
 mdns-sd = "0.13"
 
+# HTTP types
+http = "1.0"
+
+# Secrets
+secrecy = "0.8"
+
 # Workspace crates
 harness-core = { path = "crates/harness-core" }
 harness-agent = { path = "crates/harness-agent" }
