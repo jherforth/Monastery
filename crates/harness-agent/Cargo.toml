@@ -1,0 +1,33 @@
+[package]
+name = "harness-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Workspace crates
+harness-core.workspace = true
+
+# Async runtime
+tokio.workspace = true
+async-trait.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Time
+chrono.workspace = true
+
+# UUID
+uuid.workspace = true

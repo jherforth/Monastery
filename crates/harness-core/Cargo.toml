@@ -1,0 +1,39 @@
+[package]
+name = "harness-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+
+# LLM client
+async-openai.workspace = true
+
+# Async runtime
+tokio.workspace = true
+async-trait.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# UUID
+uuid.workspace = true
+
+# Time
+chrono.workspace = true
+
+# Futures
+futures.workspace = true
+
+# mDNS discovery
+mdns-sd.workspace = true
