@@ -43,3 +43,6 @@ http.workspace = true
 
 # Secrets
 secrecy.workspace = true
+
+# Database
+sqlx.workspace = true

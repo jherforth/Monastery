@@ -1,10 +1,11 @@
 //! Model and endpoint configuration types
 
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 use uuid::Uuid;
 
 /// Configuration for a single LLM endpoint
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct EndpointConfig {
     pub id: Uuid,
     pub name: String,

@@ -13,6 +13,7 @@ use crate::AppState;
 use harness_core::{
     CreateSnapshotRequest, RestoreSnapshotRequest, SnapshotTrigger,
 };
+use async_openai::types::ChatCompletionRequestMessage;
 
 /// Health check endpoint
 pub async fn health_check() -> impl IntoResponse {
@@ -141,8 +142,29 @@ pub async fn chat_stream(
     
     let client = harness_core::LLMClient::new(endpoint_config);
     
-    // Convert messages to OpenAI format using harness-core types
-    let stream = client.chat_stream(request.messages, model_id).await?;
+    // Convert messages to OpenAI format
+    let messages: Vec<async_openai::types::ChatCompletionRequestMessage> = request.messages
+        .into_iter()
+        .map(|msg| {
+            match msg.role.as_str() {
+                "user" => async_openai::types::ChatCompletionRequestUserMessage {
+                    content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(msg.content),
+                }.into(),
+                "assistant" => async_openai::types::ChatCompletionRequestAssistantMessage {
+                    content: Some(async_openai::types::ChatCompletionRequestAssistantMessageContent::Text(msg.content)),
+                    ..Default::default()
+                }.into(),
+                "system" => async_openai::types::ChatCompletionRequestSystemMessage {
+                    content: async_openai::types::ChatCompletionRequestSystemMessageContent::Text(msg.content),
+                }.into(),
+                _ => async_openai::types::ChatCompletionRequestUserMessage {
+                    content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(msg.content),
+                }.into(),
+            }
+        })
+        .collect();
+    
+    let stream = client.chat_stream(messages, model_id).await?;
     
     // Create SSE stream
     use axum::response::Sse;
