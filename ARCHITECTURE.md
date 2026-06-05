@@ -1,23 +1,29 @@
 # High-Level Architecture
 
-## Tech Stack (Rust Primary + Python Secondary)
-- **Frontend**: Leptos (Rust, WASM) or Dioxus — reactive UI with Monaco Editor, terminal pane, preview iframe, model selector, chat history.
-- **Backend Orchestrator**: Rust (Axum) — API server, streaming LLM proxy, WebSockets/SSE, project filesystem (in-memory + persistent via SQLite or LiteFS).
-- **AI Core**: Python microservices (FastAPI) for complex agents (LangGraph/CrewAI-style), RAG over project files, tool calling. Communicates via gRPC/HTTP.
-- **Local Model Serving**: Ollama + custom Rust proxy (or llama.cpp bindings). Fallback to frontier APIs.
-- **Code Execution Sandbox**: Rust/Wasmtime or Docker-in-Docker (isolated containers). Support for WebContainer-like browser execution where possible.
-- **Persistence & State**: SQLite (main), optional LiteFS for multi-node. Project memory as structured Markdown/JSON.
-- **Deployment**: Docker Compose first-class. Self-Host Wizard generates configs for Coolify, Dokploy, CapRover, or bare Proxmox.
-- **Self-Hosting Wizard Module**: Detects generated stack → Templates (Next.js + PocketBase, Rust Axum + SQLite, etc.) → SSH/Ansible-light scripts or API pushes.
+## Core Principles
+- **Decoupled LLM Layer**: The harness never bundles or serves LLMs itself. It connects via HTTP to any OpenAI-compatible endpoint.
+- **Self-Host First**: Everything containerized, network-aware, and privacy-focused.
 
-## Data Flow
-1. User prompt → Rust orchestrator → Unified LLM client (local priority).
-2. LLM response → Streaming to UI + agent loop (Python for tools/RAG).
-3. Edits applied to virtual FS → Live preview/sandbox run.
-4. Deploy: Wizard → docker-compose.yml + .env + install script.
+## Tech Stack
+- **Frontend**: Leptos (Rust → WASM) or Dioxus — Monaco Editor, live preview, terminal, model selector, chat.
+- **Backend Orchestrator**: Rust (Axum) — lightweight API server, streaming proxy, WebSockets, project FS.
+- **AI Agent Core**: Python microservices (FastAPI, optional) for complex tool calling / RAG / agents. Callable from Rust.
+- **Model Integration**:
+  - Unified client supporting multiple endpoints.
+  - Config UI for adding LLM servers (URL, API key if needed, model list).
+  - Auto-discovery: mDNS for Ollama on LAN; fallback manual entry.
+  - Built-in proxy/forwarder for consistent streaming and logging.
+- **Persistence**: SQLite (or LiteFS) for projects, settings, chat history.
+- **Code Sandbox**: Docker-based (isolated) or Wasmtime/WASM. Optional integration with user's Proxmox/Docker host.
+- **Deployment**: Docker Compose (multi-service if Python agents used). ARM64 native. Self-Host Wizard generates full stack configs including LLM connection examples.
 
-## Homelab Integrations Layer
-- Proxmox VM/LXC provisioning.
-- Coolify/PocketBase/Appwrite templates.
-- MQTT for IoT-aware apps.
-- Resource monitoring (CPU/GPU/memory) to guide LLM prompts.
+## Network Flow
+1. User runs harness container (exposes port 3000).
+2. Configures LLM endpoint(s) via UI (e.g., `http://host.docker.internal:11434` or LAN IP).
+3. Prompts route through Rust proxy → chosen LLM → streaming back to browser.
+4. Homelab integrations use local network (Proxmox API, MQTT broker, Coolify, etc.).
+
+## Self-Hosting Wizard
+- Detects generated app stack.
+- Generates `docker-compose.yml` for the *app* + instructions for connecting the harness to user's existing LLM service.
+- One-click Coolify/PocketBase/Proxmox deployment paths.
