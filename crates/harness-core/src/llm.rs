@@ -1,6 +1,7 @@
 //! LLM client with OpenAI-compatible API support
 
-use async_openai::{Client, Config as OpenAIConfig};
+use async_openai::Client;
+use async_openai::config::Config as OpenAIConfig;
 use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequest};
 use futures::Stream;
 use std::pin::Pin;

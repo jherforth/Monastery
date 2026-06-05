@@ -2,7 +2,6 @@
 
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 use crate::models::EndpointConfig;
 use crate::error::Result;
@@ -40,15 +39,14 @@ impl ServiceDiscovery {
                 Ok(event) => {
                     if let mdns_sd::ServiceEvent::ServiceResolved(info) = event {
                         for addr in info.get_addresses() {
-                            for port in info.get_ports() {
-                                let endpoint = EndpointConfig {
-                                    name: format!("Ollama @ {}:{}", addr, port),
-                                    base_url: format!("http://{}:{}", addr, port),
-                                    is_local: true,
-                                    ..Default::default()
-                                };
-                                endpoints.push(endpoint);
-                            }
+                            let port = info.get_port();
+                            let endpoint = EndpointConfig {
+                                name: format!("Ollama @ {}:{}", addr, port),
+                                base_url: format!("http://{}:{}", addr, port),
+                                is_local: true,
+                                ..Default::default()
+                            };
+                            endpoints.push(endpoint);
                         }
                     }
                 }
