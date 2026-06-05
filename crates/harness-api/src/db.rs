@@ -127,5 +127,23 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
     
+    // Models cache table - stores discovered models from endpoints
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS models_cache (
+            id TEXT PRIMARY KEY,
+            endpoint_id TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            name TEXT,
+            capabilities TEXT,
+            discovered_at TEXT NOT NULL,
+            FOREIGN KEY (endpoint_id) REFERENCES endpoints(id) ON DELETE CASCADE,
+            UNIQUE(endpoint_id, model_id)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    
     Ok(pool)
 }

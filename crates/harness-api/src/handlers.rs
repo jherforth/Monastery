@@ -27,15 +27,52 @@ pub async fn health_check() -> impl IntoResponse {
 pub async fn list_models(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<harness_core::models::ModelInfo>>, ApiError> {
-    let config = &state.config;
+    use sqlx::Row;
+    
     let mut all_models = Vec::new();
     
-    // Get the default or first endpoint
-    if let Some(endpoint_config) = config.get_default_endpoint() {
-        let client = harness_core::LLMClient::new(endpoint_config.clone());
+    // Fetch all endpoints from database
+    let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints")
+        .fetch_all(&*state.db)
+        .await
+        .unwrap_or_default();
+    
+    // If no endpoints in DB, try in-memory config
+    let endpoint_configs: Vec<harness_core::models::EndpointConfig> = if endpoints.is_empty() {
+        state.config.endpoints.clone()
+    } else {
+        endpoints
+            .iter()
+            .filter_map(|row| {
+                let id: String = row.get(0);
+                let name: String = row.get(1);
+                let base_url: String = row.get(2);
+                let api_key: Option<String> = row.get(3);
+                let is_favorite: i64 = row.get(4);
+                let is_local: i64 = row.get(5);
+                let created_at: String = row.get(6);
+                
+                Some(harness_core::models::EndpointConfig {
+                    id: uuid::Uuid::parse_str(&id).ok()?,
+                    name,
+                    base_url,
+                    api_key,
+                    is_favorite: is_favorite != 0,
+                    is_local: is_local != 0,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .ok()?
+                        .into(),
+                })
+            })
+            .collect()
+    };
+    
+    // Fetch models from each endpoint
+    for endpoint_config in endpoint_configs {
+        let client = harness_core::LLMClient::new(endpoint_config);
         match client.list_models().await {
             Ok(models) => all_models.extend(models),
-            Err(e) => tracing::warn!("Failed to fetch models: {}", e),
+            Err(e) => tracing::warn!("Failed to fetch models from endpoint: {}", e),
         }
     }
     
@@ -47,15 +84,65 @@ pub async fn chat_stream(
     State(state): State<AppState>,
     Path(model_id): Path<String>,
     Json(request): Json<ChatRequest>,
+    Query(params): Query<ChatQueryParams>,
 ) -> Result<Response, ApiError> {
+    use axum::extract::Query;
     use async_openai::types::ChatCompletionRequestMessage;
     use futures::StreamExt;
+    use sqlx::Row;
     
-    let config = &state.config;
-    let endpoint_config = config.get_default_endpoint()
-        .ok_or_else(|| ApiError::Config("No LLM endpoint configured".into()))?;
+    // Get endpoint from query param or use default
+    let endpoint_config = if let Some(endpoint_id) = params.endpoint_id {
+        // Try database first
+        let db_endpoint = sqlx::query_as::<_, harness_core::models::EndpointConfig>(
+            "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints WHERE id = ?"
+        )
+        .bind(endpoint_id.to_string())
+        .fetch_optional(&*state.db)
+        .await
+        .ok()
+        .flatten();
+        
+        db_endpoint.or_else(|| {
+            state.config.endpoints.iter()
+                .find(|e| e.id == endpoint_id)
+                .cloned()
+        })
+        .ok_or_else(|| ApiError::NotFound(format!("Endpoint {} not found", endpoint_id)))?
+    } else {
+        // Use first available endpoint
+        let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints")
+            .fetch_all(&*state.db)
+            .await
+            .unwrap_or_default();
+        
+        if !endpoints.is_empty() {
+            let row = &endpoints[0];
+            let id: String = row.get(0);
+            let name: String = row.get(1);
+            let base_url: String = row.get(2);
+            let api_key: Option<String> = row.get(3);
+            let is_favorite: i64 = row.get(4);
+            let is_local: i64 = row.get(5);
+            let created_at: String = row.get(6);
+            
+            harness_core::models::EndpointConfig {
+                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                name,
+                base_url,
+                api_key,
+                is_favorite: is_favorite != 0,
+                is_local: is_local != 0,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
+                    .into(),
+            }
+        } else {
+            return Err(ApiError::Config("No LLM endpoint configured. Please add an endpoint in Settings.".into()));
+        }
+    };
     
-    let client = harness_core::LLMClient::new(endpoint_config.clone());
+    let client = harness_core::LLMClient::new(endpoint_config);
     
     // Convert messages to OpenAI format
     let messages: Vec<ChatCompletionRequestMessage> = request.messages
@@ -106,11 +193,43 @@ pub async fn chat_stream(
     Ok(Sse::new(event_stream).into_response())
 }
 
-/// List configured endpoints
+/// List configured endpoints (from database)
 pub async fn list_endpoints(
     State(state): State<AppState>,
-) -> Json<Vec<harness_core::models::EndpointConfig>> {
-    Json(state.config.endpoints.clone())
+) -> Result<Json<Vec<harness_core::models::EndpointConfig>>, ApiError> {
+    use sqlx::Row;
+    
+    let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints")
+        .fetch_all(&*state.db)
+        .await
+        .unwrap_or_default();
+    
+    let configs: Vec<harness_core::models::EndpointConfig> = endpoints
+        .iter()
+        .map(|row| {
+            let id: String = row.get(0);
+            let name: String = row.get(1);
+            let base_url: String = row.get(2);
+            let api_key: Option<String> = row.get(3);
+            let is_favorite: i64 = row.get(4);
+            let is_local: i64 = row.get(5);
+            let created_at: String = row.get(6);
+            
+            harness_core::models::EndpointConfig {
+                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                name,
+                base_url,
+                api_key,
+                is_favorite: is_favorite != 0,
+                is_local: is_local != 0,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
+                    .into(),
+            }
+        })
+        .collect();
+    
+    Json(configs)
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,13 +244,32 @@ pub async fn add_endpoint(
     State(state): State<AppState>,
     Json(req): Json<AddEndpointRequest>,
 ) -> Result<Json<harness_core::models::EndpointConfig>, ApiError> {
+    use sqlx::Row;
+    
     let is_local = req.base_url.contains("localhost") 
         || req.base_url.contains("127.0.0.1")
         || req.base_url.contains("192.168.")
         || req.base_url.contains("10.");
     
+    let endpoint_id = Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+    
+    // Save to database
+    sqlx::query(
+        "INSERT INTO endpoints (id, name, base_url, api_key, is_favorite, is_local, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(endpoint_id.to_string())
+    .bind(&req.name)
+    .bind(&req.base_url)
+    .bind(req.api_key.as_deref())
+    .bind(0i64) // is_favorite = false
+    .bind(if is_local { 1i64 } else { 0i64 })
+    .bind(&now)
+    .execute(&*state.db)
+    .await?;
+    
     let endpoint = harness_core::models::EndpointConfig {
-        id: Uuid::new_v4(),
+        id: endpoint_id,
         name: req.name,
         base_url: req.base_url,
         api_key: req.api_key,
@@ -140,17 +278,19 @@ pub async fn add_endpoint(
         created_at: chrono::Utc::now(),
     };
     
-    // In a real implementation, save to database
-    // For now, just return the created endpoint
-    
     Ok(Json(endpoint))
 }
 
 /// Delete an endpoint
 pub async fn delete_endpoint(
     Path(id): Path<Uuid>,
+    State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
-    // In a real implementation, delete from database
+    sqlx::query("DELETE FROM endpoints WHERE id = ?")
+        .bind(id.to_string())
+        .execute(&*state.db)
+        .await?;
+    
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -159,12 +299,26 @@ pub async fn test_endpoint(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<TestEndpointResponse>, ApiError> {
-    // Find the endpoint
-    let endpoint_config = state.config.endpoints.iter()
-        .find(|e| e.id == id)
-        .ok_or_else(|| ApiError::NotFound(format!("Endpoint {} not found", id)))?;
+    // Try to find in database first
+    let endpoint_config = sqlx::query_as::<_, harness_core::models::EndpointConfig>(
+        "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints WHERE id = ?"
+    )
+    .bind(id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
     
-    let client = harness_core::LLMClient::new(endpoint_config.clone());
+    let endpoint_config = match endpoint_config {
+        Some(config) => config,
+        None => {
+            // Fallback to config in memory (for env-configured endpoints)
+            state.config.endpoints.iter()
+                .find(|e| e.id == id)
+                .cloned()
+                .ok_or_else(|| ApiError::NotFound(format!("Endpoint {} not found", id)))?
+        }
+    };
+    
+    let client = harness_core::LLMClient::new(endpoint_config);
     let is_healthy = client.health_check().await.unwrap_or(false);
     
     Ok(Json(TestEndpointResponse {
@@ -415,6 +569,11 @@ pub struct ProjectInfo {
 #[derive(Debug, Deserialize)]
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatQueryParams {
+    pub endpoint_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
