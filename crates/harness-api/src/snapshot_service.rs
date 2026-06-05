@@ -238,9 +238,9 @@ impl SnapshotService {
         &self,
         request: RestoreSnapshotRequest,
     ) -> Result<RestoreSnapshotResponse, DbError> {
-        let mut errors = Vec::new();
+        let errors = Vec::new();
         let mut restored_count = 0u32;
-        let mut failed_count = 0u32;
+        let failed_count = 0u32;
         let mut backup_snapshot_id: Option<Uuid> = None;
         
         // First, get the snapshot to restore

@@ -1,1 +1,30 @@
-Nothing should be ignored in this case, as the changes only include Rust source files (.rs) which are not build artifacts, dependencies, or temporary files.
+```
+# Rust/Cargo specific
+target/
+Cargo.lock
+**/*.rs.bk
+
+# Dependencies
+**/node_modules/
+**/.venv/
+**/venv/
+
+# Build artifacts
+**/dist/
+**/build/
+
+# IDE
+.vscode/
+.idea/
+**/.vs/
+**/.swp
+**/*.swp
+
+# Logs
+**/*.log
+
+# Environment
+.env
+.env.local
+**/.env.*
+```
