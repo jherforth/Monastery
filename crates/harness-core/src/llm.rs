@@ -6,7 +6,7 @@ use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequ
 use futures::Stream;
 use std::pin::Pin;
 use secrecy::SecretBox;
-use http::header::{HeaderMap, HeaderName, HeaderValue};
+use http::header::HeaderMap;
 
 use crate::models::EndpointConfig;
 use crate::error::{Error, Result};
@@ -29,7 +29,7 @@ impl LLMClient {
     /// Create an OpenAI-compatible client for this endpoint
     fn create_client(&self) -> Client<CustomOpenAIConfig> {
         let custom_config = CustomOpenAIConfig {
-            api_key: SecretBox::from(self.config.api_key.clone().unwrap_or_default()),
+            api_key: SecretBox::new(self.config.api_key.clone().unwrap_or_default().into_boxed_str()),
             base_url: self.config.base_url.clone(),
         };
         Client::with_config(custom_config)
@@ -94,7 +94,7 @@ impl LLMClient {
             crate::models::ModelInfo {
                 id: m.id.clone(),
                 name: m.id.clone(), // Use ID as name if no separate name
-                owned_by: m.owned_by.clone().unwrap_or_default(),
+                owned_by: m.owned_by.clone().unwrap_or_else(|_| String::new()),
                 context_window: None, // Would need additional API call or config
                 is_local: self.config.is_local,
             }
