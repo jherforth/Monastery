@@ -2,15 +2,15 @@
 
 use axum::{
     http::Request,
-    middleware::Next,
     response::Response,
 };
+use axum::middleware::Next;
 use tracing::info;
 
 /// Log incoming requests
-pub async fn log_request<B>(
-    req: Request<B>,
-    next: Next<B>,
+pub async fn log_request(
+    req: Request<axum::body::Body>,
+    next: Next,
 ) -> Response {
     let method = req.method().clone();
     let uri = req.uri().clone();

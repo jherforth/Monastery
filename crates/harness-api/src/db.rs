@@ -1,6 +1,6 @@
 //! Database initialization and operations
 
-use sqlx::{sqlite::SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use std::path::Path;
 
 /// Initialize the SQLite database with required tables
