@@ -1,28 +1,27 @@
 # Functional & Non-Functional Requirements
 
-## Must-Have Features (Core Loop)
-- Multi-model support: Local (Ollama priority) + frontier via proxy. Per-prompt model selection.
-- Full-stack project creation/iteration in browser (files, preview, terminal).
-- Agentic capabilities: "Add auth with PocketBase", "Deploy to my Proxmox", "Optimize for low power".
-- Git integration (Forgejo/self-hosted or GitHub fallback).
-- File attachments/images for vision models.
-- Persistent project memory/context.
+## LLM Connectivity (Key Update)
+- **Standalone Mode**: Harness runs independently; connects to external LLM hosts on the same network.
+- Model selector with endpoint management: Add/edit/remove servers, test connection, favorite models.
+- Default recommendations: Ollama (auto-detect common ports), vLLM, OpenAI-compatible proxies.
+- Fallback chaining: Try local first, then frontier if configured.
+- Health monitoring: Dashboard shows connected LLM status, estimated context/tokens.
 
-## Self-Hosting Assistant (ODT Core)
-- Post-generation: "Deploy Self-Hosted" button.
-- Wizard: Server creds → Tailored compose + scripts → Coolify one-click or manual.
-- Templates for common homelab stacks.
-- Cost/ resource estimator, troubleshooting chat, backups.
+## Core Coding Loop
+- Streaming generation, file editing, live preview, sandbox execution.
+- Agentic tools aware of homelab context ("deploy this to my Proxmox LXC", "optimize for Jetson").
+
+## Self-Hosting Assistant (ODT)
+- Wizard offers paths for the *harness itself* and for generated apps.
+- Includes LLM connection templates (e.g., "Run Ollama separately: `docker run -d -p 11434:11434 ollama/ollama` then point harness to it").
+- Network-aware scripts (docker network, Traefik/Nginx Proxy Manager integration).
 
 ## Non-Functional
-- **Performance**: <2s response on Jetson with quantized models. Low idle footprint.
-- **Security**: Sandboxed execution, no unnecessary outbound, SSH key handling with user consent.
-- **Usability**: Extremely guided for non-experts; power-user CLI/API.
-- **Extensibility**: Plugin system for new tools/models/integrations (WASM or Python).
-- **Deployment**: Single `docker compose up` for full harness. ARM64 native.
-- **Offline**: 95% functionality without internet (local models + cached templates).
+- **Lightweight**: Harness container minimal footprint; no GPU required for the orchestrator.
+- **Networking**: Robust LAN support, optional mDNS, configurable via env vars or UI.
+- **Security**: No unnecessary outbound calls; sandboxed; optional VPN/GlueTun awareness.
+- **Offline**: Full functionality once LLM endpoint is reachable locally.
 
-## Stretch Goals
-- Multi-node homelab orchestration (distribute agents across Proxmox nodes).
-- Voice/input via local STT.
-- Marketplace for community self-host templates.
+## Stretch
+- Automatic LLM service detection and setup guidance.
+- Multi-LLM orchestration (route different agents to different backends).
