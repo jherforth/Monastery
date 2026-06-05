@@ -5,6 +5,8 @@ use async_openai::config::Config as OpenAIConfig;
 use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequest};
 use futures::Stream;
 use std::pin::Pin;
+use secrecy::SecretBox;
+use http::header::{HeaderMap, HeaderName, HeaderValue};
 
 use crate::models::EndpointConfig;
 use crate::error::{Error, Result};
@@ -27,7 +29,7 @@ impl LLMClient {
     /// Create an OpenAI-compatible client for this endpoint
     fn create_client(&self) -> Client<CustomOpenAIConfig> {
         let custom_config = CustomOpenAIConfig {
-            api_key: self.config.api_key.clone().unwrap_or_default(),
+            api_key: SecretBox::from(self.config.api_key.clone().unwrap_or_default()),
             base_url: self.config.base_url.clone(),
         };
         Client::with_config(custom_config)
@@ -92,7 +94,7 @@ impl LLMClient {
             crate::models::ModelInfo {
                 id: m.id.clone(),
                 name: m.id.clone(), // Use ID as name if no separate name
-                owned_by: m.owned_by.clone().unwrap_or_default(),
+                owned_by: m.owned_by.clone().unwrap_or_else(|| String::new()),
                 context_window: None, // Would need additional API call or config
                 is_local: self.config.is_local,
             }
@@ -105,16 +107,28 @@ impl LLMClient {
 /// Custom OpenAI config that allows arbitrary base URLs
 #[derive(Clone)]
 struct CustomOpenAIConfig {
-    api_key: String,
+    api_key: SecretBox<str>,
     base_url: String,
 }
 
 impl OpenAIConfig for CustomOpenAIConfig {
-    fn api_key(&self) -> &str {
+    fn api_key(&self) -> &SecretBox<str> {
         &self.api_key
     }
     
     fn api_base(&self) -> &str {
         &self.base_url
+    }
+    
+    fn headers(&self) -> HeaderMap {
+        HeaderMap::new()
+    }
+    
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url.trim_end_matches('/'), path)
+    }
+    
+    fn query(&self) -> Vec<(&str, &str)> {
+        Vec::new()
     }
 }

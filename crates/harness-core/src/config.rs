@@ -62,7 +62,7 @@ impl HarnessConfig {
         if let Ok(llm_url) = std::env::var("LLM_BASE_URL") {
             let endpoint = EndpointConfig {
                 name: String::from("Environment"),
-                base_url: llm_url,
+                base_url: llm_url.clone(),
                 is_local: llm_url.contains("localhost") || llm_url.contains("127.0.0.1"),
                 ..Default::default()
             };
