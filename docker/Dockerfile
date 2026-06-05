@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.86.0-bookworm AS builder
 
 WORKDIR /app
 
@@ -19,15 +19,8 @@ COPY crates/harness-agent/Cargo.toml ./crates/harness-agent/
 RUN mkdir -p crates/harness-core/src crates/harness-api/src crates/harness-agent/src
 RUN touch crates/harness-core/src/lib.rs crates/harness-api/src/main.rs crates/harness-agent/src/lib.rs
 
-# Pin ICU and IDNA dependencies to versions compatible with Rust 1.85
-RUN cargo update icu_collections@2.2.0 --precise 1.5.0 \
-    && cargo update icu_locale_core@2.2.0 --precise 1.5.0 \
-    && cargo update icu_normalizer@2.2.0 --precise 1.5.0 \
-    && cargo update icu_normalizer_data@2.2.0 --precise 1.5.0 \
-    && cargo update icu_properties@2.2.0 --precise 1.5.0 \
-    && cargo update icu_properties_data@2.2.0 --precise 1.5.0 \
-    && cargo update icu_provider@2.2.0 --precise 1.5.0 \
-    && cargo update idna_adapter@1.2.2 --precise 1.1.0
+# Remove Cargo.lock to force fresh dependency resolution with Rust 1.86
+RUN rm -f Cargo.lock
 
 # Copy source code
 COPY crates/ ./crates/
