@@ -12,8 +12,10 @@ __pycache__/
 env/
 venv/
 .venv/
-.ENV
-.ENV.*
+.ENV/
+env.bak/
+venv.bak/
+.python-version
 
 # Logs
 *.log
@@ -23,38 +25,43 @@ venv/
 .env.local
 .env.*
 
-# Coverage reports
-coverage/
-htmlcov/
-.coverage
-
-# Build outputs
-dist/
-build/
-*.so
-*.dylib
-*.dll
-
-# Temporary files
-*.tmp
+# IDE
+.vscode/
+.idea/
 *.swp
+*.swo
 *~
 .DS_Store
 Thumbs.db
 
-# Editors
-.vscode/
-.idea/
-*.swo
-*.lock
+# Build outputs
+dist/
+build/
+*.out
+*.exe
+*.dll
+*.so
+*.dylib
 
-# Testing
-.mypy_cache/
-.pytest_cache/
-.nyc_output/
-coverage.xml
+# Coverage
+coverage/
+htmlcov/
+.coverage
+*.gcov
+*.lcov
 
-# Compression
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Rust specific
+Cargo.lock
+*.rlib
+*.rmeta
+
+# Compressed files
 *.zip
 *.gz
 *.tar
