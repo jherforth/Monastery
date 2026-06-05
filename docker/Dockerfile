@@ -19,9 +19,6 @@ COPY crates/harness-agent/Cargo.toml ./crates/harness-agent/
 RUN mkdir -p crates/harness-core/src crates/harness-api/src crates/harness-agent/src
 RUN touch crates/harness-core/src/lib.rs crates/harness-api/src/main.rs crates/harness-agent/src/lib.rs
 
-# Remove Cargo.lock to force fresh dependency resolution with Rust 1.86
-RUN rm -f Cargo.lock
-
 # Copy source code
 COPY crates/ ./crates/
 

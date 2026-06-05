@@ -22,8 +22,8 @@ A calm, focused, self-hosted sanctuary for AI-assisted coding. Monastery is a fu
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/homelab-ai-harness/harness.git
-cd harness
+git clone https://github.com/jherforth/Monastery.git
+cd Monastery
 cp .env.example .env
 ```
 
