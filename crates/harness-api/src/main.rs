@@ -1,0 +1,93 @@
+//! HomeLab AI Harness API Server
+
+mod handlers;
+mod db;
+mod middleware;
+
+use axum::{Router, routing::get, routing::post};
+use tower_http::{cors::{CorsLayer, Any}, trace::TraceLayer};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::sync::Arc;
+
+use harness_core::{HarnessConfig, Error};
+
+/// Application state shared across handlers
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<HarnessConfig>,
+    pub db: Arc<sqlx::SqlitePool>,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "harness=info,tower_http=debug".into()),
+        )
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+    
+    tracing::info!("Starting HomeLab AI Harness");
+    
+    // Load configuration
+    let config = HarnessConfig::load()?;
+    tracing::info!("Configuration loaded - port: {}, data_dir: {:?}", config.port, config.data_dir);
+    
+    // Create data directory if it doesn't exist
+    tokio::fs::create_dir_all(&config.data_dir).await?;
+    
+    // Initialize database
+    let db = db::init_db(&config.database_path).await?;
+    tracing::info!("Database initialized at {:?}", config.database_path);
+    
+    // Create application state
+    let state = AppState {
+        config: Arc::new(config),
+        db: Arc::new(db),
+    };
+    
+    // Configure CORS for web UI
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+    
+    // Build router
+    let app = Router::new()
+        .route("/api/health", get(handlers::health_check))
+        .route("/api/models", get(handlers::list_models))
+        .route("/api/models/:id/chat", post(handlers::chat_stream))
+        .route("/api/endpoints", get(handlers::list_endpoints))
+        .route("/api/endpoints", post(handlers::add_endpoint))
+        .route("/api/endpoints/:id", delete(handlers::delete_endpoint))
+        .route("/api/endpoints/:id/test", post(handlers::test_endpoint))
+        .route("/api/projects", get(handlers::list_projects))
+        .route("/api/projects", post(handlers::create_project))
+        .route("/api/projects/:id", get(handlers::get_project))
+        .route("/api/discovery", get(handlers::discover_services))
+        .layer(cors)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+    
+    // Get bind address from config
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], state.config.port));
+    tracing::info!("Listening on {}", addr);
+    
+    // Start server
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    
+    Ok(())
+}
+
+impl From<harness_core::Error> for Error {
+    fn from(e: harness_core::Error) -> Self {
+        match e {
+            harness_core::Error::Config(msg) => Error::Config(msg),
+            harness_core::Error::Io(e) => Error::Io(e),
+            _ => Error::InternalServer,
+        }
+    }
+}

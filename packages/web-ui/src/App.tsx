@@ -1,0 +1,139 @@
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
+import { useState } from 'react';
+import { TopBar } from './TopBar';
+import { Sidebar } from './Sidebar';
+import { ChatPane } from './ChatPane';
+import { CodeEditor } from './CodeEditor';
+import { PreviewPane } from './PreviewPane';
+import { useAppStore } from '../store/useAppStore';
+import { Message } from '../types';
+
+export default function App() {
+  const { sidebarCollapsed, paneLayout, updatePaneLayout } = useAppStore();
+  const [currentFile, setCurrentFile] = useState('');
+  const [editorContent, setEditorContent] = useState('// Select a file to edit');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const handleSendMessage = (content: string, attachments?: any[]) => {
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content,
+      timestamp: Date.now(),
+      attachments,
+    };
+    
+    setMessages((prev) => [...prev, userMessage]);
+    setIsGenerating(true);
+    
+    // Simulate AI response (would connect to backend in real app)
+    setTimeout(() => {
+      const aiMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: 'assistant',
+        content: 'This is a simulated response. Connect to the backend API for real AI interactions.',
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, aiMessage]);
+      setIsGenerating(false);
+    }, 1500);
+  };
+
+  const handleStopGeneration = () => {
+    setIsGenerating(false);
+  };
+
+  return (
+    <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
+      <TopBar />
+      
+      <div className="flex-1 flex overflow-hidden">
+        {/* Left Sidebar */}
+        {!sidebarCollapsed && (
+          <Sidebar
+            files={[
+              {
+                name: 'src',
+                path: '/src',
+                type: 'directory',
+                children: [
+                  { name: 'App.tsx', path: '/src/App.tsx', type: 'file', syncStatus: 'modified' as const },
+                  { name: 'index.css', path: '/src/index.css', type: 'file', syncStatus: 'synced' as const },
+                  { name: 'main.tsx', path: '/src/main.tsx', type: 'file', syncStatus: 'new' as const },
+                ],
+              },
+              { name: 'package.json', path: '/package.json', type: 'file', syncStatus: 'synced' as const },
+              { name: 'README.md', path: '/README.md', type: 'file', syncStatus: 'synced' as const },
+            ]}
+            onSelectFile={(path) => {
+              setCurrentFile(path);
+              setEditorContent(`// Content of ${path}\nconsole.log("Hello from Monastery");`);
+            }}
+          />
+        )}
+
+        {/* Main Content Area */}
+        <PanelGroup direction="horizontal" className="flex-1">
+          {/* Chat Pane */}
+          <Panel 
+            defaultSize={paneLayout.chat} 
+            minSize={15}
+            onResize={(size) => updatePaneLayout({ ...paneLayout, chat: size })}
+          >
+            <ChatPane
+              messages={messages}
+              onSendMessage={handleSendMessage}
+              onStopGeneration={handleStopGeneration}
+              isGenerating={isGenerating}
+            />
+          </Panel>
+
+          <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+
+          {/* Code Editor */}
+          <Panel 
+            defaultSize={paneLayout.editor} 
+            minSize={20}
+            onResize={(size) => updatePaneLayout({ ...paneLayout, editor: size })}
+          >
+            <div className="h-full bg-monastery-dark-surface border-x border-monastery-dark-border flex flex-col">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-monastery-dark-border">
+                <span className="text-xs font-medium text-monastery-text-secondary">
+                  {currentFile || 'No file selected'}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                    Explain
+                  </button>
+                  <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                    Refactor
+                  </button>
+                  <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                    Add Tests
+                  </button>
+                </div>
+              </div>
+              <CodeEditor
+                value={editorContent}
+                language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
+                onChange={setEditorContent}
+              />
+            </div>
+          </Panel>
+
+          <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+
+          {/* Preview/Terminal Pane */}
+          <Panel 
+            defaultSize={paneLayout.preview} 
+            minSize={15}
+            onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
+          >
+            <PreviewPane />
+          </Panel>
+        </PanelGroup>
+      </div>
+    </div>
+  );
+}
