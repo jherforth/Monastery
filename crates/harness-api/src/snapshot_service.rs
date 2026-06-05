@@ -11,7 +11,7 @@ use harness_core::{
     RestoreSnapshotRequest, RestoreSnapshotResponse,
     SnapshotList, SnapshotSummary, SnapshotDiff, FileDiff, FileChangeType,
 };
-use crate::db::DbError;
+use crate::snapshot_service::DbError;
 
 /// Service for managing snapshots
 pub struct SnapshotService {

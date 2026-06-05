@@ -71,6 +71,7 @@ pub struct CreateSnapshotRequest {
     pub created_by: Option<String>,
     pub trigger: SnapshotTrigger,
     pub files: Vec<SnapshotFileInput>,
+    pub parent_snapshot_id: Option<Uuid>,
 }
 
 /// Input file data for snapshot creation

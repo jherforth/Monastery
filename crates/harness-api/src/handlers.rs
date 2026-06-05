@@ -5,7 +5,6 @@ use axum::{
     Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    body::Body,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -84,10 +83,8 @@ pub async fn chat_stream(
     State(state): State<AppState>,
     Path(model_id): Path<String>,
     Json(request): Json<ChatRequest>,
-    Query(params): Query<ChatQueryParams>,
+    axum::extract::Query(params): axum::extract::Query<ChatQueryParams>,
 ) -> Result<Response, ApiError> {
-    use axum::extract::Query;
-    use async_openai::types::ChatCompletionRequestMessage;
     use futures::StreamExt;
     use sqlx::Row;
     
@@ -144,49 +141,19 @@ pub async fn chat_stream(
     
     let client = harness_core::LLMClient::new(endpoint_config);
     
-    // Convert messages to OpenAI format
-    let messages: Vec<ChatCompletionRequestMessage> = request.messages
-        .into_iter()
-        .map(|m| {
-            match m.role.as_str() {
-                "user" => ChatCompletionRequestMessage::User(
-                    async_openai::types::ChatCompletionRequestUserMessage {
-                        content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(m.content),
-                    }.into()
-                ),
-                "assistant" => ChatCompletionRequestMessage::Assistant(
-                    async_openai::types::ChatCompletionRequestAssistantMessage {
-                        content: Some(m.content),
-                        ..Default::default()
-                    }.into()
-                ),
-                "system" => ChatCompletionRequestMessage::System(
-                    async_openai::types::ChatCompletionRequestSystemMessage {
-                        content: async_openai::types::ChatCompletionRequestSystemMessageContent::Text(m.content),
-                    }.into()
-                ),
-                _ => ChatCompletionRequestMessage::User(
-                    async_openai::types::ChatCompletionRequestUserMessage {
-                        content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(m.content),
-                    }.into()
-                ),
-            }
-        })
-        .collect();
-    
-    let stream = client.chat_stream(messages, model_id).await?;
+    // Convert messages to OpenAI format using harness-core types
+    let stream = client.chat_stream(request.messages, model_id).await?;
     
     // Create SSE stream
     use axum::response::Sse;
-    use futures::stream::Stream;
     
     let event_stream = stream.map(|result| {
         match result {
             Ok(content) => Ok(axum::response::sse::Event::default().data(content)),
-            Err(e) => Err(axum::response::sse::SseError::from(std::io::Error::new(
+            Err(e) => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 e.to_string(),
-            ))),
+            )),
         }
     });
     
@@ -229,7 +196,7 @@ pub async fn list_endpoints(
         })
         .collect();
     
-    Json(configs)
+    Ok(Json(configs))
 }
 
 #[derive(Debug, Deserialize)]
@@ -527,10 +494,9 @@ pub struct RestoreSnapshotBody {
 /// Get diff between two snapshots
 pub async fn diff_snapshots(
     Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
-    Query(params): Query<DiffSnapshotsParams>,
+    axum::extract::Query(params): axum::extract::Query<DiffSnapshotsParams>,
     State(state): State<AppState>,
 ) -> Result<Json<harness_core::SnapshotDiff>, ApiError> {
-    use axum::extract::Query;
     
     // Verify the first snapshot belongs to this project
     let (snapshot, _) = state.snapshot_service
@@ -617,7 +583,6 @@ impl From<serde_json::Error> for DbError {
 pub enum ApiError {
     NotFound(String),
     Config(String),
-    InternalServer,
     Internal(String),
     Core(harness_core::Error),
 }
@@ -627,7 +592,6 @@ impl IntoResponse for ApiError {
         let (status, message) = match self {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Config(msg) => (StatusCode::BAD_REQUEST, msg),
-            ApiError::InternalServer => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             ApiError::Core(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         };
@@ -645,6 +609,6 @@ impl From<harness_core::Error> for ApiError {
 impl From<sqlx::Error> for ApiError {
     fn from(e: sqlx::Error) -> Self {
         tracing::error!("Database error: {}", e);
-        ApiError::InternalServer
+        ApiError::Internal(e.to_string())
     }
 }

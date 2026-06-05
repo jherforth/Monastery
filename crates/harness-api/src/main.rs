@@ -5,12 +5,12 @@ mod db;
 mod middleware;
 mod snapshot_service;
 
-use axum::{Router, routing::get, routing::post};
+use axum::{Router, routing::get, routing::post, routing::delete};
 use tower_http::{cors::{CorsLayer, Any}, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::sync::Arc;
 
-use harness_core::{HarnessConfig, Error};
+use harness_core::HarnessConfig;
 use snapshot_service::SnapshotService;
 
 /// Application state shared across handlers
@@ -95,14 +95,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
     
     Ok(())
-}
-
-impl From<harness_core::Error> for Error {
-    fn from(e: harness_core::Error) -> Self {
-        match e {
-            harness_core::Error::Config(msg) => Error::Config(msg),
-            harness_core::Error::Io(e) => Error::Io(e),
-            _ => Error::InternalServer,
-        }
-    }
 }
