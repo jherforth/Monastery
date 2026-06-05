@@ -45,4 +45,4 @@ http.workspace = true
 secrecy.workspace = true
 
 # Database
-sqlx.workspace = true
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
