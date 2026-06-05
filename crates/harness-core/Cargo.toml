@@ -37,3 +37,9 @@ futures.workspace = true
 
 # mDNS discovery
 mdns-sd.workspace = true
+
+# HTTP types
+http.workspace = true
+
+# Secrets
+secrecy.workspace = true
