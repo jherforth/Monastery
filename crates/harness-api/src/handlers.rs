@@ -13,7 +13,6 @@ use crate::AppState;
 use harness_core::{
     CreateSnapshotRequest, RestoreSnapshotRequest, SnapshotTrigger,
 };
-use async_openai::types::ChatCompletionRequestMessage;
 
 /// Health check endpoint
 pub async fn health_check() -> impl IntoResponse {
@@ -87,7 +86,6 @@ pub async fn chat_stream(
     axum::extract::Query(params): axum::extract::Query<ChatQueryParams>,
 ) -> Result<Response, ApiError> {
     use futures::StreamExt;
-    use sqlx::Row;
     
     // Get endpoint from query param or use default
     let endpoint_config = if let Some(endpoint_id) = params.endpoint_id {
@@ -149,6 +147,7 @@ pub async fn chat_stream(
             match msg.role.as_str() {
                 "user" => async_openai::types::ChatCompletionRequestUserMessage {
                     content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(msg.content),
+                    name: None,
                 }.into(),
                 "assistant" => async_openai::types::ChatCompletionRequestAssistantMessage {
                     content: Some(async_openai::types::ChatCompletionRequestAssistantMessageContent::Text(msg.content)),
@@ -156,9 +155,11 @@ pub async fn chat_stream(
                 }.into(),
                 "system" => async_openai::types::ChatCompletionRequestSystemMessage {
                     content: async_openai::types::ChatCompletionRequestSystemMessageContent::Text(msg.content),
+                    name: None,
                 }.into(),
                 _ => async_openai::types::ChatCompletionRequestUserMessage {
                     content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(msg.content),
+                    name: None,
                 }.into(),
             }
         })
@@ -340,7 +341,7 @@ pub struct CreateProjectRequest {
 
 /// Create a new project
 pub async fn create_project(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<ProjectInfo>, ApiError> {
     let project = ProjectInfo {
