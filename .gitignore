@@ -13,46 +13,68 @@ env/
 venv/
 .venv/
 .ENV
-.venv.bak/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git/modules/
-.DS_Store
-Thumbs.db
-
-# Rust
-Cargo.lock
-target/
-
-# Web UI
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Environment
-.env
-.env.local
-.env.*
+.ENV.*
 
 # Logs
 *.log
 
-# OS
+# Environment variables
+.env
+.env.local
+.env.*
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Build outputs
+dist/
+build/
+*.so
+*.dylib
+*.dll
+
+# Temporary files
+*.tmp
+*.swp
+*~
 .DS_Store
 Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swo
+*.lock
+
+# Testing
+.mypy_cache/
+.pytest_cache/
+.nyc_output/
+coverage.xml
+
+# Compression
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```

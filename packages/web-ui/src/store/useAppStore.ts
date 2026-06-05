@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { AppState, Message, LLMEndpoint, Project, Session } from '../types';
+import { SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../hooks/useSnapshots';
 
 const defaultLayout = {
   chat: 25,
@@ -9,6 +10,12 @@ const defaultLayout = {
 };
 
 interface AppStore extends AppState {
+  // Snapshot state
+  currentSnapshots: SnapshotSummary[];
+  selectedSnapshot: SnapshotDetail | null;
+  isCreatingSnapshot: boolean;
+  isRestoring: boolean;
+  
   // Actions
   setCurrentProject: (project: Project | null) => void;
   setCurrentSession: (session: Session | null) => void;
@@ -18,6 +25,12 @@ interface AppStore extends AppState {
   toggleSidebar: () => void;
   updatePaneLayout: (layout: { chat: number; editor: number; preview: number }) => void;
   setResourceUsage: (usage: { cpu: number; memory: number; gpu?: number }) => void;
+  
+  // Snapshot actions
+  setCurrentSnapshots: (snapshots: SnapshotSummary[]) => void;
+  setSelectedSnapshot: (snapshot: SnapshotDetail | null) => void;
+  setCreatingSnapshot: (creating: boolean) => void;
+  setRestoring: (restoring: boolean) => void;
 }
 
 export const useAppStore = create<AppStore>()(
@@ -34,6 +47,12 @@ export const useAppStore = create<AppStore>()(
       theme: 'monastery-dark',
       sidebarCollapsed: false,
       paneLayout: defaultLayout,
+      
+      // Snapshot initial state
+      currentSnapshots: [],
+      selectedSnapshot: null,
+      isCreatingSnapshot: false,
+      isRestoring: false,
 
       // Actions
       setCurrentProject: (project) => set({ currentProject: project }),
@@ -81,6 +100,15 @@ export const useAppStore = create<AppStore>()(
           ...usage,
         },
       })),
+      
+      // Snapshot actions
+      setCurrentSnapshots: (snapshots) => set({ currentSnapshots: snapshots }),
+      
+      setSelectedSnapshot: (snapshot) => set({ selectedSnapshot: snapshot }),
+      
+      setCreatingSnapshot: (creating) => set({ isCreatingSnapshot: creating }),
+      
+      setRestoring: (restoring) => set({ isRestoring: restoring }),
     }),
     {
       name: 'monastery-storage',

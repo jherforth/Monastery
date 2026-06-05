@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use harness_core::{
+    CreateSnapshotRequest, RestoreSnapshotRequest, SnapshotTrigger,
+};
 
 /// Health check endpoint
 pub async fn health_check() -> impl IntoResponse {
@@ -227,6 +230,179 @@ pub async fn discover_services(
     Ok(Json(endpoints))
 }
 
+/// List snapshots for a project
+pub async fn list_snapshots(
+    Path(project_id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<harness_core::SnapshotList>, ApiError> {
+    let page = 1;
+    let per_page = 50;
+    
+    let list = state.snapshot_service
+        .list_snapshots(project_id, page, per_page)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    Ok(Json(list))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSnapshotQuery {
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+/// Create a new snapshot
+pub async fn create_snapshot(
+    Path(project_id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<CreateSnapshotBody>,
+) -> Result<Json<harness_core::CreateSnapshotResponse>, ApiError> {
+    let request = CreateSnapshotRequest {
+        project_id,
+        name: req.name,
+        description: req.description,
+        created_by: req.created_by,
+        trigger: req.trigger.unwrap_or(SnapshotTrigger::Manual),
+        files: req.files,
+    };
+    
+    let response = state.snapshot_service
+        .create_snapshot(request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateSnapshotBody {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub created_by: Option<String>,
+    pub trigger: Option<SnapshotTrigger>,
+    pub files: Vec<harness_core::SnapshotFileInput>,
+}
+
+/// Get a specific snapshot with its files
+pub async fn get_snapshot(
+    Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
+    State(state): State<AppState>,
+) -> Result<Json<SnapshotDetailResponse>, ApiError> {
+    let (snapshot, files) = state.snapshot_service
+        .get_snapshot(snapshot_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    // Verify project ownership
+    if snapshot.project_id != project_id {
+        return Err(ApiError::NotFound("Snapshot does not belong to this project".into()));
+    }
+    
+    Ok(Json(SnapshotDetailResponse {
+        snapshot,
+        files,
+    }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct SnapshotDetailResponse {
+    pub snapshot: harness_core::Snapshot,
+    pub files: Vec<harness_core::SnapshotFile>,
+}
+
+/// Delete a snapshot
+pub async fn delete_snapshot(
+    Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
+    State(state): State<AppState>,
+) -> Result<StatusCode, ApiError> {
+    // First verify the snapshot belongs to this project
+    let (snapshot, _) = state.snapshot_service
+        .get_snapshot(snapshot_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    if snapshot.project_id != project_id {
+        return Err(ApiError::NotFound("Snapshot does not belong to this project".into()));
+    }
+    
+    state.snapshot_service
+        .delete_snapshot(snapshot_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Restore a project to a previous snapshot
+pub async fn restore_snapshot(
+    Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
+    State(state): State<AppState>,
+    Json(req): Json<RestoreSnapshotBody>,
+) -> Result<Json<harness_core::RestoreSnapshotResponse>, ApiError> {
+    let request = RestoreSnapshotRequest {
+        snapshot_id,
+        dry_run: req.dry_run.unwrap_or(false),
+        create_backup: req.create_backup.unwrap_or(true),
+    };
+    
+    // First verify the snapshot belongs to this project
+    let (snapshot, _) = state.snapshot_service
+        .get_snapshot(snapshot_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    if snapshot.project_id != project_id {
+        return Err(ApiError::NotFound("Snapshot does not belong to this project".into()));
+    }
+    
+    let response = state.snapshot_service
+        .restore_snapshot(request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RestoreSnapshotBody {
+    pub dry_run: Option<bool>,
+    pub create_backup: Option<bool>,
+}
+
+/// Get diff between two snapshots
+pub async fn diff_snapshots(
+    Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
+    Query(params): Query<DiffSnapshotsParams>,
+    State(state): State<AppState>,
+) -> Result<Json<harness_core::SnapshotDiff>, ApiError> {
+    use axum::extract::Query;
+    
+    // Verify the first snapshot belongs to this project
+    let (snapshot, _) = state.snapshot_service
+        .get_snapshot(snapshot_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    if snapshot.project_id != project_id {
+        return Err(ApiError::NotFound("Snapshot does not belong to this project".into()));
+    }
+    
+    let target_id = params.target.unwrap_or_else(Uuid::new_v4);
+    
+    let diff = state.snapshot_service
+        .diff_snapshots(snapshot_id, target_id)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    
+    Ok(Json(diff))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DiffSnapshotsParams {
+    pub target: Option<Uuid>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProjectInfo {
     pub id: Uuid,
@@ -247,12 +423,43 @@ pub struct ChatMessage {
     pub content: String,
 }
 
+/// Database error types
+#[derive(Debug)]
+pub enum DbError {
+    NotFound(String),
+    Sqlx(sqlx::Error),
+    Json(serde_json::Error),
+}
+
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DbError::NotFound(msg) => write!(f, "Not found: {}", msg),
+            DbError::Sqlx(e) => write!(f, "Database error: {}", e),
+            DbError::Json(e) => write!(f, "JSON error: {}", e),
+        }
+    }
+}
+
+impl From<sqlx::Error> for DbError {
+    fn from(e: sqlx::Error) -> Self {
+        DbError::Sqlx(e)
+    }
+}
+
+impl From<serde_json::Error> for DbError {
+    fn from(e: serde_json::Error) -> Self {
+        DbError::Json(e)
+    }
+}
+
 /// API error types
 #[derive(Debug)]
 pub enum ApiError {
     NotFound(String),
     Config(String),
     InternalServer,
+    Internal(String),
     Core(harness_core::Error),
 }
 
@@ -262,6 +469,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ApiError::Config(msg) => (StatusCode::BAD_REQUEST, msg),
             ApiError::InternalServer => (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".into()),
+            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             ApiError::Core(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
         };
         
