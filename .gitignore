@@ -2,37 +2,38 @@
 # Compiled and build artifacts
 *.o
 *.obj
-*.exe
-*.dll
-*.so
 *.a
-*.out
-# Dependencies
-node_modules/
-venv/
-.venv/
-__pycache__/
-.mypy_cache/
-.pytest_cache/
+*.lib
+*.so
+*.dylib
+*.dll
 target/
-.gradle/
+
+# Dependencies
+Cargo.lock
+**/target/
+
 # Logs and temp files
 *.log
 *.tmp
+
+# Editors
+.vscode/
+.idea/
 *.swp
+*.swo
+
 # Environment
 .env
 .env.local
 *.env.*
-# Editors
-.vscode/
-.idea/
+
 # Coverage
 coverage/
 htmlcov/
 .coverage
-# Rust specific
-Cargo.lock
-target/
+
+# Rust-specific
 **/*.rs.bk
+Cargo.lock
 ```

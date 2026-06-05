@@ -54,7 +54,7 @@ impl SnapshotService {
             total_size_bytes: 0,
             changed_files: 0,
             commit_message: request.description.clone(),
-            trigger: request.trigger,
+            trigger: request.trigger.clone(),
         })?)
         .execute(&mut *tx)
         .await?;
@@ -90,7 +90,7 @@ impl SnapshotService {
             total_size_bytes: total_size,
             changed_files: 0,
             commit_message: request.description.clone(),
-            trigger: request.trigger,
+            trigger: request.trigger.clone(),
         };
         
         sqlx::query("UPDATE snapshots SET metadata = ? WHERE id = ?")
@@ -472,7 +472,7 @@ struct FileRow {
 
 impl FileRow {
     fn into_file(self) -> SnapshotFile {
-        let content_ref = self.content.as_deref().unwrap_or("");
+        let size_bytes = self.content.as_deref().unwrap_or("").len() as u64;
         SnapshotFile {
             id: Uuid::parse_str(&self.id).unwrap_or_default(),
             snapshot_id: Uuid::parse_str(&self.snapshot_id).unwrap_or_default(),
@@ -482,7 +482,7 @@ impl FileRow {
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
-            size_bytes: content_ref.len() as u64,
+            size_bytes,
         }
     }
 }
