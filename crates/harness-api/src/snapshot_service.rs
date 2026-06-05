@@ -11,7 +11,7 @@ use harness_core::{
     RestoreSnapshotRequest, RestoreSnapshotResponse,
     SnapshotList, SnapshotSummary, SnapshotDiff, FileDiff, FileChangeType,
 };
-use crate::snapshot_service::DbError;
+use crate::handlers::DbError;
 
 /// Service for managing snapshots
 pub struct SnapshotService {
@@ -472,6 +472,7 @@ struct FileRow {
 
 impl FileRow {
     fn into_file(self) -> SnapshotFile {
+        let content_ref = self.content.as_deref().unwrap_or("");
         SnapshotFile {
             id: Uuid::parse_str(&self.id).unwrap_or_default(),
             snapshot_id: Uuid::parse_str(&self.snapshot_id).unwrap_or_default(),
@@ -481,7 +482,7 @@ impl FileRow {
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
-            size_bytes: self.content.as_deref().unwrap_or("").len() as u64,
+            size_bytes: content_ref.len() as u64,
         }
     }
 }
