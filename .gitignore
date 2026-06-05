@@ -1,32 +1,5 @@
 ```
-# Build artifacts
 target/
 **/*.rs.bk
-
-# Dependencies
-Cargo.lock
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Environment
-.env
-.env.local
-*.env.*
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Coverage
-coverage/
-htmlcov/
-.coverage
-
-# Rust-specific
-**/target/
 Cargo.lock
 ```

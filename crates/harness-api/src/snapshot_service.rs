@@ -6,7 +6,7 @@ use sqlx::{sqlite::SqlitePool, FromRow};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use harness_core::{
-    Snapshot, SnapshotFile, SnapshotMetadata, SnapshotTrigger,
+    Snapshot, SnapshotFile, SnapshotMetadata,
     CreateSnapshotRequest, CreateSnapshotResponse,
     RestoreSnapshotRequest, RestoreSnapshotResponse,
     SnapshotList, SnapshotSummary, SnapshotDiff, FileDiff, FileChangeType,
@@ -239,8 +239,8 @@ impl SnapshotService {
         request: RestoreSnapshotRequest,
     ) -> Result<RestoreSnapshotResponse, DbError> {
         let mut errors = Vec::new();
-        let mut restored_count = 0u32;
-        let mut failed_count = 0u32;
+        let restored_count = 0u32;
+        let failed_count = 0u32;
         let mut backup_snapshot_id: Option<Uuid> = None;
         
         // First, get the snapshot to restore
