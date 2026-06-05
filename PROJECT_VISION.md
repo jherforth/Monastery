@@ -1,21 +1,23 @@
 # HomeLab AI Harness - Project Vision
 
 ## Core Purpose
-A fully self-hosted, browser-based AI coding environment where users prompt frontier/local LLMs to generate, edit, run, debug, and deploy full applications. Optimized for homelab enthusiasts: low-resource (Jetson Orin Nano, Proxmox LXC, ARM), offline-first, privacy-first, and extensible for personal infrastructure.
+A fully self-hosted, browser-based AI coding environment where users prompt local or frontier LLMs to generate, edit, run, debug, and deploy full applications. The harness runs as a **standalone service** (Docker-first) and connects to LLM backends over the network.
 
-**Tagline**: "Prompt → Code → Run → Deploy to Your Homelab — Zero Cloud Required."
+**Tagline**: "Prompt → Code → Run → Deploy to Your Homelab — LLMs Optional on Same Host."
 
-## Key Differentiators from bolt.diy/bolt.new
-- 100% self-hosted by default (no Vercel push as primary path).
-- Native support for local models (Ollama, llama.cpp, vLLM) with unified OpenAI-compatible proxy.
-- Built-in Self-Hosting Wizard (per attached ODT): Detect stack → Generate docker-compose + Coolify/PocketBase configs → One-click VPS/homelab deploy.
-- Deep homelab integrations: MQTT (HA), Proxmox API, Meshtastic nodes, custom hardware (ESP32 sensors, etc.).
-- Agentic workflows for infrastructure-as-code (Terraform/Ansible-like via LLMs).
-- Resource-aware: Auto-optimize for CPU/GPU, quantization, low-power modes.
-- Sandboxed execution with strong isolation for LLM-generated code.
+## Key Differentiators
+- **Decoupled Architecture**: Harness runs independently of LLM servers. Auto-discovery or manual config for local endpoints (e.g., `http://ollama:11434` or IP:port on LAN).
+- 100% self-hosted by default with built-in Self-Hosting Wizard (per ODT).
+- Native priority for local models via OpenAI-compatible proxy.
+- Deep homelab integrations: Proxmox, Coolify, PocketBase, MQTT, etc.
+- Resource-aware and low-overhead: Harness itself is lightweight; offload heavy inference.
+
+## Deployment Flexibility
+- Single `docker compose up` for the harness.
+- Users run LLMs separately (same host, separate container, or different machine on LAN).
+- Wizard helps configure network connections, service discovery (mDNS/Avahi), and proxying.
 
 ## Success Metrics
-- Match or exceed bolt.diy UX: Streaming prompts, Monaco editor, live preview, file sync, Git integration.
-- Run comfortably on consumer homelab hardware (≤16GB RAM, GPU optional).
-- Wizard reduces self-host setup time to <10 minutes for common stacks.
-- 90%+ offline capability for core coding loop.
+- Match/exceed bolt.diy UX while being lighter and more homelab-native.
+- Harness container <1GB RAM idle; works on low-power nodes.
+- Seamless connection to Ollama/vLLM/etc. with zero extra config in common setups.
