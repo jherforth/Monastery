@@ -12,6 +12,8 @@ A calm, focused, self-hosted sanctuary for AI-assisted coding. Monastery is a fu
 - **Homelab Native**: Deep integrations with Proxmox, Coolify, PocketBase, MQTT, etc.
 - **OpenAI-Compatible**: Works with Ollama, vLLM, llama.cpp, OpenAI, Groq, and more.
 
+<img width="1912" height="992" alt="Screenshot 2026-06-06 144116" src="https://github.com/user-attachments/assets/39267f69-9197-4c09-9033-54003a2c08e4" />
+
 ## Quick Start
 
 ### Prerequisites
@@ -147,6 +149,9 @@ MIT License - see [LICENSE](LICENSE) for details.
 ## Contributing
 
 Contributions welcome! Please read our contributing guidelines before submitting PRs.
+
+<img width="1918" height="996" alt="Screenshot 2026-06-06 104803" src="https://github.com/user-attachments/assets/48ba2028-3821-4058-bd2f-9167d45b6d3b" />
+
 
 ---
 
