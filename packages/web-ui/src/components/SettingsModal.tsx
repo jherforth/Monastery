@@ -66,12 +66,12 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   };
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div 
-        className="bg-monastery-dark-surface rounded-lg w-full max-w-2xl max-h-[80vh] overflow-hidden shadow-xl"
+        className="bg-monastery-dark-surface rounded-lg w-full max-w-2xl max-h-[85vh] flex flex-col shadow-xl"
         onClick={e => e.stopPropagation()}
       >
-        <div className="p-6 border-b border-monastery-dark-border">
+        <div className="p-6 border-b border-monastery-dark-border shrink-0">
           <h2 className="text-xl font-semibold text-monastery-text-primary">Settings</h2>
           <p className="text-sm text-monastery-text-secondary mt-1">
             Configure LLM endpoints, Git forges, and integrations
@@ -104,7 +104,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           </div>
         </div>
 
-        <div className="p-6 overflow-y-auto max-h-[60vh]">
+        <div className="p-6 overflow-y-auto flex-1">
           {activeTab === 'llm' ? (
             <>
               {/* Add New Endpoint */}
@@ -234,7 +234,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
           )}
         </div>
 
-        <div className="p-6 border-t border-monastery-dark-border flex justify-end">
+        <div className="p-6 border-t border-monastery-dark-border flex justify-end shrink-0">
           <button
             onClick={onClose}
             className="px-4 py-2 bg-monastery-dark-tertiary text-monastery-text-primary rounded-md hover:bg-monastery-lantern hover:text-monastery-dark-bg transition-colors"
