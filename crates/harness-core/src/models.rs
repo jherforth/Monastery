@@ -98,7 +98,7 @@ impl GitForgeType {
         match self {
             GitForgeType::GitHub => "/user/repos?per_page=100",
             GitForgeType::GitLab => "/projects?membership=true&per_page=100",
-            GitForgeType::Forgejo => "/user/repos?limit=100",
+            GitForgeType::Forgejo => "/api/v1/user/repos?limit=100",
         }
     }
 
@@ -107,7 +107,7 @@ impl GitForgeType {
         match self {
             GitForgeType::GitHub => "/user/repos",
             GitForgeType::GitLab => "/projects",
-            GitForgeType::Forgejo => "/user/repos",
+            GitForgeType::Forgejo => "/api/v1/user/repos",
         }
     }
 }

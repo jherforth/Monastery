@@ -21,7 +21,7 @@ docker compose up -d
 
 echo "[3/3] Cleaning up build artifacts..."
 docker builder prune -a -f 2>/dev/null || true
-docker image prune -f 2>/dev/null || true
+docker image prune -a -f 2>/dev/null || true
 
 echo ""
 echo "=== Monastery is running! ==="
