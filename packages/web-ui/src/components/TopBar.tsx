@@ -35,7 +35,7 @@ export function TopBar() {
           
           <div className="flex items-center gap-2">
             <img
-              src={theme === 'monastery-dark' ? '/images/logoLight.svg' : '/images/logoDark.svg'}
+              src={theme === 'monastery-dark' ? '/images/logoDark.svg' : '/images/logoLight.svg'}
               alt="Monastery"
               className="w-8 h-8"
             />

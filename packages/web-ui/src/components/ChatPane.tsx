@@ -72,7 +72,7 @@ export function ChatPane({
     <div className="flex flex-col h-full bg-monastery-dark-bg relative overflow-hidden">
       {/* Monastery SVG background */}
       <img
-        src="/images/monastery.svg"
+        src={theme === 'monastery-dark' ? '/images/monasteryDark.svg' : '/images/monasteryLight.svg'}
         alt=""
         className="absolute inset-0 w-full h-full object-cover opacity-[0.07] pointer-events-none select-none"
       />
@@ -84,7 +84,7 @@ export function ChatPane({
             <div className="text-center max-w-lg px-6">
               {/* Monastery Logo */}
               <img
-                src={theme === 'monastery-dark' ? '/images/logoLight.svg' : '/images/logoDark.svg'}
+                src={theme === 'monastery-dark' ? '/images/logoDark.svg' : '/images/logoLight.svg'}
                 alt="Monastery"
                 className="w-16 h-16 mx-auto mb-6"
               />
