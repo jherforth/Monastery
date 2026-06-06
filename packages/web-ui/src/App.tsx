@@ -1,5 +1,5 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
@@ -9,11 +9,16 @@ import { useAppStore } from './store/useAppStore';
 import { Message } from './types';
 
 export default function App() {
-  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout } = useAppStore();
+  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme } = useAppStore();
   const [currentFile, setCurrentFile] = useState('');
   const [editorContent, setEditorContent] = useState('// Select a file to edit');
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // Sync persisted theme with the HTML data-theme attribute on load
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
 
   const handleSendMessage = (content: string, attachments?: any[]) => {
     const userMessage: Message = {

@@ -8,20 +8,25 @@ export default {
     extend: {
       colors: {
         monastery: {
-          // Deep blues (dark mode)
-          'dark-bg': '#0A1628',
-          'dark-surface': '#0F1D32',
-          'dark-border': '#1A2D4A',
-          'dark-tertiary': '#162744',
-          // Forest green (brand accents)
+          // Theme-dependent (uses CSS variables — switches with data-theme)
+          'dark-bg': 'var(--bg-primary)',
+          'dark-surface': 'var(--bg-secondary)',
+          'dark-tertiary': 'var(--bg-tertiary)',
+          'dark-border': 'var(--border-color)',
+          'text-primary': 'var(--text-primary)',
+          'text-secondary': 'var(--text-secondary)',
+          'text-muted': 'var(--text-muted)',
+          // Brand colors (static — same in both themes)
           'forest': '#0A3D2A',
           'pine': '#1E6B4E',
-          // Warm neutrals
           'parchment': '#F5F0E8',
           'sand': '#D4C3A3',
-          // Accent lighting
           'lantern': '#F4A460',
           'amber': '#FFBF00',
+          // Status
+          'status-success': 'var(--status-success)',
+          'status-warning': 'var(--status-warning)',
+          'status-error': 'var(--status-error)',
         },
       },
       fontFamily: {
