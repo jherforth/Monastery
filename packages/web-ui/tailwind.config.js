@@ -8,7 +8,12 @@ export default {
     extend: {
       colors: {
         monastery: {
-          // Deep greens
+          // Deep blues (dark mode)
+          'dark-bg': '#0A1628',
+          'dark-surface': '#0F1D32',
+          'dark-border': '#1A2D4A',
+          'dark-tertiary': '#162744',
+          // Forest green (brand accents)
           'forest': '#0A3D2A',
           'pine': '#1E6B4E',
           // Warm neutrals
@@ -17,10 +22,6 @@ export default {
           // Accent lighting
           'lantern': '#F4A460',
           'amber': '#FFBF00',
-          // Dark mode base
-          'dark-bg': '#0D1117',
-          'dark-surface': '#161B22',
-          'dark-border': '#30363D',
         },
       },
       fontFamily: {

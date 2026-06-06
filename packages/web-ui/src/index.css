@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  /* Monastery Color Palette - Dark Mode Default */
+  /* Monastery Color Palette - Dark Mode Default (Deep Navy) */
   --color-forest: #0A3D2A;
   --color-pine: #1E6B4E;
   --color-parchment: #F5F0E8;
@@ -11,11 +11,11 @@
   --color-lantern: #F4A460;
   --color-amber: #FFBF00;
   
-  /* Dark mode base */
-  --bg-primary: #0D1117;
-  --bg-secondary: #161B22;
-  --bg-tertiary: #21262D;
-  --border-color: #30363D;
+  /* Dark mode base — deep navy blue */
+  --bg-primary: #0A1628;
+  --bg-secondary: #0F1D32;
+  --bg-tertiary: #162744;
+  --border-color: #1A2D4A;
   --text-primary: #E6EDF3;
   --text-secondary: #8B949E;
   --text-muted: #6E7681;
@@ -54,7 +54,8 @@ html, body, #root {
 
 body {
   font-family: var(--font-sans);
-  background-color: var(--bg-primary);
+  background: linear-gradient(180deg, #0A1628 0%, #0D1C33 40%, #0F1D32 100%);
+  background-attachment: fixed;
   color: var(--text-primary);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
