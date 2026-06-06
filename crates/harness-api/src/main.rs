@@ -83,12 +83,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:project_id/snapshots/:snapshot_id/restore", post(handlers::restore_snapshot))
         .route("/api/projects/:project_id/snapshots/:snapshot_id/diff", get(handlers::diff_snapshots))
         .layer(cors)
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
-    
-    // Get bind address from config
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], state.config.port));
+        .layer(TraceLayer::new_for_http());
+
+    // Get bind address from config (before moving state into router)
+    let port = state.config.port;
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Listening on {}", addr);
+
+    let app = app.with_state(state);
     
     // Start server
     let listener = tokio::net::TcpListener::bind(addr).await?;
