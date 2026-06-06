@@ -1,5 +1,31 @@
-# Build stage
-FROM rust:1.86.0-bookworm AS builder
+# ============================================================
+# Stage 1: Build the React/Vite frontend
+# ============================================================
+FROM node:20-bookworm-slim AS frontend-builder
+
+WORKDIR /app/frontend
+
+# Install pnpm for faster builds (optional, falls back to npm)
+RUN npm install -g pnpm
+
+# Copy frontend package files
+COPY packages/web-ui/package.json packages/web-ui/pnpm-lock.yaml* packages/web-ui/package-lock.json* ./
+
+# Install dependencies
+RUN if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; \
+    elif [ -f package-lock.json ]; then npm ci; \
+    else npm install; fi
+
+# Copy frontend source
+COPY packages/web-ui/ ./
+
+# Build the frontend
+RUN npx vite build --outDir dist --base /
+
+# ============================================================
+# Stage 2: Build the Rust backend binary
+# ============================================================
+FROM rust:1.86.0-bookworm AS backend-builder
 
 WORKDIR /app
 
@@ -25,29 +51,33 @@ COPY crates/ ./crates/
 # Build the binary
 RUN cargo build --release --bin harness
 
-# Runtime stage
-FROM debian:bookworm-slim
+# ============================================================
+# Stage 3: Nginx runtime (serves frontend + proxies API)
+# ============================================================
+FROM nginx:1.27-bookworm
 
-WORKDIR /app
+# Install curl for health checks
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Copy nginx configuration
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copy binary from builder
-COPY --from=builder /app/target/release/harness /app/harness
+# Copy built frontend from Stage 1
+COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
+
+# Copy Rust backend binary from Stage 2
+COPY --from=backend-builder /app/target/release/harness /app/harness
 
 # Create data directory with proper permissions
 RUN mkdir -p /app/data && chmod 777 /app/data
 
-# Expose port
+# Copy startup script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 3000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:3000/api/health || exit 1
 
-# Run the binary
-ENTRYPOINT ["/app/harness"]
+ENTRYPOINT ["/entrypoint.sh"]

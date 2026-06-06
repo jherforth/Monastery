@@ -1,0 +1,29 @@
+# Rust build artifacts
+crates/**/target/
+target/
+
+# Node modules and build artifacts
+packages/web-ui/node_modules/
+packages/web-ui/dist/
+
+# Docker
+docker/
+
+# Data
+data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files (keep .env.example)
+.env
+.env.local
+
+# Git
+.git/
+.gitignore
