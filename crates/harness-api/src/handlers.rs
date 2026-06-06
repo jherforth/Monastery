@@ -394,12 +394,6 @@ pub async fn list_snapshots(
     Ok(Json(list))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateSnapshotQuery {
-    pub name: Option<String>,
-    pub description: Option<String>,
-}
-
 /// Create a new snapshot
 pub async fn create_snapshot(
     Path(project_id): Path<Uuid>,

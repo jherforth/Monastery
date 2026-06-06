@@ -433,6 +433,7 @@ struct SnapshotRow {
     created_by: Option<String>,
     parent_snapshot_id: Option<String>,
     is_active: i64,
+    #[allow(dead_code)]
     metadata: String,
     files_count: i64,
     total_size: i64,

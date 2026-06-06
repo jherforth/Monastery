@@ -19,6 +19,9 @@ docker compose build --no-cache
 echo "[2/2] Starting Monastery..."
 docker compose up -d
 
+echo "[3/3] Cleaning up unused build layers..."
+docker image prune -f 2>/dev/null || true
+
 echo ""
 echo "=== Monastery is running! ==="
 echo "Open: http://localhost:3000"
