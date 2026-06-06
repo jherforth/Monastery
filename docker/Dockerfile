@@ -5,16 +5,11 @@ FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /app/frontend
 
-# Install pnpm for faster builds (optional, falls back to npm)
-RUN npm install -g pnpm
-
 # Copy frontend package files
-COPY packages/web-ui/package.json packages/web-ui/pnpm-lock.yaml* packages/web-ui/package-lock.json* ./
+COPY packages/web-ui/package.json ./
 
-# Install dependencies
-RUN if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; \
-    elif [ -f package-lock.json ]; then npm ci; \
-    else npm install; fi
+# Install dependencies (no lockfile, so plain npm install)
+RUN npm install
 
 # Copy frontend source
 COPY packages/web-ui/ ./
