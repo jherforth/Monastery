@@ -79,13 +79,12 @@ pub async fn list_models(
 }
 
 /// Stream chat completion
-#[axum::debug_handler]
 pub async fn chat_stream(
     State(state): State<AppState>,
     Path(model_id): Path<String>,
     Json(request): Json<ChatRequest>,
     axum::extract::Query(params): axum::extract::Query<ChatQueryParams>,
-) -> Result<Response, ApiError> {
+) -> impl IntoResponse {
     use futures::StreamExt;
     
     // Get endpoint from query param or use default
@@ -100,12 +99,14 @@ pub async fn chat_stream(
         .ok()
         .flatten();
         
-        db_endpoint.or_else(|| {
+        match db_endpoint.or_else(|| {
             state.config.endpoints.iter()
                 .find(|e| e.id == endpoint_id)
                 .cloned()
-        })
-        .ok_or_else(|| ApiError::NotFound(format!("Endpoint {} not found", endpoint_id)))?
+        }) {
+            Some(config) => config,
+            None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Endpoint {} not found", endpoint_id)}))).into_response(),
+        }
     } else {
         // Use first available endpoint
         let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints")
@@ -135,7 +136,7 @@ pub async fn chat_stream(
                     .into(),
             }
         } else {
-            return Err(ApiError::Config("No LLM endpoint configured. Please add an endpoint in Settings.".into()));
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No LLM endpoint configured. Please add an endpoint in Settings."}))).into_response();
         }
     };
     
@@ -166,7 +167,10 @@ pub async fn chat_stream(
         })
         .collect();
     
-    let stream = client.chat_stream(messages, model_id).await?;
+    let stream = match client.chat_stream(messages, model_id).await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
     
     // Create SSE stream
     use axum::response::Sse;
@@ -181,7 +185,7 @@ pub async fn chat_stream(
         }
     });
     
-    Ok(Sse::new(event_stream).into_response())
+    Sse::new(event_stream).into_response()
 }
 
 /// List configured endpoints (from database)
