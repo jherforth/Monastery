@@ -323,10 +323,10 @@ pub async fn test_endpoint(
 }
 
 #[derive(Debug, Serialize)]
-struct TestEndpointResponse {
-    endpoint_id: Uuid,
-    is_healthy: bool,
-    message: String,
+pub struct TestEndpointResponse {
+    pub endpoint_id: Uuid,
+    pub is_healthy: bool,
+    pub message: String,
 }
 
 /// List projects
