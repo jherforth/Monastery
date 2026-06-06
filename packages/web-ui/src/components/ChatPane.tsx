@@ -20,7 +20,7 @@ export function ChatPane({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { activeEndpoint } = useAppStore();
+  const { activeEndpoint, theme } = useAppStore();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -83,15 +83,11 @@ export function ChatPane({
           <div className="h-full flex items-center justify-center">
             <div className="text-center max-w-lg px-6">
               {/* Monastery Logo */}
-              <div className="w-16 h-16 bg-monastery-forest rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-monastery-forest/20">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-monastery-lantern">
-                  <path d="M3 21V7l9-4 9 4v14" />
-                  <path d="M3 7l9 4 9-4" />
-                  <path d="M12 11v10" />
-                  <path d="M8 14v4" />
-                  <path d="M16 14v4" />
-                </svg>
-              </div>
+              <img
+                src={theme === 'monastery-dark' ? '/images/logoLight.svg' : '/images/logoDark.svg'}
+                alt="Monastery"
+                className="w-16 h-16 mx-auto mb-6"
+              />
 
               <h1 className="text-2xl font-semibold text-monastery-text-primary mb-2">
                 Welcome to Monastery

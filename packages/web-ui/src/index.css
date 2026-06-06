@@ -32,13 +32,18 @@
 
 /* Light mode theme - Scriptorium */
 [data-theme="scriptorium"] {
-  --bg-primary: #F5F0E8;
+  --bg-primary: #F0F4FA;
   --bg-secondary: #FFFFFF;
-  --bg-tertiary: #F9F5ED;
-  --border-color: #D4C3A3;
-  --text-primary: #1A1A1A;
-  --text-secondary: #4A4A4A;
-  --text-muted: #6B6B6B;
+  --bg-tertiary: #F5F8FC;
+  --border-color: #D0D8E4;
+  --text-primary: #0A1628;
+  --text-secondary: #3A4A5C;
+  --text-muted: #6B7B8D;
+}
+
+[data-theme="scriptorium"] body {
+  background: linear-gradient(180deg, #FFFFFF 0%, #F0F4FA 60%, #E8EEF6 100%);
+  background-attachment: fixed;
 }
 
 * {
