@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Archive, FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown } from 'lucide-react';
+import { Archive, FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
@@ -10,7 +10,9 @@ export function TopBar() {
     activeEndpoint, 
     resourceUsage, 
     toggleSidebar,
-    sidebarCollapsed 
+    togglePreview,
+    sidebarCollapsed,
+    previewCollapsed,
   } = useAppStore();
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -103,6 +105,15 @@ export function TopBar() {
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
+          {/* Preview Toggle */}
+          <button
+            onClick={togglePreview}
+            className="p-2 hover:bg-monastery-dark-surface rounded-lg transition-colors"
+            title={previewCollapsed ? 'Show preview pane' : 'Hide preview pane'}
+          >
+            {previewCollapsed ? <Monitor size={18} /> : <MonitorOff size={18} />}
+          </button>
+
           {/* Resource Monitor */}
           {resourceUsage && (
             <div className="flex items-center gap-3 px-3 py-1.5 text-xs text-monastery-text-secondary">

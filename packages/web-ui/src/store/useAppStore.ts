@@ -23,6 +23,7 @@ interface AppStore extends AppState {
   updateEndpoint: (endpoint: LLMEndpoint) => void;
   setTheme: (theme: 'monastery-dark' | 'scriptorium-light') => void;
   toggleSidebar: () => void;
+  togglePreview: () => void;
   updatePaneLayout: (layout: { chat: number; editor: number; preview: number }) => void;
   setResourceUsage: (usage: { cpu: number; memory: number; gpu?: number }) => void;
   
@@ -45,7 +46,8 @@ export const useAppStore = create<AppStore>()(
       resourceUsage: null,
       integrations: [],
       theme: 'monastery-dark',
-      sidebarCollapsed: false,
+      sidebarCollapsed: true,
+      previewCollapsed: true,
       paneLayout: defaultLayout,
       
       // Snapshot initial state
@@ -92,6 +94,10 @@ export const useAppStore = create<AppStore>()(
         sidebarCollapsed: !state.sidebarCollapsed 
       })),
       
+      togglePreview: () => set((state) => ({ 
+        previewCollapsed: !state.previewCollapsed 
+      })),
+      
       updatePaneLayout: (layout) => set({ paneLayout: layout }),
       
       setResourceUsage: (usage) => set((state) => ({
@@ -116,6 +122,7 @@ export const useAppStore = create<AppStore>()(
         theme: state.theme,
         paneLayout: state.paneLayout,
         sidebarCollapsed: state.sidebarCollapsed,
+        previewCollapsed: state.previewCollapsed,
         endpoints: state.endpoints,
       }),
     }

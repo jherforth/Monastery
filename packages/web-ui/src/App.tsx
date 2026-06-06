@@ -9,7 +9,7 @@ import { useAppStore } from './store/useAppStore';
 import { Message } from './types';
 
 export default function App() {
-  const { sidebarCollapsed, paneLayout, updatePaneLayout } = useAppStore();
+  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout } = useAppStore();
   const [currentFile, setCurrentFile] = useState('');
   const [editorContent, setEditorContent] = useState('// Select a file to edit');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -49,7 +49,7 @@ export default function App() {
       <TopBar />
       
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar */}
+        {/* Left Sidebar — only visible when toggled open */}
         {!sidebarCollapsed && (
           <Sidebar
             files={[
@@ -73,12 +73,12 @@ export default function App() {
           />
         )}
 
-        {/* Main Content Area */}
+        {/* Main Content Area — Chat + Editor (+ Preview when open) */}
         <PanelGroup direction="horizontal" className="flex-1">
-          {/* Chat Pane */}
+          {/* Chat Pane — always visible, fills space when preview is collapsed */}
           <Panel 
-            defaultSize={paneLayout.chat} 
-            minSize={15}
+            defaultSize={previewCollapsed ? 50 : paneLayout.chat} 
+            minSize={20}
             onResize={(size) => updatePaneLayout({ ...paneLayout, chat: size })}
           >
             <ChatPane
@@ -89,11 +89,13 @@ export default function App() {
             />
           </Panel>
 
-          <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+          {!previewCollapsed && (
+            <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+          )}
 
           {/* Code Editor */}
           <Panel 
-            defaultSize={paneLayout.editor} 
+            defaultSize={previewCollapsed ? 50 : paneLayout.editor} 
             minSize={20}
             onResize={(size) => updatePaneLayout({ ...paneLayout, editor: size })}
           >
@@ -122,16 +124,19 @@ export default function App() {
             </div>
           </Panel>
 
-          <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
-
-          {/* Preview/Terminal Pane */}
-          <Panel 
-            defaultSize={paneLayout.preview} 
-            minSize={15}
-            onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
-          >
-            <PreviewPane />
-          </Panel>
+          {/* Preview/Terminal Pane — only visible when toggled open */}
+          {!previewCollapsed && (
+            <>
+              <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+              <Panel 
+                defaultSize={paneLayout.preview} 
+                minSize={15}
+                onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
+              >
+                <PreviewPane />
+              </Panel>
+            </>
+          )}
         </PanelGroup>
       </div>
     </div>

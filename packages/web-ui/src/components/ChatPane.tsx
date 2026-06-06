@@ -73,28 +73,72 @@ export function ChatPane({
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-monastery-text-muted">
-            <div className="text-center max-w-md">
-              <h3 className="text-lg font-medium text-monastery-text-primary mb-2">
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center max-w-lg px-6">
+              {/* Monastery Logo */}
+              <div className="w-16 h-16 bg-monastery-forest rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-monastery-forest/20">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-monastery-lantern">
+                  <path d="M3 21V7l9-4 9 4v14" />
+                  <path d="M3 7l9 4 9-4" />
+                  <path d="M12 11v10" />
+                  <path d="M8 14v4" />
+                  <path d="M16 14v4" />
+                </svg>
+              </div>
+
+              <h1 className="text-2xl font-semibold text-monastery-text-primary mb-2">
                 Welcome to Monastery
-              </h3>
-              <p className="text-sm">
-                Start a conversation with your AI assistant. Ask it to create, edit, or explain code.
+              </h1>
+              <p className="text-sm text-monastery-text-secondary mb-2">
+                Build in silence. Deploy with purpose.
               </p>
-              <div className="mt-6 grid grid-cols-2 gap-2 text-left">
-                <button className="p-3 bg-monastery-dark-surface rounded-lg text-xs hover:bg-monastery-dark-tertiary transition-colors">
-                  "Create a Next.js app with authentication"
+              <p className="text-xs text-monastery-text-muted mb-8 max-w-sm mx-auto leading-relaxed">
+                Your calm, self-hosted sanctuary for AI-assisted coding.
+                Connect an LLM to begin — ask it to create, edit, debug, or deploy applications.
+              </p>
+
+              {/* Quick Start Suggestions */}
+              <div className="grid grid-cols-2 gap-2 text-left max-w-sm mx-auto">
+                <button 
+                  onClick={() => onSendMessage('Create a Next.js app with authentication')}
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                >
+                  <div className="font-medium text-monastery-text-primary mb-0.5">Web App</div>
+                  Create a Next.js app with authentication
                 </button>
-                <button className="p-3 bg-monastery-dark-surface rounded-lg text-xs hover:bg-monastery-dark-tertiary transition-colors">
-                  "Explain this codebase structure"
+                <button 
+                  onClick={() => onSendMessage('Explain how this project structure works')}
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                >
+                  <div className="font-medium text-monastery-text-primary mb-0.5">Understand</div>
+                  Explain this codebase structure
                 </button>
-                <button className="p-3 bg-monastery-dark-surface rounded-lg text-xs hover:bg-monastery-dark-tertiary transition-colors">
-                  "Add tests to the existing module"
+                <button 
+                  onClick={() => onSendMessage('Add unit tests to the existing module')}
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                >
+                  <div className="font-medium text-monastery-text-primary mb-0.5">Testing</div>
+                  Add tests to the existing module
                 </button>
-                <button className="p-3 bg-monastery-dark-surface rounded-lg text-xs hover:bg-monastery-dark-tertiary transition-colors">
-                  "Deploy this to my homelab"
+                <button 
+                  onClick={() => onSendMessage('Deploy this project to my homelab server')}
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                >
+                  <div className="font-medium text-monastery-text-primary mb-0.5">Deploy</div>
+                  Deploy this to my homelab
                 </button>
               </div>
+
+              {/* First Steps Hint */}
+              {!activeEndpoint && (
+                <div className="mt-8 p-3 bg-amber-400/10 border border-amber-400/20 rounded-xl max-w-sm mx-auto">
+                  <p className="text-xs text-amber-300 font-medium mb-1">First step</p>
+                  <p className="text-xs text-amber-200/80">
+                    Click <strong>No LLM connected</strong> in the top bar or open{' '}
+                    <strong>Settings → LLM Endpoints</strong> to connect your AI backend.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         ) : (

@@ -72,6 +72,7 @@ export interface AppState {
   integrations: HomelabIntegration[];
   theme: 'monastery-dark' | 'scriptorium-light';
   sidebarCollapsed: boolean;
+  previewCollapsed: boolean;
   paneLayout: {
     chat: number;
     editor: number;
