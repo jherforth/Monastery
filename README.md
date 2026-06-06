@@ -150,8 +150,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 Contributions welcome! Please read our contributing guidelines before submitting PRs.
 
-<img width="1918" height="996" alt="Screenshot 2026-06-06 104803" src="https://github.com/user-attachments/assets/48ba2028-3821-4058-bd2f-9167d45b6d3b" />
-
+<img width="1911" height="993" alt="Screenshot 2026-06-06 151530" src="https://github.com/user-attachments/assets/b3d57404-eb06-429f-b234-47a632dd8958" />
 
 ---
 
