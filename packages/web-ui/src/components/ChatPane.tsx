@@ -69,9 +69,12 @@ export function ChatPane({
   };
 
   return (
-    <div className="flex flex-col h-full bg-monastery-dark-bg">
+    <div className="flex flex-col h-full bg-monastery-dark-bg relative overflow-hidden">
+      {/* Monastery Wireframe Background */}
+      <MonasteryBackground />
+      
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4 relative z-10">
         {messages.length === 0 ? (
           <div className="h-full flex items-center justify-center">
             <div className="text-center max-w-lg px-6">
@@ -259,6 +262,168 @@ export function ChatPane({
           )}
         </div>
       </form>
+    </div>
+  );
+}
+
+// ============================================================
+// Monastery Wireframe Background
+// ============================================================
+
+function MonasteryBackground() {
+  return (
+    <div className="monastery-wireframe absolute inset-0 overflow-hidden opacity-100">
+      <style>{`
+        @keyframes wireframePulse1 {
+          0%, 100% { opacity: 0.05; stroke-dashoffset: 0; }
+          30% { opacity: 0.15; }
+          60% { opacity: 0.07; stroke-dashoffset: -200; }
+        }
+        @keyframes wireframePulse2 {
+          0%, 100% { opacity: 0.04; stroke-dashoffset: 0; }
+          40% { opacity: 0.12; }
+          70% { opacity: 0.06; stroke-dashoffset: -150; }
+        }
+        @keyframes wireframePulse3 {
+          0%, 100% { opacity: 0.03; }
+          25% { opacity: 0.10; stroke-dashoffset: -100; }
+          55% { opacity: 0.05; }
+          85% { opacity: 0.12; stroke-dashoffset: -250; }
+        }
+        @keyframes wireframeGlow {
+          0%, 100% { stop-opacity: 0.01; }
+          50% { stop-opacity: 0.07; }
+        }
+      `}</style>
+
+      <svg
+        viewBox="0 0 800 600"
+        preserveAspectRatio="xMidYMid slice"
+        className="absolute inset-0 w-full h-full"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <defs>
+          {/* Subtle radial glow gradients */}
+          <radialGradient id="glow1" cx="50%" cy="30%" r="40%">
+            <stop offset="0%" stopColor="#F4A460" stopOpacity="0.06" className="glow-stop">
+              <animate attributeName="stop-opacity" values="0.02;0.08;0.02" dur="7s" repeatCount="indefinite" />
+            </stop>
+            <stop offset="100%" stopColor="#F4A460" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="glow2" cx="20%" cy="50%" r="30%">
+            <stop offset="0%" stopColor="#F4A460" stopOpacity="0.04">
+              <animate attributeName="stop-opacity" values="0.01;0.06;0.01" dur="9s" repeatCount="indefinite" />
+            </stop>
+            <stop offset="100%" stopColor="#F4A460" stopOpacity="0" />
+          </radialGradient>
+          <radialGradient id="glow3" cx="80%" cy="50%" r="30%">
+            <stop offset="0%" stopColor="#F4A460" stopOpacity="0.04">
+              <animate attributeName="stop-opacity" values="0.01;0.06;0.01" dur="11s" repeatCount="indefinite" />
+            </stop>
+            <stop offset="100%" stopColor="#F4A460" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+
+        {/* Background glow rectangles */}
+        <rect width="800" height="600" fill="url(#glow1)" />
+        <rect width="800" height="600" fill="url(#glow2)" />
+        <rect width="800" height="600" fill="url(#glow3)" />
+
+        <g stroke="#1E6B4E" strokeWidth="0.8" fill="none" opacity="0.5">
+          {/* === CEILING VAULTS === */}
+          {/* Central vault ribs converging upward */}
+          <path d="M400,180 L250,0" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite' }} />
+          <path d="M400,180 L550,0" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '0.5s' }} />
+          <path d="M400,180 L340,0" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite' }} />
+          <path d="M400,180 L460,0" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '0.7s' }} />
+          <path d="M400,180 L400,0" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite' }} />
+
+          {/* Horizontal ceiling braces */}
+          <line x1="220" y1="60" x2="580" y2="60" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '2s' }} />
+          <line x1="280" y1="120" x2="520" y2="120" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '3s' }} />
+
+          {/* === CENTRAL ARCH (tall pointed arch) === */}
+          <path d="M320,450 L320,240 Q320,160 400,140 Q480,160 480,240 L480,450"
+            className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite' }} />
+          {/* Inner arch line */}
+          <path d="M340,450 L340,250 Q340,180 400,165 Q460,180 460,250 L460,450"
+            className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '1.5s' }} />
+          {/* Arch keystone */}
+          <circle cx="400" cy="142" r="6" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite' }} />
+
+          {/* === LEFT ARCH === */}
+          <path d="M140,450 L140,340 Q140,300 200,280 Q260,300 260,340 L260,450"
+            className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1s' }} />
+          <path d="M155,450 L155,345 Q155,312 200,298 Q245,312 245,345 L245,450"
+            className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '2.5s' }} />
+
+          {/* === RIGHT ARCH === */}
+          <path d="M540,450 L540,340 Q540,300 600,280 Q660,300 660,340 L660,450"
+            className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '3s' }} />
+          <path d="M555,450 L555,345 Q555,312 600,298 Q645,312 645,345 L645,450"
+            className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '4s' }} />
+
+          {/* === PILLARS / COLUMNS === */}
+          <line x1="320" y1="180" x2="320" y2="500" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '1s' }} />
+          <line x1="480" y1="180" x2="480" y2="500" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '2s' }} />
+          <line x1="140" y1="300" x2="140" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '3.5s' }} />
+          <line x1="260" y1="300" x2="260" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '4s' }} />
+          <line x1="540" y1="300" x2="540" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '2.5s' }} />
+          <line x1="660" y1="300" x2="660" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '5s' }} />
+
+          {/* Column capitals (decorative tops) */}
+          <path d="M310,185 L330,175 L320,165" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '1s' }} />
+          <path d="M490,185 L470,175 L480,165" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '1.3s' }} />
+
+          {/* === FLOOR - Triangular mesh === */}
+          <g opacity="0.3">
+            {/* Row 1 */}
+            <line x1="100" y1="500" x2="250" y2="460" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '0.5s' }} />
+            <line x1="250" y1="460" x2="400" y2="500" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '0.8s' }} />
+            <line x1="400" y1="500" x2="550" y2="460" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '1.1s' }} />
+            <line x1="550" y1="460" x2="700" y2="500" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '1.4s' }} />
+
+            {/* Row 2 */}
+            <line x1="70" y1="540" x2="200" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1s' }} />
+            <line x1="200" y1="500" x2="330" y2="540" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1.3s' }} />
+            <line x1="330" y1="540" x2="470" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1.6s' }} />
+            <line x1="470" y1="500" x2="600" y2="540" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1.9s' }} />
+            <line x1="600" y1="540" x2="730" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '2.2s' }} />
+
+            {/* Cross-lines for triangular mesh */}
+            <line x1="100" y1="500" x2="200" y2="500" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '0.3s' }} />
+            <line x1="250" y1="460" x2="330" y2="540" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '0.6s' }} />
+            <line x1="400" y1="500" x2="470" y2="500" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '0.9s' }} />
+            <line x1="550" y1="460" x2="600" y2="540" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '1.2s' }} />
+            <line x1="700" y1="500" x2="730" y2="500" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '1.5s' }} />
+
+            {/* Floor edge lines */}
+            <line x1="50" y1="500" x2="750" y2="500" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '0.5s' }} />
+            <line x1="50" y1="540" x2="750" y2="540" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1s' }} />
+            <line x1="50" y1="580" x2="750" y2="580" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1.5s' }} />
+          </g>
+
+          {/* === ARCH DETAIL LINES (rose window / tracery suggestion) === */}
+          <g opacity="0.25">
+            <circle cx="400" cy="220" r="25" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '2s' }} />
+            <circle cx="400" cy="220" r="12" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '0.5s' }} />
+            <line x1="388" y1="220" x2="412" y2="220" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1s' }} />
+            <line x1="400" y1="208" x2="400" y2="232" className="pulse-2" style={{ animation: 'wireframePulse2 11s ease-in-out infinite', animationDelay: '1.3s' }} />
+            {/* Small arch tracery */}
+            <path d="M375,235 Q375,200 400,195 Q425,200 425,235" className="pulse-1" style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: '2s' }} />
+            <path d="M385,235 Q385,210 400,207 Q415,210 415,235" className="pulse-3" style={{ animation: 'wireframePulse3 13s ease-in-out infinite', animationDelay: '2.5s' }} />
+          </g>
+
+          {/* === WALL DETAILS - horizontal courses === */}
+          <g opacity="0.2">
+            {[300, 340, 380, 420].map((y, i) => (
+              <line key={`hl-${y}`} x1="80" y1={y} x2="720" y2={y}
+                className="pulse-1"
+                style={{ animation: 'wireframePulse1 8s ease-in-out infinite', animationDelay: `${i * 0.8}s` }} />
+            ))}
+          </g>
+        </g>
+      </svg>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Archive, FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff } from 'lucide-react';
+import { FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
@@ -33,7 +33,27 @@ export function TopBar() {
           
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-monastery-forest rounded-lg flex items-center justify-center">
-              <Archive size={18} className="text-monastery-lantern" />
+              {/* Monastery Arch + Lantern Logo */}
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                {/* Arch */}
+                <path d="M6 19V10C6 10 7 5 12 5C17 5 18 10 18 10V19"
+                  stroke="#F4A460" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                {/* Inner arch */}
+                <path d="M8.5 19V11C8.5 11 9 7.5 12 7.5C15 7.5 15.5 11 15.5 11V19"
+                  stroke="#F4A460" strokeWidth="0.8" strokeLinecap="round" strokeLinejoin="round" opacity="0.5" />
+                {/* Lantern chain */}
+                <line x1="12" y1="5" x2="12" y2="3" stroke="#F4A460" strokeWidth="0.8" strokeLinecap="round" />
+                {/* Lantern body */}
+                <rect x="9.5" y="3" width="5" height="6" rx="1" stroke="#F4A460" strokeWidth="1.2" />
+                {/* Lantern glow */}
+                <circle cx="12" cy="6" r="2.5" fill="#F4A460" opacity="0.3" />
+                <circle cx="12" cy="6" r="1" fill="#F4A460" opacity="0.6" />
+                {/* Pillar bases */}
+                <line x1="6" y1="19" x2="6" y2="21" stroke="#F4A460" strokeWidth="1.2" strokeLinecap="round" />
+                <line x1="18" y1="19" x2="18" y2="21" stroke="#F4A460" strokeWidth="1.2" strokeLinecap="round" />
+                {/* Floor line */}
+                <line x1="4" y1="21" x2="20" y2="21" stroke="#F4A460" strokeWidth="0.8" strokeLinecap="round" opacity="0.6" />
+              </svg>
             </div>
             <span className="font-semibold text-lg">Monastery</span>
             {currentProject && (
