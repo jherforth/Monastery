@@ -85,7 +85,7 @@ pub async fn chat_stream(
     Path(model_id): Path<String>,
     Json(request): Json<ChatRequest>,
     axum::extract::Query(params): axum::extract::Query<ChatQueryParams>,
-) -> Result<Response, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     use futures::StreamExt;
     
     // Get endpoint from query param or use default

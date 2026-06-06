@@ -239,7 +239,6 @@ impl SnapshotService {
         request: RestoreSnapshotRequest,
     ) -> Result<RestoreSnapshotResponse, DbError> {
         let errors = Vec::new();
-        let mut restored_count = 0u32;
         let failed_count = 0u32;
         let mut backup_snapshot_id: Option<Uuid> = None;
         
@@ -294,7 +293,7 @@ impl SnapshotService {
         
         tx.commit().await?;
         
-        restored_count = files.len() as u32;
+        let restored_count = files.len() as u32;
         
         Ok(RestoreSnapshotResponse {
             success: true,
