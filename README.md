@@ -1,3 +1,4 @@
+<img width="500" height="500" alt="logo" class="center" src="https://github.com/user-attachments/assets/2e236f99-6569-4089-b0cb-d5e2d465d0d8" />
 # Monastery
 
 **Build in silence. Deploy with purpose.**
