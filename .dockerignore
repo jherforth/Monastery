@@ -6,8 +6,8 @@ target/
 packages/web-ui/node_modules/
 packages/web-ui/dist/
 
-# Docker
-docker/
+# NOTE: docker/ directory is intentionally NOT excluded — it contains
+# Dockerfile, nginx.conf, and entrypoint.sh needed for the build context.
 
 # Data
 data/
