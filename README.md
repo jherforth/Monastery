@@ -1,4 +1,6 @@
-<img width="500" height="500" alt="logo" class="center" src="https://github.com/user-attachments/assets/2e236f99-6569-4089-b0cb-d5e2d465d0d8" />
+<p align="center">
+  <img width="200" height="200" alt="logo" src="https://github.com/user-attachments/assets/2e236f99-6569-4089-b0cb-d5e2d465d0d8" />
+</p>
 
 # Monastery
 
