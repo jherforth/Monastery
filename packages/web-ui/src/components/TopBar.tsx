@@ -101,7 +101,6 @@ export function TopBar() {
             </button>
           )}
         </div>
-        </div>
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
