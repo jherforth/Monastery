@@ -1,12 +1,12 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useState } from 'react';
-import { TopBar } from './TopBar';
-import { Sidebar } from './Sidebar';
-import { ChatPane } from './ChatPane';
-import { CodeEditor } from './CodeEditor';
-import { PreviewPane } from './PreviewPane';
-import { useAppStore } from '../store/useAppStore';
-import { Message } from '../types';
+import { TopBar } from './components/TopBar';
+import { Sidebar } from './components/Sidebar';
+import { ChatPane } from './components/ChatPane';
+import { CodeEditor } from './components/CodeEditor';
+import { PreviewPane } from './components/PreviewPane';
+import { useAppStore } from './store/useAppStore';
+import { Message } from './types';
 
 export default function App() {
   const { sidebarCollapsed, paneLayout, updatePaneLayout } = useAppStore();
