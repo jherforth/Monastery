@@ -31,7 +31,7 @@
 }
 
 /* Light mode theme - Scriptorium */
-[data-theme="scriptorium"] {
+[data-theme="scriptorium-light"] {
   --bg-primary: #F0F4FA;
   --bg-secondary: #FFFFFF;
   --bg-tertiary: #F5F8FC;
@@ -41,7 +41,7 @@
   --text-muted: #6B7B8D;
 }
 
-[data-theme="scriptorium"] body {
+[data-theme="scriptorium-light"] body {
   background: linear-gradient(180deg, #FFFFFF 0%, #F0F4FA 60%, #E8EEF6 100%);
   background-attachment: fixed;
 }

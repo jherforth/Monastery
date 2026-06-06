@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { GitBranch, Github, Gitlab, Server, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, ChevronRight } from 'lucide-react';
+import { GitBranch, Github, Gitlab, Server, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, ChevronRight, FolderGit2, Upload, Download, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useGitForge, GitForgeType, ConnectForgeRequest, GitConnection, GitRepo } from '../hooks/useGitForge';
 
 type WizardStep = 'select' | 'url' | 'token' | 'verify';
+type ViewMode = 'list' | 'browse' | 'push';
 
 interface ForgeTemplate {
   type: GitForgeType;
@@ -45,7 +46,7 @@ const FORGE_TEMPLATES: ForgeTemplate[] = [
 ];
 
 export function GitForgeSetup() {
-  const { connections, connectForge, deleteConnection, testConnection, listRepos, pushProject } = useGitForge();
+  const { connections, connectForge, deleteConnection, testConnection, listRepos, pushProject, cloneRepo } = useGitForge();
   const [step, setStep] = useState<WizardStep>('select');
   const [selectedForge, setSelectedForge] = useState<ForgeTemplate | null>(null);
   const [forgeUrl, setForgeUrl] = useState('');
@@ -55,6 +56,24 @@ export function GitForgeSetup() {
   const [testResult, setTestResult] = useState<{ healthy: boolean; message: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Repo browser state
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [activeConnection, setActiveConnection] = useState<GitConnection | null>(null);
+  const [repos, setRepos] = useState<GitRepo[]>([]);
+  const [loadingRepos, setLoadingRepos] = useState(false);
+  const [repoError, setRepoError] = useState<string | null>(null);
+  const [cloningId, setCloningId] = useState<number | null>(null);
+  const [cloneResult, setCloneResult] = useState<string | null>(null);
+
+  // Push form state
+  const [pushRepoName, setPushRepoName] = useState('');
+  const [pushDescription, setPushDescription] = useState('');
+  const [pushPrivate, setPushPrivate] = useState(true);
+  const [pushBranch, setPushBranch] = useState('main');
+  const [pushMessage, setPushMessage] = useState('Initial commit from Monastery');
+  const [pushing, setPushing] = useState(false);
+  const [pushResult, setPushResult] = useState<string | null>(null);
 
   const resetWizard = () => {
     setStep('select');
@@ -119,33 +138,146 @@ export function GitForgeSetup() {
     }
   };
 
+  const handleBrowseRepos = async (connection: GitConnection) => {
+    setActiveConnection(connection);
+    setViewMode('browse');
+    setLoadingRepos(true);
+    setRepoError(null);
+    setRepos([]);
+    try {
+      const repoList = await listRepos(connection.id);
+      setRepos(repoList);
+    } catch (e: any) {
+      setRepoError(e.message || 'Failed to load repositories');
+    } finally {
+      setLoadingRepos(false);
+    }
+  };
+
+  const handleClone = async (repo: GitRepo) => {
+    if (!activeConnection) return;
+    setCloningId(repo.id);
+    setCloneResult(null);
+    try {
+      const result = await cloneRepo({
+        connection_id: activeConnection.id,
+        repo_full_name: repo.full_name,
+      });
+      setCloneResult(`Cloned "${result.project_name}" to ${result.project_path}`);
+    } catch (e: any) {
+      setCloneResult(`Clone failed: ${e.message}`);
+    } finally {
+      setCloningId(null);
+    }
+  };
+
+  const handleOpenPush = (connection: GitConnection) => {
+    setActiveConnection(connection);
+    setViewMode('push');
+    setPushResult(null);
+    setPushRepoName('');
+    setPushDescription('');
+    setPushPrivate(true);
+    setPushBranch('main');
+    setPushMessage('Initial commit from Monastery');
+  };
+
+  const handlePush = async () => {
+    if (!activeConnection || !pushRepoName.trim()) return;
+    setPushing(true);
+    setPushResult(null);
+    try {
+      const result = await pushProject({
+        connection_id: activeConnection.id,
+        repo_name: pushRepoName.trim(),
+        repo_description: pushDescription.trim() || undefined,
+        private: pushPrivate,
+        branch: pushBranch.trim() || 'main',
+        commit_message: pushMessage.trim() || undefined,
+      });
+      setPushResult(`Pushed to ${result.repo_url} (branch: ${result.branch})`);
+    } catch (e: any) {
+      setPushResult(`Push failed: ${e.message}`);
+    } finally {
+      setPushing(false);
+    }
+  };
+
+  const backToList = () => {
+    setViewMode('list');
+    setActiveConnection(null);
+    setRepos([]);
+    setRepoError(null);
+    setCloneResult(null);
+    setPushResult(null);
+  };
+
   return (
     <div className="space-y-6">
-      {/* Connected Forges List */}
-      <div>
-        <h3 className="text-sm font-medium text-monastery-text-secondary uppercase tracking-wider mb-3">
-          Connected Forges
-        </h3>
-        {connections.length === 0 ? (
-          <p className="text-sm text-monastery-text-muted italic">
-            No Git forges connected yet. Connect one below to push and pull your AI-generated projects.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            {connections.map((conn) => (
-              <ConnectionCard
-                key={conn.id}
-                connection={conn}
-                onDelete={() => deleteConnection(conn.id)}
-                onTest={() => handleTestConnection(conn.id)}
-                testResult={conn.id === testResult ? undefined /* not tracking per-id */ : undefined}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Repo Browser View */}
+      {viewMode === 'browse' && activeConnection && (
+        <RepoBrowser
+          connection={activeConnection}
+          repos={repos}
+          loading={loadingRepos}
+          error={repoError}
+          cloningId={cloningId}
+          cloneResult={cloneResult}
+          onClone={handleClone}
+          onBack={backToList}
+        />
+      )}
 
-      {/* Wizard */}
+      {/* Push Form View */}
+      {viewMode === 'push' && activeConnection && (
+        <PushForm
+          connection={activeConnection}
+          repoName={pushRepoName}
+          onRepoNameChange={setPushRepoName}
+          description={pushDescription}
+          onDescriptionChange={setPushDescription}
+          isPrivate={pushPrivate}
+          onPrivateChange={setPushPrivate}
+          branch={pushBranch}
+          onBranchChange={setPushBranch}
+          commitMessage={pushMessage}
+          onCommitMessageChange={setPushMessage}
+          pushing={pushing}
+          pushResult={pushResult}
+          onPush={handlePush}
+          onBack={backToList}
+        />
+      )}
+
+      {/* Default: Connection List + Wizard */}
+      {viewMode === 'list' && (
+        <>
+          {/* Connected Forges List */}
+          <div>
+            <h3 className="text-sm font-medium text-monastery-text-secondary uppercase tracking-wider mb-3">
+              Connected Forges
+            </h3>
+            {connections.length === 0 ? (
+              <p className="text-sm text-monastery-text-muted italic">
+                No Git forges connected yet. Connect one below to push and pull your AI-generated projects.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {connections.map((conn) => (
+                  <ConnectionCard
+                    key={conn.id}
+                    connection={conn}
+                    onDelete={() => deleteConnection(conn.id)}
+                    onTest={() => handleTestConnection(conn.id)}
+                    onBrowse={() => handleBrowseRepos(conn)}
+                    onPush={() => handleOpenPush(conn)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Wizard */}
       <div className="border-t border-monastery-dark-border pt-4">
         <h3 className="text-sm font-medium text-monastery-text-secondary uppercase tracking-wider mb-3">
           Connect a New Forge
@@ -312,10 +444,14 @@ function ConnectionCard({
   connection,
   onDelete,
   onTest,
+  onBrowse,
+  onPush,
 }: {
   connection: GitConnection;
   onDelete: () => void;
   onTest: () => void;
+  onBrowse: () => void;
+  onPush: () => void;
   testResult?: { healthy: boolean; message: string };
 }) {
   const ForgeIcon = connection.forge_type === 'gitlab' ? Gitlab
@@ -336,6 +472,20 @@ function ConnectionCard({
         </div>
       </div>
       <button
+        onClick={onBrowse}
+        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-pine-green transition-colors"
+        title="Browse repositories"
+      >
+        <FolderGit2 className="w-4 h-4" />
+      </button>
+      <button
+        onClick={onPush}
+        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-lantern-gold transition-colors"
+        title="Push project to forge"
+      >
+        <Upload className="w-4 h-4" />
+      </button>
+      <button
         onClick={onTest}
         className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-lantern-gold transition-colors"
         title="Test connection"
@@ -349,6 +499,227 @@ function ConnectionCard({
       >
         <Trash2 className="w-4 h-4" />
       </button>
+    </div>
+  );
+}
+
+// ============================================================
+// Repo Browser — list repos for a connection and clone
+// ============================================================
+
+function RepoBrowser({
+  connection,
+  repos,
+  loading,
+  error,
+  cloningId,
+  cloneResult,
+  onClone,
+  onBack,
+}: {
+  connection: GitConnection;
+  repos: GitRepo[];
+  loading: boolean;
+  error: string | null;
+  cloningId: number | null;
+  cloneResult: string | null;
+  onClone: (repo: GitRepo) => void;
+  onBack: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="p-1 hover:bg-monastery-dark-surface rounded transition-colors">
+          <ArrowLeft className="w-4 h-4 text-monastery-text-secondary" />
+        </button>
+        <div>
+          <h3 className="text-sm font-medium text-monastery-text-primary">{connection.name} — Repositories</h3>
+          <p className="text-xs text-monastery-text-muted">{connection.base_url}</p>
+        </div>
+      </div>
+
+      {cloneResult && (
+        <div className={`p-3 rounded-lg text-xs ${
+          cloneResult.startsWith('Clone failed') ? 'bg-red-400/10 text-red-400' : 'bg-green-400/10 text-green-400'
+        }`}>
+          {cloneResult}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-8">
+          <Loader2 className="w-5 h-5 animate-spin text-monastery-text-muted" />
+          <span className="ml-2 text-sm text-monastery-text-muted">Loading repositories...</span>
+        </div>
+      ) : error ? (
+        <div className="flex items-center gap-2 text-xs text-red-400 bg-red-400/10 rounded-lg p-3">
+          <XCircle className="w-4 h-4 flex-shrink-0" />
+          {error}
+        </div>
+      ) : repos.length === 0 ? (
+        <p className="text-sm text-monastery-text-muted italic py-4">No repositories found on this forge.</p>
+      ) : (
+        <div className="space-y-1 max-h-64 overflow-y-auto">
+          {repos.map((repo) => (
+            <div
+              key={repo.id}
+              className="flex items-center gap-3 p-2.5 rounded-lg bg-monastery-dark-surface border border-monastery-dark-border hover:border-monastery-pine-green transition-colors"
+            >
+              <FolderGit2 className="w-4 h-4 text-monastery-text-muted flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-monastery-text-primary truncate">{repo.full_name}</div>
+                <div className="text-xs text-monastery-text-muted truncate">
+                  {repo.private ? <EyeOff className="w-3 h-3 inline mr-1" /> : <Eye className="w-3 h-3 inline mr-1" />}
+                  {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
+                  {repo.description && ` · ${repo.description}`}
+                </div>
+              </div>
+              <button
+                onClick={() => onClone(repo)}
+                disabled={cloningId === repo.id}
+                className="px-2.5 py-1.5 text-xs bg-monastery-pine-green text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0 transition-colors"
+              >
+                {cloningId === repo.id ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <Download className="w-3 h-3" />
+                )}
+                Clone
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Push Form — push current project to a forge
+// ============================================================
+
+function PushForm({
+  connection,
+  repoName,
+  onRepoNameChange,
+  description,
+  onDescriptionChange,
+  isPrivate,
+  onPrivateChange,
+  branch,
+  onBranchChange,
+  commitMessage,
+  onCommitMessageChange,
+  pushing,
+  pushResult,
+  onPush,
+  onBack,
+}: {
+  connection: GitConnection;
+  repoName: string;
+  onRepoNameChange: (v: string) => void;
+  description: string;
+  onDescriptionChange: (v: string) => void;
+  isPrivate: boolean;
+  onPrivateChange: (v: boolean) => void;
+  branch: string;
+  onBranchChange: (v: string) => void;
+  commitMessage: string;
+  onCommitMessageChange: (v: string) => void;
+  pushing: boolean;
+  pushResult: string | null;
+  onPush: () => void;
+  onBack: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="p-1 hover:bg-monastery-dark-surface rounded transition-colors">
+          <ArrowLeft className="w-4 h-4 text-monastery-text-secondary" />
+        </button>
+        <div>
+          <h3 className="text-sm font-medium text-monastery-text-primary">Push to {connection.name}</h3>
+          <p className="text-xs text-monastery-text-muted">Create a new repo and push your project</p>
+        </div>
+      </div>
+
+      {pushResult && (
+        <div className={`p-3 rounded-lg text-xs ${
+          pushResult.startsWith('Push failed') ? 'bg-red-400/10 text-red-400' : 'bg-green-400/10 text-green-400'
+        }`}>
+          {pushResult}
+        </div>
+      )}
+
+      <div className="space-y-3">
+        <div>
+          <label className="block text-xs font-medium text-monastery-text-secondary mb-1">Repository Name</label>
+          <input
+            type="text"
+            value={repoName}
+            onChange={(e) => onRepoNameChange(e.target.value)}
+            placeholder="my-monastery-project"
+            className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine-green focus:outline-none"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-monastery-text-secondary mb-1">Description (optional)</label>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => onDescriptionChange(e.target.value)}
+            placeholder="Created with Monastery"
+            className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine-green focus:outline-none"
+          />
+        </div>
+
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 text-xs text-monastery-text-secondary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={isPrivate}
+              onChange={(e) => onPrivateChange(e.target.checked)}
+              className="rounded border-monastery-dark-border bg-monastery-dark-bg"
+            />
+            Private repository
+          </label>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-monastery-text-secondary mb-1">Branch</label>
+            <input
+              type="text"
+              value={branch}
+              onChange={(e) => onBranchChange(e.target.value)}
+              className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine-green focus:outline-none"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-monastery-text-secondary mb-1">Commit Message</label>
+            <input
+              type="text"
+              value={commitMessage}
+              onChange={(e) => onCommitMessageChange(e.target.value)}
+              className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine-green focus:outline-none"
+            />
+          </div>
+        </div>
+
+        <button
+          onClick={onPush}
+          disabled={!repoName.trim() || pushing}
+          className="w-full px-4 py-2.5 text-sm bg-monastery-pine-green text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
+        >
+          {pushing ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Upload className="w-4 h-4" />
+          )}
+          {pushing ? 'Pushing...' : 'Create Repo & Push'}
+        </button>
+      </div>
     </div>
   );
 }
