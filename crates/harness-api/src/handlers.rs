@@ -1,7 +1,7 @@
 //! API route handlers
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, State, Query},
     Json,
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -83,7 +83,7 @@ pub async fn chat_stream(
     State(state): State<AppState>,
     Path(model_id): Path<String>,
     Json(request): Json<ChatRequest>,
-    axum::extract::Query(params): axum::extract::Query<ChatQueryParams>,
+    Query(params): Query<ChatQueryParams>,
 ) -> impl IntoResponse {
     use futures::StreamExt;
     
@@ -522,7 +522,7 @@ pub struct RestoreSnapshotBody {
 /// Get diff between two snapshots
 pub async fn diff_snapshots(
     Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
-    axum::extract::Query(params): axum::extract::Query<DiffSnapshotsParams>,
+    Query(params): Query<DiffSnapshotsParams>,
     State(state): State<AppState>,
 ) -> Result<Json<harness_core::SnapshotDiff>, ApiError> {
     
