@@ -19,7 +19,8 @@ docker compose build --no-cache
 echo "[2/2] Starting Monastery..."
 docker compose up -d
 
-echo "[3/3] Cleaning up unused build layers..."
+echo "[3/3] Cleaning up build artifacts..."
+docker builder prune -a -f 2>/dev/null || true
 docker image prune -f 2>/dev/null || true
 
 echo ""
