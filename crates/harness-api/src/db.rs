@@ -5,9 +5,18 @@ use std::path::Path;
 
 /// Initialize the SQLite database with required tables
 pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
+    // Ensure parent directory exists
+    if let Some(parent) = database_path.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| sqlx::Error::Io(e))?;
+    }
+
+    // Build SQLite connection string with create-if-not-exists mode
+    let db_url = format!("sqlite:{}?mode=rwc", database_path.to_str().unwrap());
+
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(database_path.to_str().unwrap())
+        .connect(&db_url)
         .await?;
     
     // Create tables
