@@ -79,12 +79,11 @@ pub async fn list_models(
 }
 
 /// Stream chat completion
-#[axum::debug_handler]
 pub async fn chat_stream(
     State(state): State<AppState>,
     Path(model_id): Path<String>,
-    Json(request): Json<ChatRequest>,
     Query(params): Query<ChatQueryParams>,
+    Json(request): Json<ChatRequest>,
 ) -> Response {
     use futures::StreamExt;
     
