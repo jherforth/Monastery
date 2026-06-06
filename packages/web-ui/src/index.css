@@ -176,3 +176,19 @@ code, pre, .monaco-editor {
 .monastery-wireframe .glow-stop {
   animation: wireframeGlow 6s ease-in-out infinite;
 }
+
+/* Panel slide-in animations */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slideInRight {
+  animation: slideInRight 250ms ease-out;
+}

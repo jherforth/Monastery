@@ -49,35 +49,41 @@ export default function App() {
       <TopBar />
       
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Sidebar — only visible when toggled open */}
-        {!sidebarCollapsed && (
-          <Sidebar
-            files={[
-              {
-                name: 'src',
-                path: '/src',
-                type: 'directory',
-                children: [
-                  { name: 'App.tsx', path: '/src/App.tsx', type: 'file', syncStatus: 'modified' as const },
-                  { name: 'index.css', path: '/src/index.css', type: 'file', syncStatus: 'synced' as const },
-                  { name: 'main.tsx', path: '/src/main.tsx', type: 'file', syncStatus: 'new' as const },
-                ],
-              },
-              { name: 'package.json', path: '/package.json', type: 'file', syncStatus: 'synced' as const },
-              { name: 'README.md', path: '/README.md', type: 'file', syncStatus: 'synced' as const },
-            ]}
-            onSelectFile={(path) => {
-              setCurrentFile(path);
-              setEditorContent(`// Content of ${path}\nconsole.log("Hello from Monastery");`);
-            }}
-          />
-        )}
+        {/* Left Sidebar — slides in/out with CSS transition */}
+        <div
+          className={`transition-all duration-300 ease-in-out overflow-hidden ${
+            sidebarCollapsed ? 'w-0 border-r-0' : 'w-64 border-r border-monastery-dark-border'
+          }`}
+        >
+          <div className="w-64 h-full flex-shrink-0">
+            <Sidebar
+              files={[
+                {
+                  name: 'src',
+                  path: '/src',
+                  type: 'directory',
+                  children: [
+                    { name: 'App.tsx', path: '/src/App.tsx', type: 'file', syncStatus: 'modified' as const },
+                    { name: 'index.css', path: '/src/index.css', type: 'file', syncStatus: 'synced' as const },
+                    { name: 'main.tsx', path: '/src/main.tsx', type: 'file', syncStatus: 'new' as const },
+                  ],
+                },
+                { name: 'package.json', path: '/package.json', type: 'file', syncStatus: 'synced' as const },
+                { name: 'README.md', path: '/README.md', type: 'file', syncStatus: 'synced' as const },
+              ]}
+              onSelectFile={(path) => {
+                setCurrentFile(path);
+                setEditorContent(`// Content of ${path}\nconsole.log("Hello from Monastery");`);
+              }}
+            />
+          </div>
+        </div>
 
         {/* Main Content Area — Chat + Editor (+ Preview when open) */}
         <PanelGroup direction="horizontal" className="flex-1">
-          {/* Chat Pane — always visible, fills space when preview is collapsed */}
+          {/* Chat Pane — always visible */}
           <Panel 
-            defaultSize={previewCollapsed ? 50 : paneLayout.chat} 
+            defaultSize={sidebarCollapsed ? (previewCollapsed ? 100 : paneLayout.chat) : paneLayout.chat}
             minSize={20}
             onResize={(size) => updatePaneLayout({ ...paneLayout, chat: size })}
           >
@@ -89,51 +95,54 @@ export default function App() {
             />
           </Panel>
 
-          {!previewCollapsed && (
-            <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+          {/* Code Editor — only visible when sidebar is open */}
+          {!sidebarCollapsed && (
+            <>
+              <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+              <Panel 
+                defaultSize={previewCollapsed ? 100 - paneLayout.chat : paneLayout.editor}
+                minSize={20}
+                onResize={(size) => updatePaneLayout({ ...paneLayout, editor: size })}
+              >
+                <div className="h-full bg-monastery-dark-surface flex flex-col animate-slideInRight">
+                  <div className="flex items-center justify-between px-3 py-2 border-b border-monastery-dark-border">
+                    <span className="text-xs font-medium text-monastery-text-secondary">
+                      {currentFile || 'No file selected'}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                        Explain
+                      </button>
+                      <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                        Refactor
+                      </button>
+                      <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                        Add Tests
+                      </button>
+                    </div>
+                  </div>
+                  <CodeEditor
+                    value={editorContent}
+                    language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
+                    onChange={setEditorContent}
+                  />
+                </div>
+              </Panel>
+            </>
           )}
 
-          {/* Code Editor */}
-          <Panel 
-            defaultSize={previewCollapsed ? 50 : paneLayout.editor} 
-            minSize={20}
-            onResize={(size) => updatePaneLayout({ ...paneLayout, editor: size })}
-          >
-            <div className="h-full bg-monastery-dark-surface border-x border-monastery-dark-border flex flex-col">
-              <div className="flex items-center justify-between px-3 py-2 border-b border-monastery-dark-border">
-                <span className="text-xs font-medium text-monastery-text-secondary">
-                  {currentFile || 'No file selected'}
-                </span>
-                <div className="flex items-center gap-2">
-                  <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
-                    Explain
-                  </button>
-                  <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
-                    Refactor
-                  </button>
-                  <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
-                    Add Tests
-                  </button>
-                </div>
-              </div>
-              <CodeEditor
-                value={editorContent}
-                language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
-                onChange={setEditorContent}
-              />
-            </div>
-          </Panel>
-
-          {/* Preview/Terminal Pane — only visible when toggled open */}
+          {/* Preview/Terminal Pane — slides in/out */}
           {!previewCollapsed && (
             <>
               <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
               <Panel 
-                defaultSize={paneLayout.preview} 
+                defaultSize={paneLayout.preview}
                 minSize={15}
                 onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
               >
-                <PreviewPane />
+                <div className="h-full animate-slideInRight">
+                  <PreviewPane />
+                </div>
               </Panel>
             </>
           )}
