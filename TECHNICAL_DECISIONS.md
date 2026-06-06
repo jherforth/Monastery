@@ -55,4 +55,18 @@
 - Plugin system via WASM modules or Python extensions.
 - Easy addition of new homelab integrations (Proxmox, MQTT, Meshtastic, etc.).
 
+## Git Forge Integration
+- **Multi-Forge Support**: First-class integrations with GitHub, GitLab, and Forgejo (including self-hosted instances).
+- **Forgejo Self-Hosted Priority**: Native support for local/self-hosted Forgejo deployments — users point the harness at their own Forgejo instance URL. No cloud dependency required.
+- **Authentication**: Personal Access Tokens (PAT) for each forge, stored encrypted in the local SQLite database. Tokens are scoped per-repo and never transmitted outside the user's network.
+- **Operations**:
+  - Clone existing repos into new Monastery projects
+  - Push AI-generated projects to new or existing repos
+  - Pull latest changes from connected remotes
+  - View git status (branch, dirty files, ahead/behind) inline
+  - Create repos directly from Monastery on the target forge
+- **Guided Setup Wizard**: In-app step-by-step guide for generating tokens and connecting each forge type, with screenshots and copy-paste instructions.
+- **Offline Resilient**: All local git operations work without a forge connection. Sync is explicit and user-initiated.
+- **Architecture**: Uses the system `git` CLI for local operations (no heavy libgit2 dependency) and `reqwest` HTTP calls for forge REST APIs. Tokens never leave the harness container.
+
 These decisions prioritize long-term maintainability, low resource usage, and flexibility for homelab users while keeping the harness lightweight and focused.

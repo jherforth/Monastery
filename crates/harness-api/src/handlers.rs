@@ -640,3 +640,391 @@ impl From<sqlx::Error> for ApiError {
         ApiError::Internal(e.to_string())
     }
 }
+
+// ============================================================
+// Git Forge Handlers
+// ============================================================
+
+use harness_core::{
+    GitForgeType, GitConnection, ConnectGitForgeRequest,
+    GitPushRequest, GitCloneRequest, GitService,
+};
+
+/// List all Git forge connections
+pub async fn list_git_connections(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<GitConnection>>, ApiError> {
+    use sqlx::Row;
+
+    let rows = sqlx::query(
+        "SELECT id, name, forge_type, base_url, api_token, username, is_default, created_at, last_synced_at FROM git_connections ORDER BY created_at DESC"
+    )
+    .fetch_all(&*state.db)
+    .await
+    .unwrap_or_default();
+
+    let connections: Vec<GitConnection> = rows.iter().map(|row| {
+        let id: String = row.get(0);
+        let name: String = row.get(1);
+        let forge_type: String = row.get(2);
+        let base_url: String = row.get(3);
+        let api_token: String = row.get(4);
+        let username: Option<String> = row.get(5);
+        let is_default: i64 = row.get(6);
+        let created_at: String = row.get(7);
+        let last_synced_at: Option<String> = row.get(8);
+
+        GitConnection {
+            id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            name,
+            forge_type: match forge_type.as_str() {
+                "gitlab" => GitForgeType::GitLab,
+                "forgejo" => GitForgeType::Forgejo,
+                _ => GitForgeType::GitHub,
+            },
+            base_url,
+            api_token,
+            username,
+            is_default: is_default != 0,
+            created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
+            last_synced_at: last_synced_at.and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.into())
+            }),
+        }
+    }).collect();
+
+    Ok(Json(connections))
+}
+
+/// Connect a new Git forge
+pub async fn connect_git_forge(
+    State(state): State<AppState>,
+    Json(req): Json<ConnectGitForgeRequest>,
+) -> Result<Json<GitConnection>, ApiError> {
+    // Validate Forgejo requires a URL
+    if req.forge_type == GitForgeType::Forgejo {
+        match &req.base_url {
+            Some(url) if !url.is_empty() => {
+                if !url.starts_with("http://") && !url.starts_with("https://") {
+                    return Err(ApiError::Config("Forgejo URL must start with http:// or https://".into()));
+                }
+            }
+            _ => return Err(ApiError::Config("Forgejo requires a base URL (e.g., https://git.yourdomain.com)".into())),
+        }
+    }
+
+    let base_url = req.base_url
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| req.forge_type.default_api_url().to_string());
+
+    // Test the connection
+    let username = GitService::test_connection(
+        &req.forge_type, &base_url, &req.api_token,
+    ).await
+    .map_err(|e| ApiError::Config(format!("Connection test failed: {}", e)))?;
+
+    let id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "INSERT INTO git_connections (id, name, forge_type, base_url, api_token, username, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(id.to_string())
+    .bind(&req.name)
+    .bind(req.forge_type.to_string())
+    .bind(&base_url)
+    .bind(&req.api_token)
+    .bind(&username)
+    .bind(0i64)
+    .bind(&now)
+    .execute(&*state.db)
+    .await?;
+
+    let connection = GitConnection {
+        id,
+        name: req.name,
+        forge_type: req.forge_type,
+        base_url,
+        api_token: req.api_token,
+        username: Some(username),
+        is_default: false,
+        created_at: chrono::Utc::now(),
+        last_synced_at: None,
+    };
+
+    Ok(Json(connection))
+}
+
+/// Delete a Git forge connection
+pub async fn delete_git_connection(
+    Path(id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<StatusCode, ApiError> {
+    sqlx::query("DELETE FROM git_connections WHERE id = ?")
+        .bind(id.to_string())
+        .execute(&*state.db)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Test a Git forge connection
+pub async fn test_git_connection(
+    Path(id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        "SELECT forge_type, base_url, api_token FROM git_connections WHERE id = ?"
+    )
+    .bind(id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let (forge_type, base_url, api_token) = match row {
+        Some(r) => {
+            let ft: String = r.get(0);
+            let bu: String = r.get(1);
+            let at: String = r.get(2);
+            let ft = match ft.as_str() {
+                "gitlab" => GitForgeType::GitLab,
+                "forgejo" => GitForgeType::Forgejo,
+                _ => GitForgeType::GitHub,
+            };
+            (ft, bu, at)
+        }
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+
+    match GitService::test_connection(&forge_type, &base_url, &api_token).await {
+        Ok(username) => Ok(Json(serde_json::json!({
+            "healthy": true,
+            "username": username,
+            "message": "Connection successful"
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({
+            "healthy": false,
+            "message": e.to_string()
+        }))),
+    }
+}
+
+/// List repos for a Git forge connection
+pub async fn list_git_repos(
+    Path(connection_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<harness_core::GitRepo>>, ApiError> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        "SELECT id, name, forge_type, base_url, api_token, username, is_default, created_at, last_synced_at FROM git_connections WHERE id = ?"
+    )
+    .bind(connection_id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let connection = match row {
+        Some(r) => {
+            let id: String = r.get(0);
+            let name: String = r.get(1);
+            let forge_type: String = r.get(2);
+            let base_url: String = r.get(3);
+            let api_token: String = r.get(4);
+            let username: Option<String> = r.get(5);
+            let is_default: i64 = r.get(6);
+            let created_at: String = r.get(7);
+            let last_synced_at: Option<String> = r.get(8);
+
+            GitConnection {
+                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                name,
+                forge_type: match forge_type.as_str() {
+                    "gitlab" => GitForgeType::GitLab,
+                    "forgejo" => GitForgeType::Forgejo,
+                    _ => GitForgeType::GitHub,
+                },
+                base_url,
+                api_token,
+                username,
+                is_default: is_default != 0,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
+                last_synced_at: last_synced_at.and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.into())
+                }),
+            }
+        }
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+
+    let repos = GitService::list_repos(&connection).await
+        .map_err(|e| ApiError::Core(e))?;
+
+    Ok(Json(repos))
+}
+
+/// Get git status for the current project
+pub async fn get_git_status(
+    State(state): State<AppState>,
+) -> Result<Json<harness_core::GitStatus>, ApiError> {
+    let project_path = &state.config.data_dir;
+    let status = GitService::git_status(project_path)
+        .map_err(|e| ApiError::Core(e))?;
+    Ok(Json(status))
+}
+
+/// Push project to a Git forge repository
+pub async fn git_push(
+    State(state): State<AppState>,
+    Json(req): Json<GitPushRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        "SELECT forge_type, base_url, api_token FROM git_connections WHERE id = ?"
+    )
+    .bind(req.connection_id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let (forge_type, base_url, api_token) = match row {
+        Some(r) => {
+            let ft: String = r.get(0);
+            let bu: String = r.get(1);
+            let at: String = r.get(2);
+            let ft = match ft.as_str() {
+                "gitlab" => GitForgeType::GitLab,
+                "forgejo" => GitForgeType::Forgejo,
+                _ => GitForgeType::GitHub,
+            };
+            (ft, bu, at)
+        }
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+
+    let connection = GitConnection {
+        id: req.connection_id,
+        name: String::new(),
+        forge_type,
+        base_url,
+        api_token,
+        username: None,
+        is_default: false,
+        created_at: chrono::Utc::now(),
+        last_synced_at: None,
+    };
+
+    // Init git if needed
+    GitService::git_init(&state.config.data_dir)
+        .map_err(|e| ApiError::Core(e))?;
+
+    // Create the repo on the forge
+    let repo = GitService::create_repo(
+        &connection,
+        &req.repo_name,
+        req.repo_description.as_deref(),
+        req.private,
+    ).await
+    .map_err(|e| ApiError::Core(e))?;
+
+    // Push to the repo
+    let branch = req.branch.unwrap_or_else(|| repo.default_branch.clone());
+    let commit_msg = req.commit_message.unwrap_or_else(|| "Initial commit from Monastery".to_string());
+
+    GitService::git_push(
+        &state.config.data_dir,
+        &repo.clone_url,
+        &connection.api_token,
+        &branch,
+        &commit_msg,
+    ).map_err(|e| ApiError::Core(e))?;
+
+    // Update last_synced_at
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE git_connections SET last_synced_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(req.connection_id.to_string())
+        .execute(&*state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "repo_url": repo.html_url,
+        "clone_url": repo.clone_url,
+        "branch": branch,
+    })))
+}
+
+/// Clone a repo from a Git forge as a new project
+pub async fn git_clone(
+    State(state): State<AppState>,
+    Json(req): Json<GitCloneRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        "SELECT forge_type, base_url, api_token FROM git_connections WHERE id = ?"
+    )
+    .bind(req.connection_id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let (forge_type, base_url, api_token) = match row {
+        Some(r) => {
+            let ft: String = r.get(0);
+            let bu: String = r.get(1);
+            let at: String = r.get(2);
+            let ft = match ft.as_str() {
+                "gitlab" => GitForgeType::GitLab,
+                "forgejo" => GitForgeType::Forgejo,
+                _ => GitForgeType::GitHub,
+            };
+            (ft, bu, at)
+        }
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+
+    // Construct clone URL based on forge type
+    let clone_url = match forge_type {
+        GitForgeType::GitHub => format!("https://github.com/{}.git", req.repo_full_name),
+        GitForgeType::GitLab => {
+            if base_url == "https://gitlab.com/api/v4" {
+                format!("https://gitlab.com/{}.git", req.repo_full_name)
+            } else {
+                // Self-hosted GitLab
+                let domain = base_url.trim_end_matches("/api/v4");
+                format!("{}/{}.git", domain, req.repo_full_name)
+            }
+        }
+        GitForgeType::Forgejo => {
+            format!("{}/{}.git", base_url.trim_end_matches("/api/v1"), req.repo_full_name)
+        }
+    };
+
+    let project_name = req.project_name.unwrap_or_else(|| {
+        req.repo_full_name.split('/').last().unwrap_or("project").to_string()
+    });
+    let target_path = state.config.data_dir.join(&project_name);
+
+    tokio::fs::create_dir_all(&target_path).await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    GitService::git_clone(&clone_url, &target_path, Some(&api_token))
+        .map_err(|e| ApiError::Core(e))?;
+
+    // Update last_synced_at
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query("UPDATE git_connections SET last_synced_at = ? WHERE id = ?")
+        .bind(&now)
+        .bind(req.connection_id.to_string())
+        .execute(&*state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "project_name": project_name,
+        "project_path": target_path.to_str(),
+    })))
+}

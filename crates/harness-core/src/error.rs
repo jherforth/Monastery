@@ -19,6 +19,9 @@ pub enum Error {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
+    #[error("Network error: {0}")]
+    Network(String),
+
     #[error("OpenAI API error: {0}")]
     OpenAI(#[from] async_openai::error::OpenAIError),
 

@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Archive, FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Archive, FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
+import { useGitForge } from '../hooks/useGitForge';
 
 export function TopBar() {
   const { 
@@ -13,6 +14,7 @@ export function TopBar() {
   } = useAppStore();
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const { gitStatus } = useGitForge();
   
   return (
     <>
@@ -71,6 +73,32 @@ export function TopBar() {
               <span className="text-sm text-monastery-text-muted">No LLM connected • Click to configure</span>
             </button>
           )}
+
+          {/* Git Status Indicator */}
+          {gitStatus && (
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine-green transition-colors"
+              title={`Branch: ${gitStatus.branch}\nAhead: ${gitStatus.ahead}, Behind: ${gitStatus.behind}\nFiles changed: ${gitStatus.changed_files.length}`}
+            >
+              <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
+              <span className="text-xs text-monastery-text-secondary">{gitStatus.branch}</span>
+              {!gitStatus.is_clean && (
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title={`${gitStatus.changed_files.length} changed files`} />
+              )}
+              {gitStatus.ahead > 0 && (
+                <span className="flex items-center text-xs text-green-400">
+                  <ArrowUp size={10} />{gitStatus.ahead}
+                </span>
+              )}
+              {gitStatus.behind > 0 && (
+                <span className="flex items-center text-xs text-amber-400">
+                  <ArrowDown size={10} />{gitStatus.behind}
+                </span>
+              )}
+            </button>
+          )}
+        </div>
         </div>
 
         {/* Right: Actions */}

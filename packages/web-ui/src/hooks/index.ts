@@ -2,6 +2,7 @@ import { useCallback, useEffect } from 'react';
 
 export * from './useSnapshots';
 export * from './useEndpoints';
+export * from './useGitForge';
 
 export function useKeyboardShortcuts(
   shortcuts: Record<string, (e: KeyboardEvent) => void>

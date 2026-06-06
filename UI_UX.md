@@ -77,9 +77,39 @@ Three-column default layout (fully draggable/resizable):
 
 ### 3. Settings / Configuration
 - LLM Endpoints manager (add, test connection, reorder priority)
+- **Git Forges** — connect and manage GitHub, GitLab, and Forgejo accounts
 - Appearance (themes, including "Monastery Dark", "Scriptorium Light")
 - Homelab connections (Proxmox API, Coolify, etc.)
 - Sandbox & Security options
+
+#### 3a. Git Forge Setup (Guided Wizard)
+A dedicated setup flow for connecting Git forges, designed for users unfamiliar with API tokens:
+
+**Connection List View**:
+- Cards for each connected forge showing forge type icon, username, instance URL, and last-synced timestamp
+- "Connect a Forge" button with dropdown: GitHub, GitLab, Forgejo (self-hosted)
+- Each card has: Test Connection, Sync Now, Disconnect actions
+
+**Guided Setup Flow (per forge type)**:
+- **Step 1 — Choose Forge**: User selects GitHub, GitLab, or Forgejo
+- **Step 2 — Instance URL** (Forgejo only): User enters their self-hosted Forgejo domain (e.g., `https://git.mylan.local`). Pre-filled examples for common setups.
+- **Step 3 — Token Guide**: 
+  - Shows a direct link to the token generation page for that forge
+  - Lists the exact permissions needed (repo: read/write for GitHub, api+read_user for GitLab, etc.)
+  - Copy-paste field for the token
+- **Step 4 — Verify**: Tests the connection, fetches username, confirms success
+- **Step 5 — Done**: Card appears in connection list
+
+**In-App Help**:
+- Each step has an expandable "How do I…?" section with screenshots
+- Link to official docs for token creation
+- For Forgejo: note that the instance must be reachable from the Monastery container (same Docker network or LAN)
+
+#### 3b. Git Status in Top Bar
+- Branch name with icon (branch, dirty dot indicator)
+- Ahead/behind commit count
+- Click opens quick-actions: Push, Pull, Create Repo, Switch Branch
+- Color coding: clean (green), uncommitted changes (amber), no remote (muted)
 
 ### 4. Project Dashboard
 - Overview metrics: Files changed, tokens used this session, deployment status

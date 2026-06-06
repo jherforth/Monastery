@@ -154,5 +154,24 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
     
+    // Git forge connections table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS git_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            forge_type TEXT NOT NULL CHECK(forge_type IN ('github', 'gitlab', 'forgejo')),
+            base_url TEXT NOT NULL,
+            api_token TEXT NOT NULL,
+            username TEXT,
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_synced_at TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    
     Ok(pool)
 }

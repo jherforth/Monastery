@@ -59,3 +59,123 @@ impl ModelEndpoint {
         }
     }
 }
+
+// ============================================================
+// Git Forge Integration Types
+// ============================================================
+
+/// Supported Git forge types
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum GitForgeType {
+    GitHub,
+    GitLab,
+    Forgejo,
+}
+
+impl std::fmt::Display for GitForgeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GitForgeType::GitHub => write!(f, "github"),
+            GitForgeType::GitLab => write!(f, "gitlab"),
+            GitForgeType::Forgejo => write!(f, "forgejo"),
+        }
+    }
+}
+
+impl GitForgeType {
+    /// Default API base URL for each forge type
+    pub fn default_api_url(&self) -> &str {
+        match self {
+            GitForgeType::GitHub => "https://api.github.com",
+            GitForgeType::GitLab => "https://gitlab.com/api/v4",
+            GitForgeType::Forgejo => "", // User must provide their instance URL
+        }
+    }
+
+    /// URL path for listing user repos
+    pub fn repos_endpoint(&self) -> &str {
+        match self {
+            GitForgeType::GitHub => "/user/repos?per_page=100",
+            GitForgeType::GitLab => "/projects?membership=true&per_page=100",
+            GitForgeType::Forgejo => "/user/repos?limit=100",
+        }
+    }
+
+    /// URL path for creating a repo
+    pub fn create_repo_endpoint(&self) -> &str {
+        match self {
+            GitForgeType::GitHub => "/user/repos",
+            GitForgeType::GitLab => "/projects",
+            GitForgeType::Forgejo => "/user/repos",
+        }
+    }
+}
+
+/// A configured Git forge connection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitConnection {
+    pub id: Uuid,
+    pub name: String,
+    pub forge_type: GitForgeType,
+    pub base_url: String,
+    pub api_token: String,
+    pub username: Option<String>,
+    pub is_default: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Request to connect a new Git forge
+#[derive(Debug, Deserialize)]
+pub struct ConnectGitForgeRequest {
+    pub name: String,
+    pub forge_type: GitForgeType,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    pub api_token: String,
+}
+
+/// A repository from a connected forge
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitRepo {
+    pub id: i64,
+    pub name: String,
+    pub full_name: String,
+    pub clone_url: String,
+    pub html_url: String,
+    pub description: Option<String>,
+    pub private: bool,
+    pub default_branch: String,
+}
+
+/// Git status for the current project
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitStatus {
+    pub branch: String,
+    pub is_clean: bool,
+    pub ahead: usize,
+    pub behind: usize,
+    pub changed_files: Vec<String>,
+    pub has_remote: bool,
+    pub remote_url: Option<String>,
+}
+
+/// Request to push project to a remote repo
+#[derive(Debug, Deserialize)]
+pub struct GitPushRequest {
+    pub connection_id: Uuid,
+    pub repo_name: String,
+    pub repo_description: Option<String>,
+    pub private: bool,
+    pub branch: Option<String>,
+    pub commit_message: Option<String>,
+}
+
+/// Request to clone a repo as a new project
+#[derive(Debug, Deserialize)]
+pub struct GitCloneRequest {
+    pub connection_id: Uuid,
+    pub repo_full_name: String,
+    pub project_name: Option<String>,
+}

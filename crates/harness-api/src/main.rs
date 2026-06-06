@@ -85,6 +85,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:project_id/snapshots/:snapshot_id", delete(handlers::delete_snapshot))
         .route("/api/projects/:project_id/snapshots/:snapshot_id/restore", post(handlers::restore_snapshot))
         .route("/api/projects/:project_id/snapshots/:snapshot_id/diff", get(handlers::diff_snapshots))
+        // Git forge routes
+        .route("/api/git/connections", get(handlers::list_git_connections))
+        .route("/api/git/connections", post(handlers::connect_git_forge))
+        .route("/api/git/connections/:id", delete(handlers::delete_git_connection))
+        .route("/api/git/connections/:id/test", post(handlers::test_git_connection))
+        .route("/api/git/connections/:id/repos", get(handlers::list_git_repos))
+        .route("/api/git/status", get(handlers::get_git_status))
+        .route("/api/git/push", post(handlers::git_push))
+        .route("/api/git/clone", post(handlers::git_clone))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 
