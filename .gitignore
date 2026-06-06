@@ -1,9 +1,6 @@
 ```
-# Build artifacts
-target/
-
 # Dependencies
-Cargo.lock
+target/
 
 # Logs and temp files
 *.log
@@ -17,57 +14,8 @@ Cargo.lock
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git/modules/
-*.sublime-workspace
-
-# Compiled and binary files
-*.class
-*.o
-*.a
-*.obj
-*.out
-*.exe
-*.dll
-*.so
-*.dylib
-*.jar
-*.war
-*.zip
-*.tar
-*.gz
-*.bz2
-*.xz
-*.7z
-*.rar
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# Build artifacts
+dist/
+build/
 ```

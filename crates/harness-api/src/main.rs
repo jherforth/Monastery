@@ -41,7 +41,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create data directory if it doesn't exist
     tokio::fs::create_dir_all(&config.data_dir).await?;
     
-    // Initialize database
+    // Initialize database - ensure parent directory exists
+    if let Some(parent) = config.database_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
     let db = db::init_db(&config.database_path).await?;
     tracing::info!("Database initialized at {:?}", config.database_path);
     
