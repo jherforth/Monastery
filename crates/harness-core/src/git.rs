@@ -6,13 +6,11 @@
 
 use crate::models::{
     GitForgeType, GitConnection, GitRepo, GitStatus,
-    ConnectGitForgeRequest, GitPushRequest, GitCloneRequest,
 };
 use crate::Result;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
-use uuid::Uuid;
 
 /// Service for Git forge operations
 pub struct GitService;
@@ -398,16 +396,16 @@ impl GitService {
 }
 
 /// Helper: run a git command and return trimmed stdout
-fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
+fn run_git(cwd: &Path, args: &[&str]) -> Result<String> {
     let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .output()
-        .map_err(|e| format!("Failed to run git: {}", e))?;
+        .map_err(|e| crate::Error::Unknown(format!("Failed to run git: {}", e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("git {} failed: {}", args.join(" "), stderr));
+        return Err(crate::Error::Unknown(format!("git {} failed: {}", args.join(" "), stderr)));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
