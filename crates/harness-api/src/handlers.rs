@@ -84,7 +84,7 @@ pub async fn chat_stream(
     Path(model_id): Path<String>,
     Json(request): Json<ChatRequest>,
     Query(params): Query<ChatQueryParams>,
-) -> impl IntoResponse {
+) -> Response {
     use futures::StreamExt;
     
     // Get endpoint from query param or use default
