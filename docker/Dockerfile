@@ -5,17 +5,9 @@ FROM node:20-bookworm-slim AS frontend-builder
 
 WORKDIR /app/frontend
 
-# Copy frontend package files
-COPY packages/web-ui/package.json ./
-
-# Install dependencies (no lockfile, so plain npm install)
-RUN npm install
-
-# Copy frontend source
+# Single COPY + single RUN — minimizes BuildKit snapshot layers
 COPY packages/web-ui/ ./
-
-# Build the frontend
-RUN npx vite build --outDir dist --base /
+RUN npm install && npx vite build --outDir dist --base /
 
 # ============================================================
 # Stage 2: Build the Rust backend binary
@@ -24,26 +16,12 @@ FROM rust:1.86.0-bookworm AS backend-builder
 
 WORKDIR /app
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
+RUN apt-get update && apt-get install -y pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace files
+# Single COPY + single RUN for the entire Rust workspace
 COPY Cargo.toml Cargo.lock* ./
-COPY crates/harness-core/Cargo.toml ./crates/harness-core/
-COPY crates/harness-api/Cargo.toml ./crates/harness-api/
-COPY crates/harness-agent/Cargo.toml ./crates/harness-agent/
-
-# Cache dependencies
-RUN mkdir -p crates/harness-core/src crates/harness-api/src crates/harness-agent/src
-RUN touch crates/harness-core/src/lib.rs crates/harness-api/src/main.rs crates/harness-agent/src/lib.rs
-
-# Copy source code
 COPY crates/ ./crates/
-
-# Build the binary
 RUN cargo build --release --bin harness
 
 # ============================================================
@@ -51,22 +29,14 @@ RUN cargo build --release --bin harness
 # ============================================================
 FROM nginx:1.27-bookworm
 
-# Install curl for health checks
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-# Copy nginx configuration
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
-
-# Copy built frontend from Stage 1
 COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html
-
-# Copy Rust backend binary from Stage 2
 COPY --from=backend-builder /app/target/release/harness /app/harness
 
-# Create data directory with proper permissions
 RUN mkdir -p /app/data && chmod 777 /app/data
 
-# Copy startup script
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
