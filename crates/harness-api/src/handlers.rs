@@ -1016,9 +1016,118 @@ pub async fn git_clone(
         .execute(&*state.db)
         .await?;
 
+    // Create a project record in the database
+    let project_id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind(project_id.to_string())
+    .bind(&project_name)
+    .bind(format!("Cloned from {}", req.repo_full_name))
+    .bind(&now)
+    .bind(&now)
+    .execute(&*state.db)
+    .await?;
+
     Ok(Json(serde_json::json!({
         "success": true,
+        "project_id": project_id.to_string(),
         "project_name": project_name,
         "project_path": target_path.to_str(),
     })))
+}
+
+/// List files in a project directory
+pub async fn list_project_files(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    // Look up the project to get its name
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    if !project_path.exists() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let files = walk_directory(&project_path, &project_path);
+    Ok(Json(files))
+}
+
+/// Read a single file from a project
+pub async fn read_project_file(
+    Path(project_id): Path<uuid::Uuid>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let file_path = params.get("path").ok_or_else(|| ApiError::Config("Missing path parameter".into()))?;
+    let full_path = state.config.data_dir.join(&project_name).join(file_path);
+
+    // Security: ensure the resolved path is within the project directory
+    let canonical_base = state.config.data_dir.join(&project_name).canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+    let canonical_file = full_path.canonicalize()
+        .map_err(|_| ApiError::NotFound("File not found".into()))?;
+    if !canonical_file.starts_with(&canonical_base) {
+        return Err(ApiError::Config("Path traversal not allowed".into()));
+    }
+
+    let content = std::fs::read_to_string(&canonical_file)
+        .map_err(|e| ApiError::Internal(format!("Failed to read file: {}", e)))?;
+
+    Ok(Json(serde_json::json!({ "content": content, "path": file_path })))
+}
+
+/// Recursively walk a directory and return a FileNode tree
+fn walk_directory(base: &std::path::Path, current: &std::path::Path) -> Vec<serde_json::Value> {
+    let mut entries = Vec::new();
+    if let Ok(read_dir) = std::fs::read_dir(current) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            // Skip .git directory
+            if name == ".git" {
+                continue;
+            }
+            let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
+            let is_dir = path.is_dir();
+            let children: Vec<serde_json::Value> = if is_dir {
+                walk_directory(base, &path)
+            } else {
+                Vec::new()
+            };
+            entries.push(serde_json::json!({
+                "name": name,
+                "path": rel_path,
+                "type": if is_dir { "directory" } else { "file" },
+                "children": if is_dir { children } else { serde_json::json!([]) },
+            }));
+        }
+    }
+    entries.sort_by(|a, b| {
+        let a_dir = a["type"].as_str() == Some("directory");
+        let b_dir = b["type"].as_str() == Some("directory");
+        b_dir.cmp(&a_dir).then(a["name"].as_str().cmp(&b["name"].as_str()))
+    });
+    entries
 }

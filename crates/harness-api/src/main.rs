@@ -77,6 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects", get(handlers::list_projects))
         .route("/api/projects", post(handlers::create_project))
         .route("/api/projects/:id", get(handlers::get_project))
+        .route("/api/projects/:id/files", get(handlers::list_project_files))
+        .route("/api/projects/:id/files/read", get(handlers::read_project_file))
         .route("/api/discovery", get(handlers::discover_services))
         // Snapshot routes
         .route("/api/projects/:project_id/snapshots", get(handlers::list_snapshots))

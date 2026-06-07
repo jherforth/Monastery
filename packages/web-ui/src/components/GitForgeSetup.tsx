@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { GitBranch, Github, Gitlab, Server, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, ChevronRight, FolderGit2, Upload, Download, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useGitForge, GitForgeType, ConnectForgeRequest, GitConnection, GitRepo } from '../hooks/useGitForge';
+import { useAppStore } from '../store/useAppStore';
 
 type WizardStep = 'select' | 'url' | 'token' | 'verify';
 type ViewMode = 'list' | 'browse' | 'push';
@@ -47,6 +48,7 @@ const FORGE_TEMPLATES: ForgeTemplate[] = [
 
 export function GitForgeSetup() {
   const { connections, connectForge, deleteConnection, testConnection, listRepos, pushProject, cloneRepo } = useGitForge();
+  const { setCurrentProject } = useAppStore();
   const [step, setStep] = useState<WizardStep>('select');
   const [selectedForge, setSelectedForge] = useState<ForgeTemplate | null>(null);
   const [forgeUrl, setForgeUrl] = useState('');
@@ -164,6 +166,14 @@ export function GitForgeSetup() {
         repo_full_name: repo.full_name,
       });
       setCloneResult(`Cloned "${result.project_name}" to ${result.project_path}`);
+      // Set as current project so files appear in sidebar
+      setCurrentProject({
+        id: result.project_id,
+        name: result.project_name,
+        path: result.project_path,
+        lastOpened: Date.now(),
+        files: [],
+      });
     } catch (e: any) {
       setCloneResult(`Clone failed: ${e.message}`);
     } finally {

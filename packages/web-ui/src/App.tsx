@@ -9,16 +9,29 @@ import { useAppStore } from './store/useAppStore';
 import { Message } from './types';
 
 export default function App() {
-  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme } = useAppStore();
+  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme, currentProject } = useAppStore();
   const [currentFile, setCurrentFile] = useState('');
   const [editorContent, setEditorContent] = useState('// Select a file to edit');
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [projectFiles, setProjectFiles] = useState<any[]>([]);
 
   // Sync persisted theme with the HTML data-theme attribute on load
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // Fetch project files when currentProject changes
+  useEffect(() => {
+    if (!currentProject?.id) {
+      setProjectFiles([]);
+      return;
+    }
+    fetch(`/api/projects/${currentProject.id}/files`)
+      .then(r => r.json())
+      .then(files => setProjectFiles(files))
+      .catch(() => setProjectFiles([]));
+  }, [currentProject?.id]);
 
   const handleSendMessage = (content: string, attachments?: any[]) => {
     const userMessage: Message = {
@@ -62,23 +75,21 @@ export default function App() {
         >
           <div className="w-64 h-full flex-shrink-0">
             <Sidebar
-              files={[
-                {
-                  name: 'src',
-                  path: '/src',
-                  type: 'directory',
-                  children: [
-                    { name: 'App.tsx', path: '/src/App.tsx', type: 'file', syncStatus: 'modified' as const },
-                    { name: 'index.css', path: '/src/index.css', type: 'file', syncStatus: 'synced' as const },
-                    { name: 'main.tsx', path: '/src/main.tsx', type: 'file', syncStatus: 'new' as const },
-                  ],
-                },
-                { name: 'package.json', path: '/package.json', type: 'file', syncStatus: 'synced' as const },
-                { name: 'README.md', path: '/README.md', type: 'file', syncStatus: 'synced' as const },
-              ]}
-              onSelectFile={(path) => {
+              files={projectFiles}
+              onSelectFile={async (path) => {
                 setCurrentFile(path);
-                setEditorContent(`// Content of ${path}\nconsole.log("Hello from Monastery");`);
+                // Fetch file content from the backend
+                try {
+                  const res = await fetch(`/api/projects/${currentProject!.id}/files/read?path=${encodeURIComponent(path)}`);
+                  if (res.ok) {
+                    const data = await res.json();
+                    setEditorContent(data.content || `// ${path}`);
+                  } else {
+                    setEditorContent(`// ${path}`);
+                  }
+                } catch {
+                  setEditorContent(`// ${path}`);
+                }
               }}
             />
           </div>
