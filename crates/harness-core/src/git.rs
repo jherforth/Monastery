@@ -303,7 +303,7 @@ impl GitService {
     }
 
     /// Clone a repository into a project directory
-    pub fn git_clone(clone_url: &str, target_path: &Path, token: Option<&str>) -> Result<()> {
+    pub fn git_clone(clone_url: &str, target_path: &Path, token: Option<&str>, branch: Option<&str>) -> Result<()> {
         let url = if let Some(t) = token {
             // Inject token into clone URL for auth
             if clone_url.starts_with("https://") {
@@ -315,9 +315,16 @@ impl GitService {
             clone_url.to_string()
         };
 
+        let mut args = vec!["clone", "--depth", "1"];
+        if let Some(b) = branch {
+            args.push("--branch");
+            args.push(b);
+        }
+        args.push(&url);
+        args.push(target_path.to_str().unwrap_or(""));
+
         let output = Command::new("git")
-            .args(["clone", "--depth", "1", &url])
-            .arg(target_path.to_str().unwrap_or(""))
+            .args(&args)
             .output()
             .map_err(|e| crate::Error::Network(format!("Failed to run git clone: {}", e)))?;
 

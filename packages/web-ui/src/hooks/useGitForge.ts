@@ -56,6 +56,7 @@ export interface GitCloneRequest {
   connection_id: string;
   repo_full_name: string;
   project_name?: string;
+  branch?: string;
 }
 
 const fetcher = async (url: string) => {

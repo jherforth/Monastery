@@ -178,4 +178,5 @@ pub struct GitCloneRequest {
     pub connection_id: Uuid,
     pub repo_full_name: String,
     pub project_name: Option<String>,
+    pub branch: Option<String>,
 }

@@ -66,6 +66,7 @@ export function GitForgeSetup() {
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [repoError, setRepoError] = useState<string | null>(null);
   const [cloningId, setCloningId] = useState<number | null>(null);
+  const [cloneBranch, setCloneBranch] = useState('main');
   const [cloneResult, setCloneResult] = useState<string | null>(null);
 
   // Push form state
@@ -164,6 +165,7 @@ export function GitForgeSetup() {
       const result = await cloneRepo({
         connection_id: activeConnection.id,
         repo_full_name: repo.full_name,
+        branch: cloneBranch || undefined,
       });
       setCloneResult(`Cloned "${result.project_name}" to ${result.project_path}`);
       // Set as current project so files appear in sidebar
@@ -232,6 +234,8 @@ export function GitForgeSetup() {
           loading={loadingRepos}
           error={repoError}
           cloningId={cloningId}
+          cloneBranch={cloneBranch}
+          onCloneBranchChange={setCloneBranch}
           cloneResult={cloneResult}
           onClone={handleClone}
           onBack={backToList}
@@ -525,6 +529,8 @@ function RepoBrowser({
   loading,
   error,
   cloningId,
+  cloneBranch,
+  onCloneBranchChange,
   cloneResult,
   onClone,
   onBack,
@@ -534,6 +540,8 @@ function RepoBrowser({
   loading: boolean;
   error: string | null;
   cloningId: number | null;
+  cloneBranch: string;
+  onCloneBranchChange: (v: string) => void;
   cloneResult: string | null;
   onClone: (repo: GitRepo) => void;
   onBack: () => void;
@@ -557,6 +565,17 @@ function RepoBrowser({
           {cloneResult}
         </div>
       )}
+
+      <div className="flex items-center gap-2">
+        <label className="text-xs text-monastery-text-secondary flex-shrink-0">Branch:</label>
+        <input
+          type="text"
+          value={cloneBranch}
+          onChange={(e) => onCloneBranchChange(e.target.value)}
+          placeholder="main"
+          className="flex-1 px-2 py-1 bg-monastery-dark-bg border border-monastery-dark-border rounded text-xs text-monastery-text-primary focus:border-monastery-pine-green focus:outline-none"
+        />
+      </div>
 
       {loading ? (
         <div className="flex items-center justify-center py-8">

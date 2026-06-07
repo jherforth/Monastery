@@ -1005,7 +1005,7 @@ pub async fn git_clone(
     tokio::fs::create_dir_all(&target_path).await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    GitService::git_clone(&clone_url, &target_path, Some(&api_token))
+    GitService::git_clone(&clone_url, &target_path, Some(&api_token), req.branch.as_deref())
         .map_err(|e| ApiError::Core(e))?;
 
     // Update last_synced_at
@@ -1120,7 +1120,7 @@ fn walk_directory(base: &std::path::Path, current: &std::path::Path) -> Vec<serd
                 "name": name,
                 "path": rel_path,
                 "type": if is_dir { "directory" } else { "file" },
-                "children": if is_dir { children } else { serde_json::json!([]) },
+                "children": children,
             }));
         }
     }
