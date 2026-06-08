@@ -1,14 +1,16 @@
 import { useState } from 'react';
-import { FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown } from 'lucide-react';
+import { FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
+import type { EndpointConfig } from '../hooks/useEndpoints';
 
 interface TopBarProps {
   availableProjects?: Array<{ id: string; name: string; description?: string | null }>;
+  endpoints?: EndpointConfig[];
 }
 
-export function TopBar({ availableProjects = [] }: TopBarProps) {
+export function TopBar({ availableProjects = [], endpoints = [] }: TopBarProps) {
   const { 
     currentProject,
     setCurrentProject,
@@ -20,10 +22,12 @@ export function TopBar({ availableProjects = [] }: TopBarProps) {
     previewCollapsed,
     theme,
     setTheme,
+    setActiveEndpoint,
   } = useAppStore();
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
   const { gitStatus } = useGitForge();
   
   return (
@@ -108,22 +112,62 @@ export function TopBar({ availableProjects = [] }: TopBarProps) {
           </div>
         </div>
 
-        {/* Center: Model Selector */}
+        {/* Center: LLM Selector + Git Status */}
         <div className="flex items-center gap-3">
-          {activeEndpoint ? (
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border">
-              <div
-                className={`w-2 h-2 rounded-full ${
-                  activeEndpoint.status === 'connected'
-                    ? 'bg-status-success'
-                    : activeEndpoint.status === 'error'
-                    ? 'bg-status-error'
-                    : 'bg-status-warning'
-                }`}
-              />
-              <span className="text-sm font-medium">{activeEndpoint.name}</span>
-              {activeEndpoint.model && (
-                <span className="text-monastery-text-muted text-xs">• {activeEndpoint.model}</span>
+          {/* LLM Endpoint Selector */}
+          {endpoints.length > 0 ? (
+            <div className="relative">
+              <button
+                onClick={() => setLlmDropdownOpen(!llmDropdownOpen)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-lantern transition-colors"
+              >
+                <div className={`w-2 h-2 rounded-full ${activeEndpoint ? 'bg-status-success' : 'bg-status-warning'}`} />
+                <span className="text-sm font-medium text-monastery-text-primary">
+                  {activeEndpoint?.name || 'Select LLM'}
+                </span>
+                {endpoints.length > 1 && (
+                  <ChevronDown size={12} className="text-monastery-text-muted" />
+                )}
+              </button>
+              
+              {llmDropdownOpen && endpoints.length > 1 && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setLlmDropdownOpen(false)} />
+                  <div className="absolute top-full right-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1">
+                    {endpoints.map((ep) => (
+                      <button
+                        key={ep.id}
+                        onClick={() => {
+                          setActiveEndpoint({ id: ep.id, name: ep.name });
+                          setLlmDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 ${
+                          activeEndpoint?.id === ep.id
+                            ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
+                            : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
+                        }`}
+                      >
+                        <Cpu size={14} className="text-monastery-text-muted shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <div className="truncate">{ep.name}</div>
+                          <div className="text-xs text-monastery-text-muted truncate">{ep.base_url}</div>
+                        </div>
+                        {activeEndpoint?.id === ep.id && (
+                          <div className="w-2 h-2 rounded-full bg-status-success shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                    <div className="border-t border-monastery-dark-border mt-1 pt-1 px-1">
+                      <button
+                        onClick={() => { setIsSettingsOpen(true); setLlmDropdownOpen(false); }}
+                        className="w-full text-left px-3 py-1.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-tertiary rounded transition-colors flex items-center gap-2"
+                      >
+                        <Settings size={12} />
+                        Manage endpoints...
+                      </button>
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           ) : (
@@ -137,14 +181,14 @@ export function TopBar({ availableProjects = [] }: TopBarProps) {
           )}
 
           {/* Git Status Indicator */}
-          {gitStatus && (
-            <button
-              onClick={() => setIsSettingsOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
-              title={`Branch: ${gitStatus.branch}\nAhead: ${gitStatus.ahead}, Behind: ${gitStatus.behind}\nFiles changed: ${gitStatus.changed_files.length}`}
-            >
+          {gitStatus && currentProject && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border">
               <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
-              <span className="text-xs text-monastery-text-secondary">{gitStatus.branch}</span>
+              <span className="text-xs text-monastery-text-secondary">
+                {currentProject.name}
+              </span>
+              <span className="text-monastery-text-muted text-xs">•</span>
+              <span className="text-xs text-monastery-text-secondary font-medium">{gitStatus.branch}</span>
               {!gitStatus.is_clean && (
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title={`${gitStatus.changed_files.length} changed files`} />
               )}
@@ -158,7 +202,7 @@ export function TopBar({ availableProjects = [] }: TopBarProps) {
                   <ArrowDown size={10} />{gitStatus.behind}
                 </span>
               )}
-            </button>
+            </div>
           )}
         </div>
 

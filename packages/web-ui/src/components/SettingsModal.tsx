@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useEndpoints, EndpointConfig } from '../hooks/useEndpoints';
 import { GitForgeSetup } from './GitForgeSetup';
+import { useAppStore } from '../store/useAppStore';
 import { Cpu, GitBranch } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -12,6 +13,7 @@ type SettingsTab = 'llm' | 'git';
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { endpoints, isLoading, addEndpoint, deleteEndpoint, testEndpoint, mutate } = useEndpoints();
+  const setActiveEndpoint = useAppStore(s => s.setActiveEndpoint);
   const [newEndpoint, setNewEndpoint] = useState({
     name: '',
     base_url: '',
@@ -26,12 +28,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await addEndpoint({
+      const added = await addEndpoint({
         name: newEndpoint.name,
         base_url: newEndpoint.base_url,
         api_key: newEndpoint.api_key || undefined,
       });
       setNewEndpoint({ name: '', base_url: '', api_key: '' });
+      setActiveEndpoint({ id: added.id, name: added.name });
       await mutate();
     } catch (error) {
       console.error('Failed to add endpoint:', error);
@@ -54,6 +57,13 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     try {
       const result = await testEndpoint(id);
       setTestResults(prev => ({ ...prev, [id]: { is_healthy: result.is_healthy, message: result.message } }));
+      if (result.is_healthy) {
+        // Find the endpoint name from the list
+        const ep = endpoints.find(e => e.id === id);
+        if (ep) {
+          setActiveEndpoint({ id: ep.id, name: ep.name });
+        }
+      }
     } catch (error) {
       console.error('Failed to test endpoint:', error);
       setTestResults(prev => ({ ...prev, [id]: { is_healthy: false, message: error instanceof Error ? error.message : 'Request failed' } }));

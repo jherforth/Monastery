@@ -21,6 +21,7 @@ interface AppStore extends AppState {
   setCurrentSession: (session: Session | null) => void;
   addMessage: (message: Message) => void;
   updateEndpoint: (endpoint: LLMEndpoint) => void;
+  setActiveEndpoint: (endpoint: { id: string; name: string } | null) => void;
   setTheme: (theme: 'monastery-dark' | 'scriptorium-light') => void;
   toggleSidebar: () => void;
   togglePreview: () => void;
@@ -84,6 +85,17 @@ export const useAppStore = create<AppStore>()(
         ),
         activeEndpoint: state.activeEndpoint?.id === endpoint.id ? endpoint : state.activeEndpoint,
       })),
+      
+      setActiveEndpoint: (endpoint) => set({
+        activeEndpoint: endpoint ? {
+          id: endpoint.id,
+          name: endpoint.name,
+          url: '',
+          status: 'connected' as const,
+          isLocal: false,
+          priority: 1,
+        } : null,
+      }),
       
       setTheme: (theme) => {
         document.documentElement.setAttribute('data-theme', theme);

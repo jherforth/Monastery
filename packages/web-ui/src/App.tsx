@@ -7,6 +7,7 @@ import { CodeEditor } from './components/CodeEditor';
 import { PreviewPane } from './components/PreviewPane';
 import { useAppStore } from './store/useAppStore';
 import { useSessions } from './hooks/useSessions';
+import { useEndpoints } from './hooks/useEndpoints';
 import { Message } from './types';
 
 export default function App() {
@@ -17,6 +18,9 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
+
+  // Endpoints for LLM selector in TopBar
+  const { endpoints } = useEndpoints();
 
   // Session management
   const {
@@ -222,7 +226,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
-      <TopBar availableProjects={availableProjects} />
+      <TopBar availableProjects={availableProjects} endpoints={endpoints} />
       
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}

@@ -1411,8 +1411,14 @@ pub async fn git_clone(
         }
     };
 
+    let repo_name = req.repo_full_name.split('/').last().unwrap_or("project").to_string();
     let project_name = req.project_name.unwrap_or_else(|| {
-        req.repo_full_name.split('/').last().unwrap_or("project").to_string()
+        // Append branch name to project dir so different branches don't conflict
+        if let Some(ref branch) = req.branch {
+            format!("{}-{}", repo_name, branch)
+        } else {
+            repo_name.clone()
+        }
     });
     let target_path = state.config.data_dir.join(&project_name);
 
