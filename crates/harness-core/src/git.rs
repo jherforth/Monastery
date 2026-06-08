@@ -428,7 +428,13 @@ impl GitService {
     }
 
     /// Stage, commit, and push changes in an existing git repo
-    pub fn git_commit_and_push(project_path: &Path, message: &str) -> Result<String> {
+    pub fn git_commit_and_push(project_path: &Path, message: &str, author_name: Option<&str>, author_email: Option<&str>) -> Result<String> {
+        // Configure git identity for commits
+        let name = author_name.unwrap_or("Monastery AI");
+        let email = author_email.unwrap_or("monastery@homelab.local");
+        let _ = run_git(project_path, &["config", "user.email", email]);
+        let _ = run_git(project_path, &["config", "user.name", name]);
+        
         // Stage all changes
         run_git(project_path, &["add", "-A"])?;
 

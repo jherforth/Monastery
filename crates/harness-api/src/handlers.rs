@@ -1020,7 +1020,7 @@ pub async fn list_git_connections(
     use sqlx::Row;
 
     let rows = sqlx::query(
-        "SELECT id, name, forge_type, base_url, api_token, username, is_default, created_at, last_synced_at FROM git_connections ORDER BY created_at DESC"
+        "SELECT id, name, forge_type, base_url, api_token, username, email, is_default, created_at, last_synced_at FROM git_connections ORDER BY created_at DESC"
     )
     .fetch_all(&*state.db)
     .await
@@ -1033,9 +1033,10 @@ pub async fn list_git_connections(
         let base_url: String = row.get(3);
         let api_token: String = row.get(4);
         let username: Option<String> = row.get(5);
-        let is_default: i64 = row.get(6);
-        let created_at: String = row.get(7);
-        let last_synced_at: Option<String> = row.get(8);
+        let email: Option<String> = row.get(6);
+        let is_default: i64 = row.get(7);
+        let created_at: String = row.get(8);
+        let last_synced_at: Option<String> = row.get(9);
 
         GitConnection {
             id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
@@ -1048,6 +1049,7 @@ pub async fn list_git_connections(
             base_url,
             api_token,
             username,
+            email,
             is_default: is_default != 0,
             created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                 .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
@@ -1091,7 +1093,7 @@ pub async fn connect_git_forge(
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
-        "INSERT INTO git_connections (id, name, forge_type, base_url, api_token, username, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO git_connections (id, name, forge_type, base_url, api_token, username, email, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(id.to_string())
     .bind(&req.name)
@@ -1099,6 +1101,7 @@ pub async fn connect_git_forge(
     .bind(&base_url)
     .bind(&req.api_token)
     .bind(&username)
+    .bind(req.email.as_deref())
     .bind(0i64)
     .bind(&now)
     .execute(&*state.db)
@@ -1111,6 +1114,7 @@ pub async fn connect_git_forge(
         base_url,
         api_token: req.api_token,
         username: Some(username),
+        email: req.email,
         is_default: false,
         created_at: chrono::Utc::now(),
         last_synced_at: None,
@@ -1182,7 +1186,7 @@ pub async fn list_git_repos(
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT id, name, forge_type, base_url, api_token, username, is_default, created_at, last_synced_at FROM git_connections WHERE id = ?"
+        "SELECT id, name, forge_type, base_url, api_token, username, email, is_default, created_at, last_synced_at FROM git_connections WHERE id = ?"
     )
     .bind(connection_id.to_string())
     .fetch_optional(&*state.db)
@@ -1236,7 +1240,7 @@ pub async fn list_git_branches(
 ) -> Result<Json<Vec<harness_core::models::GitBranch>>, ApiError> {
 
     let row = sqlx::query(
-        "SELECT id, name, forge_type, base_url, api_token, username, is_default, created_at, last_synced_at FROM git_connections WHERE id = ?"
+        "SELECT id, name, forge_type, base_url, api_token, username, email, is_default, created_at, last_synced_at FROM git_connections WHERE id = ?"
     )
     .bind(connection_id.to_string())
     .fetch_optional(&*state.db)
@@ -1262,9 +1266,10 @@ fn build_git_connection(row: &sqlx::sqlite::SqliteRow) -> GitConnection {
     let base_url: String = row.get(3);
     let api_token: String = row.get(4);
     let username: Option<String> = row.get(5);
-    let is_default: i64 = row.get(6);
-    let created_at: String = row.get(7);
-    let last_synced_at: Option<String> = row.get(8);
+    let email: Option<String> = row.get(6);
+    let is_default: i64 = row.get(7);
+    let created_at: String = row.get(8);
+    let last_synced_at: Option<String> = row.get(9);
 
     GitConnection {
         id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
@@ -1277,6 +1282,7 @@ fn build_git_connection(row: &sqlx::sqlite::SqliteRow) -> GitConnection {
         base_url,
         api_token,
         username,
+        email,
         is_default: is_default != 0,
         created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
             .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
@@ -1342,9 +1348,29 @@ pub async fn git_commit_push(
     
     let project_path = state.config.data_dir.join(&project_name);
     
+    // Look up git connection for author identity
+    let author = sqlx::query(
+        "SELECT username, email FROM git_connections ORDER BY created_at DESC LIMIT 1"
+    )
+    .fetch_optional(&*state.db)
+    .await?;
+    
+    let (author_name, author_email) = match author {
+        Some(r) => {
+            let name: Option<String> = r.get(0);
+            let email: Option<String> = r.get(1);
+            (name, email)
+        }
+        None => (None, None),
+    };
+    
     let message = req.message.unwrap_or_else(|| "Update from Monastery".to_string());
     
-    let result = GitService::git_commit_and_push(&project_path, &message)
+    let result = GitService::git_commit_and_push(
+        &project_path, &message,
+        author_name.as_deref(),
+        author_email.as_deref(),
+    )
         .map_err(|e| ApiError::Core(e))?;
     
     // Update git_connections last_synced_at

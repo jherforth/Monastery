@@ -378,19 +378,6 @@ export default function App() {
               onSendMessage={handleSendMessage}
               onStopGeneration={handleStopGeneration}
               isGenerating={isGenerating}
-              currentFile={currentFile}
-              onFileWritten={async () => {
-                // Re-read the file to refresh the editor
-                if (currentProject?.id && currentFile) {
-                  try {
-                    const res = await fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`);
-                    if (res.ok) {
-                      const data = await res.json();
-                      setEditorContent(data.content || '');
-                    }
-                  } catch {}
-                }
-              }}
             />
           </Panel>
 
@@ -418,6 +405,25 @@ export default function App() {
                       <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
                         Add Tests
                       </button>
+                      {currentFile && (
+                        <button
+                          onClick={async () => {
+                            if (!currentProject?.id || !currentFile) return;
+                            try {
+                              await fetch(`/api/projects/${currentProject.id}/files/write`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ path: currentFile, content: editorContent }),
+                              });
+                            } catch (e) {
+                              console.error('Save failed:', e);
+                            }
+                          }}
+                          className="px-3 py-1 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded transition-colors font-medium"
+                        >
+                          Save
+                        </button>
+                      )}
                     </div>
                   </div>
                   <CodeEditor

@@ -54,6 +54,7 @@ export function GitForgeSetup() {
   const [selectedForge, setSelectedForge] = useState<ForgeTemplate | null>(null);
   const [forgeUrl, setForgeUrl] = useState('');
   const [token, setToken] = useState('');
+  const [gitEmail, setGitEmail] = useState('');
   const [connectionName, setConnectionName] = useState('');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ healthy: boolean; message: string } | null>(null);
@@ -125,6 +126,7 @@ export function GitForgeSetup() {
         forge_type: selectedForge.type,
         api_token: token.trim(),
         base_url: selectedForge.type === 'forgejo' ? forgeUrl.trim() : undefined,
+        email: gitEmail.trim() || undefined,
       };
       await connectForge(req);
       resetWizard();
@@ -421,6 +423,22 @@ export function GitForgeSetup() {
                     placeholder="Paste your token here..."
                     className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-monastery-text-secondary mb-1">
+                    Commit Email (optional)
+                  </label>
+                  <input
+                    type="email"
+                    value={gitEmail}
+                    onChange={(e) => setGitEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
+                  />
+                  <p className="text-xs text-monastery-text-muted mt-1">
+                    Used for git commit attribution. Leave blank to use &quot;Monastery AI&quot;.
+                  </p>
                 </div>
 
                 {error && (

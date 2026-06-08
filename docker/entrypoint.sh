@@ -6,6 +6,11 @@ set -e
 
 echo "=== Monastery Starting ==="
 
+# Configure git identity globally for commits
+git config --global user.email "monastery@homelab.local"
+git config --global user.name "Monastery AI"
+git config --global init.defaultBranch main
+
 # Start the Rust API backend in the background on port 8080
 echo "[harness-api] Starting API server on port 8080..."
 PORT=8080 /app/harness &

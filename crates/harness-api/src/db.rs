@@ -184,6 +184,7 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
             base_url TEXT NOT NULL,
             api_token TEXT NOT NULL,
             username TEXT,
+            email TEXT,
             is_default INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             last_synced_at TEXT
@@ -192,6 +193,11 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+    
+    // Migration: add email column if it doesn't exist (for existing DBs)
+    let _ = sqlx::query("ALTER TABLE git_connections ADD COLUMN email TEXT")
+        .execute(&pool)
+        .await;
     
     Ok(pool)
 }

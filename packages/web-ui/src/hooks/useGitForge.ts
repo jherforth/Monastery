@@ -10,6 +10,7 @@ export interface GitConnection {
   base_url: string;
   api_token: string;
   username: string | null;
+  email: string | null;
   is_default: boolean;
   created_at: string;
   last_synced_at: string | null;
@@ -46,6 +47,7 @@ export interface ConnectForgeRequest {
   forge_type: GitForgeType;
   base_url?: string;
   api_token: string;
+  email?: string;
 }
 
 export interface GitPushRequest {

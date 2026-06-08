@@ -130,6 +130,7 @@ pub struct GitConnection {
     pub base_url: String,
     pub api_token: String,
     pub username: Option<String>,
+    pub email: Option<String>,
     pub is_default: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub last_synced_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -143,6 +144,8 @@ pub struct ConnectGitForgeRequest {
     #[serde(default)]
     pub base_url: Option<String>,
     pub api_token: String,
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 /// A repository from a connected forge

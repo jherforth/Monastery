@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Check, Download } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 
@@ -8,8 +8,6 @@ interface ChatPaneProps {
   onSendMessage: (content: string, attachments?: Attachment[]) => void;
   onStopGeneration?: () => void;
   isGenerating?: boolean;
-  currentFile?: string;
-  onFileWritten?: () => void;
 }
 
 export function ChatPane({ 
@@ -17,8 +15,6 @@ export function ChatPane({
   onSendMessage, 
   onStopGeneration,
   isGenerating = false,
-  currentFile = '',
-  onFileWritten,
 }: ChatPaneProps) {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -72,69 +68,19 @@ export function ChatPane({
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const [applyingCode, setApplyingCode] = useState(false);
-  const [applySuccess, setApplySuccess] = useState<string | null>(null);
-
-  const handleApplyCode = async (code: string) => {
-    const project = useAppStore.getState().currentProject;
-    if (!project?.id || !currentFile) return;
-    
-    setApplyingCode(true);
-    setApplySuccess(null);
-    try {
-      const res = await fetch(`/api/projects/${project.id}/files/write`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: currentFile, content: code }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Write failed' }));
-        throw new Error(err.error || 'Write failed');
-      }
-      setApplySuccess(currentFile);
-      onFileWritten?.();
-      setTimeout(() => setApplySuccess(null), 3000);
-    } catch (e: any) {
-      console.error('Failed to apply code:', e);
-      setApplySuccess('error');
-      setTimeout(() => setApplySuccess(null), 3000);
-    } finally {
-      setApplyingCode(false);
-    }
-  };
-
-  // Render message content with code blocks
-  const renderContent = (content: string, messageId: string, isAssistant: boolean) => {
+  // Render message content with syntax-highlighted code blocks
+  const renderContent = (content: string) => {
     const parts = content.split(/(```[\s\S]*?```)/g);
     return parts.map((part, i) => {
       if (part.startsWith('```') && part.endsWith('```')) {
-        // Extract language and code
         const lines = part.split('\n');
         const lang = lines[0].replace('```', '').trim();
         const code = lines.slice(1, -1).join('\n');
         
         return (
           <div key={i} className="mt-2 mb-2 rounded-lg overflow-hidden border border-monastery-dark-border">
-            <div className="flex items-center justify-between px-3 py-1.5 bg-monastery-dark-tertiary">
-              <span className="text-xs text-monastery-text-muted">
-                {lang || 'code'}
-              </span>
-              {isAssistant && currentFile && (
-                <button
-                  onClick={() => handleApplyCode(code)}
-                  disabled={applyingCode}
-                  className="flex items-center gap-1 px-2 py-0.5 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded transition-colors disabled:opacity-50"
-                >
-                  {applyingCode ? (
-                    <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
-                  ) : applySuccess === currentFile ? (
-                    <Check size={12} />
-                  ) : (
-                    <Download size={12} />
-                  )}
-                  {applySuccess === currentFile ? 'Applied!' : applySuccess === 'error' ? 'Failed' : `Apply to ${currentFile.split('/').pop()}`}
-                </button>
-              )}
+            <div className="flex items-center px-3 py-1.5 bg-monastery-dark-tertiary">
+              <span className="text-xs text-monastery-text-muted">{lang || 'code'}</span>
             </div>
             <pre className="p-3 bg-monastery-dark-bg overflow-x-auto">
               <code className="text-xs font-mono text-monastery-text-primary">{code}</code>
@@ -248,7 +194,7 @@ export function ChatPane({
                     ))}
                   </div>
                 )}
-                <div className="text-sm">{renderContent(message.content, message.id, message.role === 'assistant')}</div>
+                <div className="text-sm">{renderContent(message.content)}</div>
               </div>
             </div>
           ))
