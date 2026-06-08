@@ -1014,7 +1014,6 @@ use harness_core::{
     GitForgeType, GitConnection, ConnectGitForgeRequest,
     GitPushRequest, GitCloneRequest, GitService,
 };
-use harness_core::models::{GitBranch, ListBranchesQuery};
 
 /// List all Git forge connections
 pub async fn list_git_connections(
@@ -1237,7 +1236,6 @@ pub async fn list_git_branches(
     Query(params): Query<harness_core::models::ListBranchesQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<harness_core::models::GitBranch>>, ApiError> {
-    use sqlx::Row;
 
     let row = sqlx::query(
         "SELECT id, name, forge_type, base_url, api_token, username, is_default, created_at, last_synced_at FROM git_connections WHERE id = ?"
