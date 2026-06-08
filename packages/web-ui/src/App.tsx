@@ -217,9 +217,11 @@ export default function App() {
         if (sessionId) {
           addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
         }
-      } else {
-        throw new Error('Empty response from LLM');
       }
+      
+      setIsGenerating(false);
+    } catch (err) {
+      console.error('Chat streaming failed, using fallback:', err);
       // Fallback: simulated response
       setTimeout(() => {
         const aiMessage: Message = {
@@ -235,10 +237,7 @@ export default function App() {
         }
         setIsGenerating(false);
       }, 1500);
-      return; // Don't set isGenerating to false yet (handled in setTimeout)
     }
-    
-    setIsGenerating(false);
   }, [messages, currentSession, currentProject, createSession, addMessage]);
 
   const handleStopGeneration = () => {
