@@ -150,16 +150,35 @@ export default function App() {
       const params = new URLSearchParams();
       if (endpointId) params.set('endpoint_id', endpointId);
       
+      // Build system context from the current project
+      const contextParts: string[] = [];
+      if (currentProject) {
+        contextParts.push(`You are a coding assistant working in the project "${currentProject.name}".`);
+      }
+      if (projectFiles.length > 0) {
+        const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
+        contextParts.push(`Project files:\n${fileList}`);
+      }
+      if (currentFile && editorContent) {
+        const ext = currentFile.split('.').pop() || '';
+        contextParts.push(`Currently open file: ${currentFile}\n\`\`\`${ext}\n${editorContent}\n\`\`\``);
+      }
+      const systemMessage = contextParts.length > 0 ? {
+        role: 'system' as const,
+        content: contextParts.join('\n\n'),
+      } : null;
+      
+      const chatMessages = [
+        ...(systemMessage ? [systemMessage] : []),
+        ...messages.map(m => ({ role: m.role, content: m.content })),
+        { role: userMessage.role, content: userMessage.content },
+      ];
+      
       const modelId = 'deepseek-chat';
       const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [...messages, userMessage].map(m => ({
-            role: m.role,
-            content: m.content,
-          })),
-        }),
+        body: JSON.stringify({ messages: chatMessages }),
       });
 
       if (!res.ok) {
@@ -238,7 +257,7 @@ export default function App() {
         setIsGenerating(false);
       }, 1500);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent]);
 
   const handleStopGeneration = () => {
     setIsGenerating(false);

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu } from 'lucide-react';
+import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
@@ -135,7 +135,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                 onClick={() => setLlmDropdownOpen(!llmDropdownOpen)}
                 className="flex items-center gap-2 px-3 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-lantern transition-colors"
               >
-                <div className={`w-2 h-2 rounded-full ${activeEndpoint ? 'bg-status-success' : 'bg-status-warning'}`} />
+                <Brain size={16} className={activeEndpoint ? 'text-pink-400' : 'text-monastery-text-muted'} />
                 <span className="text-sm font-medium text-monastery-text-primary">
                   {activeEndpoint?.name || 'Select LLM'}
                 </span>
