@@ -189,23 +189,40 @@ pub async fn chat_stream(
     
     let stream = match client.chat_stream(messages, model_id).await {
         Ok(s) => s,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to create chat stream: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+        }
     };
     
-    // Create SSE stream
+    // Create SSE stream with keepalive and proper termination
     use axum::response::Sse;
+    use std::time::Duration;
     
     let event_stream = stream.map(|result| {
         match result {
-            Ok(content) => Ok(axum::response::sse::Event::default().data(content)),
-            Err(e) => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            )),
+            Ok(content) => {
+                if content.is_empty() {
+                    // Skip empty chunks to avoid unnecessary SSE events
+                    Ok(axum::response::sse::Event::default().comment(""))
+                } else {
+                    Ok(axum::response::sse::Event::default().data(content))
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Stream error: {}", e);
+                Err(axum::Error::new(e))
+            }
         }
     });
     
-    Sse::new(event_stream).into_response()
+    Sse::new(event_stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response()
 }
 
 /// List configured endpoints (from database)
@@ -1276,9 +1293,27 @@ fn build_git_connection(row: &sqlx::sqlite::SqliteRow) -> GitConnection {
 /// Get git status for the current project
 pub async fn get_git_status(
     State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<harness_core::GitStatus>, ApiError> {
-    let project_path = &state.config.data_dir;
-    let status = GitService::git_status(project_path)
+    // If project_id is provided, look up the project directory
+    let project_path = if let Some(project_id) = params.get("project_id") {
+        use sqlx::Row;
+        let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+            .bind(project_id)
+            .fetch_optional(&*state.db)
+            .await?;
+        match row {
+            Some(r) => {
+                let name: String = r.get(0);
+                state.config.data_dir.join(&name)
+            }
+            None => return Err(ApiError::NotFound("Project not found".into())),
+        }
+    } else {
+        state.config.data_dir.clone()
+    };
+    
+    let status = GitService::git_status(&project_path)
         .map_err(|e| ApiError::Core(e))?;
     Ok(Json(status))
 }

@@ -28,7 +28,20 @@ export function TopBar({ availableProjects = [], endpoints = [] }: TopBarProps) 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
-  const { gitStatus } = useGitForge();
+  const [gitDropdownOpen, setGitDropdownOpen] = useState(false);
+  const { gitStatus } = useGitForge(currentProject?.id);
+
+  // Derive clean repo name by stripping known branch suffix
+  const getRepoName = () => {
+    if (!currentProject || !gitStatus?.branch || gitStatus.branch === 'unknown') {
+      return currentProject?.name || '';
+    }
+    const suffix = `-${gitStatus.branch}`;
+    if (currentProject.name.endsWith(suffix)) {
+      return currentProject.name.slice(0, -suffix.length);
+    }
+    return currentProject.name;
+  };
   
   return (
     <>
@@ -182,25 +195,77 @@ export function TopBar({ availableProjects = [], endpoints = [] }: TopBarProps) 
 
           {/* Git Status Indicator */}
           {gitStatus && currentProject && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border">
-              <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
-              <span className="text-xs text-monastery-text-secondary">
-                {currentProject.name}
-              </span>
-              <span className="text-monastery-text-muted text-xs">•</span>
-              <span className="text-xs text-monastery-text-secondary font-medium">{gitStatus.branch}</span>
-              {!gitStatus.is_clean && (
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title={`${gitStatus.changed_files.length} changed files`} />
-              )}
-              {gitStatus.ahead > 0 && (
-                <span className="flex items-center text-xs text-green-400">
-                  <ArrowUp size={10} />{gitStatus.ahead}
+            <div className="relative">
+              <button
+                onClick={() => setGitDropdownOpen(!gitDropdownOpen)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
+                title={`Branch: ${gitStatus.branch}\nAhead: ${gitStatus.ahead}, Behind: ${gitStatus.behind}\nFiles changed: ${gitStatus.changed_files.length}`}
+              >
+                <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
+                <span className="text-xs text-monastery-text-secondary">
+                  {getRepoName()}
                 </span>
-              )}
-              {gitStatus.behind > 0 && (
-                <span className="flex items-center text-xs text-amber-400">
-                  <ArrowDown size={10} />{gitStatus.behind}
-                </span>
+                <span className="text-monastery-text-muted text-xs">•</span>
+                <span className="text-xs text-monastery-text-secondary font-medium">{gitStatus.branch}</span>
+                {!gitStatus.is_clean && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title={`${gitStatus.changed_files.length} changed files`} />
+                )}
+                {gitStatus.ahead > 0 && (
+                  <span className="flex items-center text-xs text-green-400">
+                    <ArrowUp size={10} />{gitStatus.ahead}
+                  </span>
+                )}
+                {gitStatus.behind > 0 && (
+                  <span className="flex items-center text-xs text-amber-400">
+                    <ArrowDown size={10} />{gitStatus.behind}
+                  </span>
+                )}
+                {availableProjects.length > 1 && (
+                  <ChevronDown size={12} className="text-monastery-text-muted" />
+                )}
+              </button>
+
+              {/* Project Switcher Dropdown */}
+              {gitDropdownOpen && availableProjects.length > 1 && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setGitDropdownOpen(false)} />
+                  <div className="absolute top-full right-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-60 overflow-y-auto">
+                    {availableProjects.map((proj) => {
+                      const isActive = currentProject?.id === proj.id;
+                      return (
+                        <button
+                          key={proj.id}
+                          onClick={() => {
+                            setCurrentProject({
+                              id: proj.id,
+                              name: proj.name,
+                              path: '',
+                              lastOpened: Date.now(),
+                              files: [],
+                            });
+                            setGitDropdownOpen(false);
+                          }}
+                          className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 ${
+                            isActive
+                              ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
+                              : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
+                          }`}
+                        >
+                          <GitBranch size={14} className="text-monastery-text-muted shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="truncate">{proj.name}</div>
+                            {proj.description && (
+                              <div className="text-xs text-monastery-text-muted truncate">{proj.description}</div>
+                            )}
+                          </div>
+                          {isActive && (
+                            <div className="w-2 h-2 rounded-full bg-status-success shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
               )}
             </div>
           )}

@@ -73,15 +73,16 @@ const fetcher = async (url: string) => {
   return res.json();
 };
 
-export function useGitForge() {
+export function useGitForge(projectId?: string | null) {
   const { data: connections, error, mutate } = useSWR<GitConnection[]>(
     '/api/git/connections',
     fetcher,
     { refreshInterval: 30000 }
   );
 
+  const statusUrl = projectId ? `/api/git/status?project_id=${encodeURIComponent(projectId)}` : null;
   const { data: gitStatus, mutate: mutateStatus } = useSWR<GitStatus>(
-    '/api/git/status',
+    statusUrl,
     fetcher,
     { refreshInterval: 15000 }
   );
