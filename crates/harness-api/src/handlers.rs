@@ -188,7 +188,10 @@ pub async fn chat_stream(
         .collect();
     
     let stream = match client.chat_stream(messages, model_id).await {
-        Ok(s) => s,
+        Ok(s) => {
+            tracing::info!("Chat stream created for model {} at {}", model_id, endpoint_config.base_url);
+            s
+        },
         Err(e) => {
             tracing::error!("Failed to create chat stream: {}", e);
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();

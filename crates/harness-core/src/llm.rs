@@ -35,43 +35,122 @@ impl LLMClient {
         Client::with_config(custom_config)
     }
     
-    /// Send a chat completion request and stream the response
+    /// Send a chat completion request and stream the response.
+    /// Uses a direct reqwest call for better control and error visibility.
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatCompletionRequestMessage>,
         model: String,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
-        let client = self.create_client();
+        let base = self.config.base_url.trim_end_matches('/');
+        let url = format!("{}/chat/completions", base);
         
-        let request = CreateChatCompletionRequest {
-            model,
-            messages,
-            stream: Some(true),
-            ..Default::default()
-        };
+        tracing::info!("Calling chat API at {}", url);
         
-        let stream = client.chat().create_stream(request).await?;
+        let api_key = self.config.api_key.clone().unwrap_or_default();
+        
+        let body = serde_json::json!({
+            "model": model,
+            "messages": messages.iter().map(|m| {
+                match m {
+                    ChatCompletionRequestMessage::User(msg) => {
+                        serde_json::json!({
+                            "role": "user",
+                            "content": match &msg.content {
+                                async_openai::types::ChatCompletionRequestUserMessageContent::Text(t) => t,
+                                _ => "",
+                            }
+                        })
+                    }
+                    ChatCompletionRequestMessage::Assistant(msg) => {
+                        serde_json::json!({
+                            "role": "assistant",
+                            "content": match &msg.content {
+                                Some(async_openai::types::ChatCompletionRequestAssistantMessageContent::Text(t)) => t,
+                                _ => "",
+                            }
+                        })
+                    }
+                    ChatCompletionRequestMessage::System(msg) => {
+                        serde_json::json!({
+                            "role": "system",
+                            "content": match &msg.content {
+                                async_openai::types::ChatCompletionRequestSystemMessageContent::Text(t) => t,
+                                _ => "",
+                            }
+                        })
+                    }
+                    _ => serde_json::json!({"role": "user", "content": ""})
+                }
+            }).collect::<Vec<_>>(),
+            "stream": true,
+        });
+        
+        let http_client = reqwest::Client::new();
+        let resp = http_client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::OpenAIWithMessage(format!("Chat request failed: {}", e)))?;
+        
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            tracing::error!("Chat API error: HTTP {} - {}", status.as_u16(), body);
+            return Err(Error::OpenAIWithMessage(format!(
+                "Chat API returned HTTP {}: {}",
+                status.as_u16(),
+                if body.len() > 200 { format!("{}...", &body[..200]) } else { body }
+            )));
+        }
         
         use futures::stream::StreamExt;
         
-        let mapped = stream.map(|item| {
+        let stream = resp.bytes_stream().map(|item| {
             match item {
-                Ok(response) => {
-                    if let Some(choice) = response.choices.first() {
-                        if let Some(ref delta) = choice.delta.content {
-                            Ok(delta.clone())
-                        } else {
-                            Ok(String::new())
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    // Parse SSE: look for "data:" lines
+                    let mut result = String::new();
+                    for line in text.lines() {
+                        if let Some(data) = line.strip_prefix("data: ") {
+                            if data == "[DONE]" {
+                                continue;
+                            }
+                            // Try to parse as JSON to extract content delta
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                                    result.push_str(content);
+                                }
+                            } else {
+                                // Not JSON? Just pass through as-is
+                                result.push_str(data);
+                            }
+                        } else if let Some(data) = line.strip_prefix("data:") {
+                            // Handle "data:" without space
+                            let data = data.trim_start();
+                            if data == "[DONE]" {
+                                continue;
+                            }
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                                    result.push_str(content);
+                                }
+                            } else {
+                                result.push_str(data);
+                            }
                         }
-                    } else {
-                        Ok(String::new())
                     }
+                    Ok(result)
                 }
-                Err(e) => Err(Error::OpenAI(e)),
+                Err(e) => Err(Error::OpenAIWithMessage(format!("Stream read error: {}", e))),
             }
         });
         
-        Ok(Box::pin(mapped))
+        Ok(Box::pin(stream))
     }
     
     /// Test connection to the endpoint using a direct HTTP request.
