@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu } from 'lucide-react';
+import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
@@ -30,7 +30,28 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
   const [gitDropdownOpen, setGitDropdownOpen] = useState(false);
+  const [committing, setCommitting] = useState(false);
   const { gitStatus } = useGitForge(currentProject?.id);
+
+  const handleCommitPush = async () => {
+    if (!currentProject?.id) return;
+    setCommitting(true);
+    try {
+      const res = await fetch(`/api/git/commit-push?project_id=${encodeURIComponent(currentProject.id)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'Update from Monastery' }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed' }));
+        console.error('Commit/push failed:', err.error);
+      }
+    } catch (e) {
+      console.error('Commit/push error:', e);
+    } finally {
+      setCommitting(false);
+    }
+  };
 
   // Derive clean repo name by stripping known branch suffix
   const getRepoName = () => {
@@ -269,6 +290,23 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                 </>
               )}
             </div>
+          )}
+
+          {/* Commit & Push Button */}
+          {gitStatus && currentProject && !gitStatus.is_clean && (
+            <button
+              onClick={handleCommitPush}
+              disabled={committing}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+              title="Commit all changes and push to remote"
+            >
+              {committing ? (
+                <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Upload size={12} />
+              )}
+              {committing ? 'Pushing...' : 'Commit & Push'}
+            </button>
           )}
         </div>
 

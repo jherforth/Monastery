@@ -153,8 +153,17 @@ export default function App() {
       // Build system context from the current project
       const contextParts: string[] = [];
       if (currentProject) {
-        contextParts.push(`You are a coding assistant working in the project "${currentProject.name}".`);
+        contextParts.push(`You are a coding assistant working in the project "${currentProject.name}". You can directly edit files — your changes will be automatically applied.`);
       }
+      contextParts.push(`When you want to create or modify a file, use this format for code blocks:
+\`\`\`language:path/to/file
+...code...
+\`\`\`
+The file path after the colon will be used to write the file automatically. Example:
+\`\`\`tsx:src/App.tsx
+import React from 'react';
+\`\`\`
+If no file path is specified, the code will be applied to the currently open file.`);
       if (projectFiles.length > 0) {
         const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
         contextParts.push(`Project files:\n${fileList}`);
@@ -236,6 +245,43 @@ export default function App() {
         if (sessionId) {
           addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
         }
+
+        // Auto-apply code blocks to files
+        if (currentProject?.id) {
+          const codeBlockRegex = /```(\w+)?(?::(\S+))?\s*\n([\s\S]*?)```/g;
+          let match;
+          const writes: Promise<void>[] = [];
+          while ((match = codeBlockRegex.exec(fullContent)) !== null) {
+            const [, _lang, filePath, code] = match;
+            const targetPath = filePath || currentFile;
+            if (targetPath) {
+              writes.push(
+                fetch(`/api/projects/${currentProject.id}/files/write`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ path: targetPath, content: code.trimEnd() + '\n' }),
+                }).then(r => {
+                  if (!r.ok) console.error(`Failed to write ${targetPath}`);
+                  else console.log(`Auto-applied: ${targetPath}`);
+                }).catch(e => console.error(`Write error for ${targetPath}:`, e))
+              );
+            }
+          }
+          // After all writes complete, refresh the editor if current file was updated
+          if (writes.length > 0) {
+            Promise.all(writes).then(() => {
+              if (currentFile) {
+                fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`)
+                  .then(r => r.ok ? r.json() : null)
+                  .then(data => { if (data?.content) setEditorContent(data.content); })
+                  .catch(() => {});
+              }
+              // Refresh project files and git status
+              fetch(`/api/projects/${currentProject.id}/files`)
+                .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
+            });
+          }
+        }
       }
       
       setIsGenerating(false);
@@ -314,6 +360,19 @@ export default function App() {
               onSendMessage={handleSendMessage}
               onStopGeneration={handleStopGeneration}
               isGenerating={isGenerating}
+              currentFile={currentFile}
+              onFileWritten={async () => {
+                // Re-read the file to refresh the editor
+                if (currentProject?.id && currentFile) {
+                  try {
+                    const res = await fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`);
+                    if (res.ok) {
+                      const data = await res.json();
+                      setEditorContent(data.content || '');
+                    }
+                  } catch {}
+                }
+              }}
             />
           </Panel>
 

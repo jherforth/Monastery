@@ -427,6 +427,31 @@ impl GitService {
         Ok(())
     }
 
+    /// Stage, commit, and push changes in an existing git repo
+    pub fn git_commit_and_push(project_path: &Path, message: &str) -> Result<String> {
+        // Stage all changes
+        run_git(project_path, &["add", "-A"])?;
+
+        // Check if there are staged changes
+        let diff_check = run_git(project_path, &["diff", "--cached", "--quiet"]);
+        if diff_check.is_ok() {
+            return Ok("No changes to commit".to_string());
+        }
+
+        // Commit
+        run_git(project_path, &["commit", "-m", message])?;
+
+        // Get current branch
+        let branch = run_git(project_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "main".to_string());
+
+        // Push to origin
+        run_git(project_path, &["push", "origin", &branch])?;
+
+        Ok(format!("Committed and pushed to origin/{}", branch))
+    }
+
     /// Pull latest changes from remote
     pub fn git_pull(project_path: &Path, token: Option<&str>) -> Result<String> {
         let remote_url = run_git(project_path, &["remote", "get-url", "origin"])

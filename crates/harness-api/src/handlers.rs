@@ -1314,6 +1314,52 @@ pub async fn get_git_status(
     Ok(Json(status))
 }
 
+/// Commit and push changes for a project to its remote
+#[derive(Debug, Deserialize)]
+pub struct CommitPushRequest {
+    pub message: Option<String>,
+}
+
+pub async fn git_commit_push(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    Json(req): Json<CommitPushRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    
+    let project_id = params.get("project_id")
+        .ok_or_else(|| ApiError::Config("Missing project_id".into()))?;
+    
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(&*state.db)
+        .await?;
+    
+    let project_name: String = match row {
+        Some(r) => r.get(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+    
+    let project_path = state.config.data_dir.join(&project_name);
+    
+    let message = req.message.unwrap_or_else(|| "Update from Monastery".to_string());
+    
+    let result = GitService::git_commit_and_push(&project_path, &message)
+        .map_err(|e| ApiError::Core(e))?;
+    
+    // Update git_connections last_synced_at
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE git_connections SET last_synced_at = ?")
+        .bind(&now)
+        .execute(&*state.db)
+        .await;
+    
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": result,
+    })))
+}
+
 /// Push project to a Git forge repository
 pub async fn git_push(
     State(state): State<AppState>,
@@ -1547,6 +1593,69 @@ pub async fn read_project_file(
         .map_err(|e| ApiError::Internal(format!("Failed to read file: {}", e)))?;
 
     Ok(Json(serde_json::json!({ "content": content, "path": file_path })))
+}
+
+/// Write content to a file in a project
+#[derive(Debug, Deserialize)]
+pub struct WriteFileRequest {
+    pub path: String,
+    pub content: String,
+}
+
+pub async fn write_project_file(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<WriteFileRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let full_path = state.config.data_dir.join(&project_name).join(&req.path);
+
+    // Security: ensure the resolved path is within the project directory
+    let canonical_base = state.config.data_dir.join(&project_name).canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+    
+    // Create parent directories if needed
+    if let Some(parent) = full_path.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| ApiError::Internal(format!("Failed to create directories: {}", e)))?;
+    }
+    
+    // Security check: after creating dirs, canonicalize the path to verify it's within the project
+    // For new files, canonicalize will fail, so we check the parent
+    let resolved = if full_path.exists() {
+        full_path.canonicalize()
+            .map_err(|_| ApiError::Internal("Failed to resolve file path".into()))?
+    } else {
+        // For new files, check the parent directory is within the project
+        let parent = full_path.parent().unwrap_or(&full_path);
+        let canonical_parent = parent.canonicalize()
+            .map_err(|_| ApiError::Internal("Failed to resolve parent path".into()))?;
+        if !canonical_parent.starts_with(&canonical_base) {
+            return Err(ApiError::Config("Path traversal not allowed".into()));
+        }
+        // Use the full_path directly for writing (it's validated)
+        full_path.clone()
+    };
+    
+    // Final security check for existing files
+    if full_path.exists() && !resolved.starts_with(&canonical_base) {
+        return Err(ApiError::Config("Path traversal not allowed".into()));
+    }
+
+    std::fs::write(&full_path, &req.content)
+        .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
+
+    Ok(Json(serde_json::json!({ "success": true, "path": req.path })))
 }
 
 /// Recursively walk a directory and return a FileNode tree

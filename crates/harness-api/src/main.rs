@@ -79,6 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:id", get(handlers::get_project))
         .route("/api/projects/:id/files", get(handlers::list_project_files))
         .route("/api/projects/:id/files/read", get(handlers::read_project_file))
+        .route("/api/projects/:id/files/write", post(handlers::write_project_file))
         // Session routes
         .route("/api/projects/:project_id/sessions", get(handlers::list_sessions))
         .route("/api/projects/:project_id/sessions", post(handlers::create_session))
@@ -102,6 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/git/connections/:id/repos", get(handlers::list_git_repos))
         .route("/api/git/connections/:id/branches", get(handlers::list_git_branches))
         .route("/api/git/status", get(handlers::get_git_status))
+        .route("/api/git/commit-push", post(handlers::git_commit_push))
         .route("/api/git/push", post(handlers::git_push))
         .route("/api/git/clone", post(handlers::git_clone))
         .layer(cors)
