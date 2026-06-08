@@ -74,18 +74,65 @@ impl LLMClient {
         Ok(Box::pin(mapped))
     }
     
-    /// Test connection to the endpoint — returns detailed result
+    /// Test connection to the endpoint using a direct HTTP request.
+    /// Tries the /models endpoint first; falls back to reporting the raw response.
     pub async fn health_check(&self) -> Result<bool> {
-        let client = self.create_client();
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| Error::OpenAIWithMessage(format!("Failed to build HTTP client: {}", e)))?;
         
-        // Try to list models as a health check
-        match client.models().list().await {
-            Ok(_) => Ok(true),
+        let base = self.config.base_url.trim_end_matches('/');
+        let url = format!("{}/models", base);
+        
+        let mut req = http_client.get(&url);
+        if let Some(ref api_key) = self.config.api_key {
+            if !api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", api_key));
+            }
+        }
+        
+        match req.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                
+                if status.is_success() {
+                    // Check if the body is valid JSON (models list)
+                    if body.trim().is_empty() {
+                        return Err(Error::OpenAIWithMessage(format!(
+                            "Health check warning: {} returned HTTP {} with empty body. \
+                             The endpoint may not support model listing, but the connection is reachable. \
+                             Try sending a chat message to verify.",
+                            url, status.as_u16()
+                        )));
+                    }
+                    Ok(true)
+                } else {
+                    let truncated: String = if body.len() > 300 {
+                        format!("{}...", &body[..300])
+                    } else {
+                        body
+                    };
+                    Err(Error::OpenAIWithMessage(format!(
+                        "HTTP {} from {}: {}",
+                        status.as_u16(), url, truncated
+                    )))
+                }
+            }
             Err(e) => {
-                let msg = e.to_string();
-                // Return the error message so the caller can display it
-                Err(Error::OpenAIWithMessage(format!("Health check failed: {}", msg)))
-            },
+                Err(Error::OpenAIWithMessage(format!(
+                    "Connection to {} failed: {}",
+                    base,
+                    if e.is_timeout() {
+                        "request timed out after 10s".to_string()
+                    } else if e.is_connect() {
+                        format!("could not connect — check the URL and network (detail: {})", e)
+                    } else {
+                        e.to_string()
+                    }
+                )))
+            }
         }
     }
     
