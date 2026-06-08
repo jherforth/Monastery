@@ -89,15 +89,35 @@ pub async fn chat_stream(
     
     // Get endpoint from query param or use default
     let endpoint_config = if let Some(endpoint_id) = params.endpoint_id {
-        // Try database first
-        let db_endpoint = sqlx::query_as::<_, harness_core::models::EndpointConfig>(
+        // Try database first (manual row parsing to handle TEXT UUID columns)
+        let db_endpoint = sqlx::query(
             "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints WHERE id = ?"
         )
         .bind(endpoint_id.to_string())
         .fetch_optional(&*state.db)
         .await
         .ok()
-        .flatten();
+        .flatten()
+        .map(|row| {
+            let id: String = row.get(0);
+            let name: String = row.get(1);
+            let base_url: String = row.get(2);
+            let api_key: Option<String> = row.get(3);
+            let is_favorite: i64 = row.get(4);
+            let is_local: i64 = row.get(5);
+            let created_at: String = row.get(6);
+            harness_core::models::EndpointConfig {
+                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                name,
+                base_url,
+                api_key,
+                is_favorite: is_favorite != 0,
+                is_local: is_local != 0,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
+                    .into(),
+            }
+        });
         
         match db_endpoint.or_else(|| {
             state.config.endpoints.iter()
@@ -293,13 +313,33 @@ pub async fn test_endpoint(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
 ) -> Result<Json<TestEndpointResponse>, ApiError> {
-    // Try to find in database first
-    let endpoint_config = sqlx::query_as::<_, harness_core::models::EndpointConfig>(
+    // Try to find in database first (manual row parsing to handle TEXT UUID columns)
+    let endpoint_config = sqlx::query(
         "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints WHERE id = ?"
     )
     .bind(id.to_string())
     .fetch_optional(&*state.db)
-    .await?;
+    .await?
+    .map(|row| {
+        let id_str: String = row.get(0);
+        let name: String = row.get(1);
+        let base_url: String = row.get(2);
+        let api_key: Option<String> = row.get(3);
+        let is_favorite: i64 = row.get(4);
+        let is_local: i64 = row.get(5);
+        let created_at: String = row.get(6);
+        harness_core::models::EndpointConfig {
+            id: uuid::Uuid::parse_str(&id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            name,
+            base_url,
+            api_key,
+            is_favorite: is_favorite != 0,
+            is_local: is_local != 0,
+            created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
+                .into(),
+        }
+    });
     
     let endpoint_config = match endpoint_config {
         Some(config) => config,
