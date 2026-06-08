@@ -199,18 +199,12 @@ pub async fn chat_stream(
     use axum::response::Sse;
     use std::time::Duration;
     
-    let event_stream = stream.filter_map(|result| {
+    let event_stream = stream.map(|result| {
         match result {
-            Ok(content) => {
-                if content.is_empty() {
-                    None // Skip empty chunks
-                } else {
-                    Some(Ok(axum::response::sse::Event::default().data(content)))
-                }
-            }
+            Ok(content) => Ok(axum::response::sse::Event::default().data(content)),
             Err(e) => {
                 tracing::warn!("Stream error: {}", e);
-                Some(Err(axum::Error::new(e)))
+                Err(axum::Error::new(e))
             }
         }
     });
