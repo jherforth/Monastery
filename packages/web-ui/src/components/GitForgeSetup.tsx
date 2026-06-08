@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { GitBranch, Github, Gitlab, Server, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, ChevronRight, FolderGit2, Upload, Download, ArrowLeft, Eye, EyeOff } from 'lucide-react';
-import { useGitForge, GitForgeType, ConnectForgeRequest, GitConnection, GitRepo, GitBranch } from '../hooks/useGitForge';
+import { useGitForge, GitForgeType, ConnectForgeRequest, GitConnection, GitRepo } from '../hooks/useGitForge';
+import type { GitBranchInfo } from '../hooks/useGitForge';
 import { useAppStore } from '../store/useAppStore';
 
 type WizardStep = 'select' | 'url' | 'token' | 'verify';
@@ -71,7 +72,7 @@ export function GitForgeSetup() {
   // Per-repo branch selection: repo id -> branch name
   const [selectedBranches, setSelectedBranches] = useState<Record<number, string>>({});
   // Branches for each repo: repo id -> branch list
-  const [branchesByRepo, setBranchesByRepo] = useState<Record<number, GitBranch[]>>({});
+  const [branchesByRepo, setBranchesByRepo] = useState<Record<number, GitBranchInfo[]>>({});
   const [loadingBranchesFor, setLoadingBranchesFor] = useState<number | null>(null);
 
   // Push form state
@@ -579,7 +580,7 @@ function RepoBrowser({
   cloningId: number | null;
   cloneResult: string | null;
   selectedBranches: Record<number, string>;
-  branchesByRepo: Record<number, GitBranch[]>;
+  branchesByRepo: Record<number, GitBranchInfo[]>;
   loadingBranchesFor: number | null;
   onSelectBranch: (repoId: number, branch: string) => void;
   onFetchBranches: (repo: GitRepo) => void;

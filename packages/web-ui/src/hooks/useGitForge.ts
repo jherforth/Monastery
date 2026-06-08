@@ -26,7 +26,7 @@ export interface GitRepo {
   default_branch: string;
 }
 
-export interface GitBranch {
+export interface GitBranchInfo {
   name: string;
   is_default: boolean;
 }
@@ -154,7 +154,7 @@ export function useGitForge() {
     return res.json();
   }, []);
 
-  const listBranches = useCallback(async (connectionId: string, repoFullName: string): Promise<GitBranch[]> => {
+  const listBranches = useCallback(async (connectionId: string, repoFullName: string): Promise<GitBranchInfo[]> => {
     const res = await fetch(`/api/git/connections/${connectionId}/branches?repo_full_name=${encodeURIComponent(repoFullName)}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to list branches' }));
