@@ -1200,9 +1200,10 @@ pub async fn list_git_repos(
             let base_url: String = r.get(3);
             let api_token: String = r.get(4);
             let username: Option<String> = r.get(5);
-            let is_default: i64 = r.get(6);
-            let created_at: String = r.get(7);
-            let last_synced_at: Option<String> = r.get(8);
+            let email: Option<String> = r.get(6);
+            let is_default: i64 = r.get(7);
+            let created_at: String = r.get(8);
+            let last_synced_at: Option<String> = r.get(9);
 
             GitConnection {
                 id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
@@ -1215,6 +1216,7 @@ pub async fn list_git_repos(
                 base_url,
                 api_token,
                 username,
+                email,
                 is_default: is_default != 0,
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                     .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
@@ -1422,6 +1424,7 @@ pub async fn git_push(
         base_url,
         api_token,
         username: None,
+        email: None,
         is_default: false,
         created_at: chrono::Utc::now(),
         last_synced_at: None,
