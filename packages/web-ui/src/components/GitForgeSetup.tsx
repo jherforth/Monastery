@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { GitBranch, Github, Gitlab, Server, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, ChevronRight, FolderGit2, Upload, Download, ArrowLeft, Eye, EyeOff } from 'lucide-react';
-import { useGitForge, GitForgeType, ConnectForgeRequest, GitConnection, GitRepo } from '../hooks/useGitForge';
+import { useGitForge, GitForgeType, ConnectForgeRequest, GitConnection, GitRepo, GitBranch } from '../hooks/useGitForge';
 import { useAppStore } from '../store/useAppStore';
 
 type WizardStep = 'select' | 'url' | 'token' | 'verify';
@@ -47,7 +47,7 @@ const FORGE_TEMPLATES: ForgeTemplate[] = [
 ];
 
 export function GitForgeSetup() {
-  const { connections, connectForge, deleteConnection, testConnection, listRepos, pushProject, cloneRepo } = useGitForge();
+  const { connections, connectForge, deleteConnection, testConnection, listRepos, listBranches, pushProject, cloneRepo } = useGitForge();
   const { setCurrentProject } = useAppStore();
   const [step, setStep] = useState<WizardStep>('select');
   const [selectedForge, setSelectedForge] = useState<ForgeTemplate | null>(null);
@@ -66,8 +66,13 @@ export function GitForgeSetup() {
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [repoError, setRepoError] = useState<string | null>(null);
   const [cloningId, setCloningId] = useState<number | null>(null);
-  const [cloneBranch, setCloneBranch] = useState('main');
   const [cloneResult, setCloneResult] = useState<string | null>(null);
+  
+  // Per-repo branch selection: repo id -> branch name
+  const [selectedBranches, setSelectedBranches] = useState<Record<number, string>>({});
+  // Branches for each repo: repo id -> branch list
+  const [branchesByRepo, setBranchesByRepo] = useState<Record<number, GitBranch[]>>({});
+  const [loadingBranchesFor, setLoadingBranchesFor] = useState<number | null>(null);
 
   // Push form state
   const [pushRepoName, setPushRepoName] = useState('');
@@ -161,13 +166,14 @@ export function GitForgeSetup() {
     if (!activeConnection) return;
     setCloningId(repo.id);
     setCloneResult(null);
+    const branch = selectedBranches[repo.id] || repo.default_branch;
     try {
       const result = await cloneRepo({
         connection_id: activeConnection.id,
         repo_full_name: repo.full_name,
-        branch: cloneBranch || undefined,
+        branch: branch || undefined,
       });
-      setCloneResult(`Cloned "${result.project_name}" to ${result.project_path}`);
+      setCloneResult(`Cloned "${result.project_name}" (${branch}) to ${result.project_path}`);
       // Set as current project so files appear in sidebar
       setCurrentProject({
         id: result.project_id,
@@ -180,6 +186,31 @@ export function GitForgeSetup() {
       setCloneResult(`Clone failed: ${e.message}`);
     } finally {
       setCloningId(null);
+    }
+  };
+
+  const handleFetchBranches = async (repo: GitRepo) => {
+    if (!activeConnection) return;
+    // Toggle: if already loaded, collapse
+    if (branchesByRepo[repo.id]) {
+      const newBranches = { ...branchesByRepo };
+      delete newBranches[repo.id];
+      setBranchesByRepo(newBranches);
+      return;
+    }
+    setLoadingBranchesFor(repo.id);
+    try {
+      const branches = await listBranches(activeConnection.id, repo.full_name);
+      setBranchesByRepo(prev => ({ ...prev, [repo.id]: branches }));
+      // Auto-select default branch
+      if (!selectedBranches[repo.id]) {
+        const defaultBranch = branches.find(b => b.is_default)?.name || repo.default_branch;
+        setSelectedBranches(prev => ({ ...prev, [repo.id]: defaultBranch }));
+      }
+    } catch (e: any) {
+      console.error('Failed to fetch branches:', e);
+    } finally {
+      setLoadingBranchesFor(null);
     }
   };
 
@@ -234,9 +265,12 @@ export function GitForgeSetup() {
           loading={loadingRepos}
           error={repoError}
           cloningId={cloningId}
-          cloneBranch={cloneBranch}
-          onCloneBranchChange={setCloneBranch}
           cloneResult={cloneResult}
+          selectedBranches={selectedBranches}
+          branchesByRepo={branchesByRepo}
+          loadingBranchesFor={loadingBranchesFor}
+          onSelectBranch={(repoId, branch) => setSelectedBranches(prev => ({ ...prev, [repoId]: branch }))}
+          onFetchBranches={handleFetchBranches}
           onClone={handleClone}
           onBack={backToList}
         />
@@ -529,9 +563,12 @@ function RepoBrowser({
   loading,
   error,
   cloningId,
-  cloneBranch,
-  onCloneBranchChange,
   cloneResult,
+  selectedBranches,
+  branchesByRepo,
+  loadingBranchesFor,
+  onSelectBranch,
+  onFetchBranches,
   onClone,
   onBack,
 }: {
@@ -540,9 +577,12 @@ function RepoBrowser({
   loading: boolean;
   error: string | null;
   cloningId: number | null;
-  cloneBranch: string;
-  onCloneBranchChange: (v: string) => void;
   cloneResult: string | null;
+  selectedBranches: Record<number, string>;
+  branchesByRepo: Record<number, GitBranch[]>;
+  loadingBranchesFor: number | null;
+  onSelectBranch: (repoId: number, branch: string) => void;
+  onFetchBranches: (repo: GitRepo) => void;
   onClone: (repo: GitRepo) => void;
   onBack: () => void;
 }) {
@@ -566,17 +606,6 @@ function RepoBrowser({
         </div>
       )}
 
-      <div className="flex items-center gap-2">
-        <label className="text-xs text-monastery-text-secondary flex-shrink-0">Branch:</label>
-        <input
-          type="text"
-          value={cloneBranch}
-          onChange={(e) => onCloneBranchChange(e.target.value)}
-          placeholder="main"
-          className="flex-1 px-2 py-1 bg-monastery-dark-bg border border-monastery-dark-border rounded text-xs text-monastery-text-primary focus:border-monastery-pine focus:outline-none"
-        />
-      </div>
-
       {loading ? (
         <div className="flex items-center justify-center py-8">
           <Loader2 className="w-5 h-5 animate-spin text-monastery-text-muted" />
@@ -590,35 +619,95 @@ function RepoBrowser({
       ) : repos.length === 0 ? (
         <p className="text-sm text-monastery-text-muted italic py-4">No repositories found on this forge.</p>
       ) : (
-        <div className="space-y-1 max-h-64 overflow-y-auto">
-          {repos.map((repo) => (
-            <div
-              key={repo.id}
-              className="flex items-center gap-3 p-2.5 rounded-lg bg-monastery-dark-surface border border-monastery-dark-border hover:border-monastery-pine transition-colors"
-            >
-              <FolderGit2 className="w-4 h-4 text-monastery-text-muted flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="text-sm text-monastery-text-primary truncate">{repo.full_name}</div>
-                <div className="text-xs text-monastery-text-muted truncate">
-                  {repo.private ? <EyeOff className="w-3 h-3 inline mr-1" /> : <Eye className="w-3 h-3 inline mr-1" />}
-                  {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
-                  {repo.description && ` · ${repo.description}`}
-                </div>
-              </div>
-              <button
-                onClick={() => onClone(repo)}
-                disabled={cloningId === repo.id}
-                className="px-2.5 py-1.5 text-xs bg-monastery-pine text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0 transition-colors"
+        <div className="space-y-1 max-h-[50vh] overflow-y-auto">
+          {repos.map((repo) => {
+            const currentBranch = selectedBranches[repo.id] || repo.default_branch;
+            const branches = branchesByRepo[repo.id];
+            const isExpanded = !!branches;
+            const isLoadingBranches = loadingBranchesFor === repo.id;
+
+            return (
+              <div
+                key={repo.id}
+                className="rounded-lg bg-monastery-dark-surface border border-monastery-dark-border hover:border-monastery-pine transition-colors"
               >
-                {cloningId === repo.id ? (
-                  <Loader2 className="w-3 h-3 animate-spin" />
-                ) : (
-                  <Download className="w-3 h-3" />
+                {/* Repo header row */}
+                <div className="flex items-center gap-3 p-2.5">
+                  <FolderGit2 className="w-4 h-4 text-monastery-text-muted flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-monastery-text-primary truncate">{repo.full_name}</div>
+                    <div className="text-xs text-monastery-text-muted truncate">
+                      {repo.private ? <EyeOff className="w-3 h-3 inline mr-1" /> : <Eye className="w-3 h-3 inline mr-1" />}
+                      {repo.private ? 'Private' : 'Public'} · {repo.default_branch}
+                      {repo.description && ` · ${repo.description}`}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => onFetchBranches(repo)}
+                    className={`px-2 py-1 text-xs rounded transition-colors flex items-center gap-1 flex-shrink-0 ${
+                      isExpanded 
+                        ? 'bg-monastery-dark-tertiary text-monastery-text-primary' 
+                        : 'text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-tertiary'
+                    }`}
+                    title={isExpanded ? 'Hide branches' : 'Show branches'}
+                  >
+                    {isLoadingBranches ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <GitBranch className="w-3 h-3" />
+                    )}
+                    Branches
+                  </button>
+                  <button
+                    onClick={() => onClone(repo)}
+                    disabled={cloningId === repo.id}
+                    className="px-2.5 py-1.5 text-xs bg-monastery-pine text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0 transition-colors"
+                  >
+                    {cloningId === repo.id ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <Download className="w-3 h-3" />
+                    )}
+                    Clone
+                  </button>
+                </div>
+
+                {/* Expanded branch list */}
+                {isExpanded && branches.length > 0 && (
+                  <div className="border-t border-monastery-dark-border px-3 py-2">
+                    <div className="text-xs text-monastery-text-muted mb-1.5">
+                      Select branch to clone:
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {branches.map((b) => (
+                        <button
+                          key={b.name}
+                          onClick={() => onSelectBranch(repo.id, b.name)}
+                          className={`px-2 py-1 text-xs rounded-full transition-colors ${
+                            currentBranch === b.name
+                              ? 'bg-monastery-pine text-white'
+                              : 'bg-monastery-dark-bg text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-tertiary'
+                          }`}
+                        >
+                          {b.name}
+                          {b.is_default && (
+                            <span className="ml-1 text-[10px] opacity-70">(default)</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 )}
-                Clone
-              </button>
-            </div>
-          ))}
+
+                {/* Expanded but no branches (empty repo or error) */}
+                {isExpanded && branches.length === 0 && (
+                  <div className="border-t border-monastery-dark-border px-3 py-2">
+                    <p className="text-xs text-monastery-text-muted italic">No branches found for this repository.</p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

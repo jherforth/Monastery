@@ -997,6 +997,7 @@ use harness_core::{
     GitForgeType, GitConnection, ConnectGitForgeRequest,
     GitPushRequest, GitCloneRequest, GitService,
 };
+use harness_core::models::{GitBranch, ListBranchesQuery};
 
 /// List all Git forge connections
 pub async fn list_git_connections(
@@ -1211,6 +1212,65 @@ pub async fn list_git_repos(
         .map_err(|e| ApiError::Core(e))?;
 
     Ok(Json(repos))
+}
+
+/// List branches for a repo on a Git forge connection
+pub async fn list_git_branches(
+    Path(connection_id): Path<uuid::Uuid>,
+    Query(params): Query<harness_core::models::ListBranchesQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<harness_core::models::GitBranch>>, ApiError> {
+    use sqlx::Row;
+
+    let row = sqlx::query(
+        "SELECT id, name, forge_type, base_url, api_token, username, is_default, created_at, last_synced_at FROM git_connections WHERE id = ?"
+    )
+    .bind(connection_id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let connection = match row {
+        Some(r) => build_git_connection(&r),
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+
+    let branches = GitService::list_branches(&connection, &params.repo_full_name).await
+        .map_err(|e| ApiError::Core(e))?;
+
+    Ok(Json(branches))
+}
+
+/// Helper: build a GitConnection from a database row
+fn build_git_connection(row: &sqlx::sqlite::SqliteRow) -> GitConnection {
+    use sqlx::Row;
+    let id: String = row.get(0);
+    let name: String = row.get(1);
+    let forge_type: String = row.get(2);
+    let base_url: String = row.get(3);
+    let api_token: String = row.get(4);
+    let username: Option<String> = row.get(5);
+    let is_default: i64 = row.get(6);
+    let created_at: String = row.get(7);
+    let last_synced_at: Option<String> = row.get(8);
+
+    GitConnection {
+        id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+        name,
+        forge_type: match forge_type.as_str() {
+            "gitlab" => GitForgeType::GitLab,
+            "forgejo" => GitForgeType::Forgejo,
+            _ => GitForgeType::GitHub,
+        },
+        base_url,
+        api_token,
+        username,
+        is_default: is_default != 0,
+        created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+            .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
+        last_synced_at: last_synced_at.and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.into())
+        }),
+    }
 }
 
 /// Get git status for the current project

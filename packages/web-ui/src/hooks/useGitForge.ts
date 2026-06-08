@@ -26,6 +26,11 @@ export interface GitRepo {
   default_branch: string;
 }
 
+export interface GitBranch {
+  name: string;
+  is_default: boolean;
+}
+
 export interface GitStatus {
   branch: string;
   is_clean: boolean;
@@ -149,6 +154,15 @@ export function useGitForge() {
     return res.json();
   }, []);
 
+  const listBranches = useCallback(async (connectionId: string, repoFullName: string): Promise<GitBranch[]> => {
+    const res = await fetch(`/api/git/connections/${connectionId}/branches?repo_full_name=${encodeURIComponent(repoFullName)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to list branches' }));
+      throw new Error(err.error || 'Failed to list branches');
+    }
+    return res.json();
+  }, []);
+
   return {
     connections: connections || [],
     gitStatus: gitStatus || null,
@@ -158,6 +172,7 @@ export function useGitForge() {
     deleteConnection,
     testConnection,
     listRepos,
+    listBranches,
     pushProject,
     cloneRepo,
     refreshConnections: mutate,

@@ -110,6 +110,15 @@ impl GitForgeType {
             GitForgeType::Forgejo => "/api/v1/user/repos",
         }
     }
+
+    /// URL path for listing branches of a repo (needs owner/repo interpolation)
+    pub fn branches_endpoint(&self, owner: &str, repo: &str) -> String {
+        match self {
+            GitForgeType::GitHub => format!("/repos/{}/{}/branches", owner, repo),
+            GitForgeType::GitLab => format!("/projects/{}%2F{}/repository/branches", owner, repo),
+            GitForgeType::Forgejo => format!("/api/v1/repos/{}/{}/branches", owner, repo),
+        }
+    }
 }
 
 /// A configured Git forge connection
@@ -179,4 +188,17 @@ pub struct GitCloneRequest {
     pub repo_full_name: String,
     pub project_name: Option<String>,
     pub branch: Option<String>,
+}
+
+/// A branch on a Git repository
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitBranch {
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// Query params for listing branches
+#[derive(Debug, Deserialize)]
+pub struct ListBranchesQuery {
+    pub repo_full_name: String,
 }

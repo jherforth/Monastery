@@ -5,7 +5,7 @@
 //! and `reqwest` for forge REST APIs.
 
 use crate::models::{
-    GitForgeType, GitConnection, GitRepo, GitStatus,
+    GitForgeType, GitConnection, GitRepo, GitStatus, GitBranch,
 };
 use crate::Result;
 use serde_json::Value;
@@ -238,6 +238,58 @@ impl GitService {
         };
 
         Ok(git_repo)
+    }
+
+    // ============================================================
+    // Forge API: List Branches
+    // ============================================================
+
+    /// List branches for a repository
+    pub async fn list_branches(
+        connection: &GitConnection,
+        repo_full_name: &str,
+    ) -> Result<Vec<GitBranch>> {
+        let client = reqwest::Client::new();
+        let parts: Vec<&str> = repo_full_name.split('/').collect();
+        let (owner, repo) = if parts.len() >= 2 {
+            (parts[0], parts[1])
+        } else {
+            return Err(crate::Error::Network(format!(
+                "Invalid repo name format: {}. Expected owner/repo", repo_full_name
+            )));
+        };
+
+        let endpoint = connection.forge_type.branches_endpoint(owner, repo);
+        let url = format!("{}{}", connection.base_url, endpoint);
+
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", connection.api_token))
+            .header("User-Agent", "Monastery-Harness/0.1")
+            .send()
+            .await
+            .map_err(|e| crate::Error::Network(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(crate::Error::Network(
+                format!("Failed to list branches: {} - {}", status, body)
+            ));
+        }
+
+        let branches: Vec<Value> = resp.json().await
+            .map_err(|e| crate::Error::Network(e.to_string()))?;
+
+        let parsed: Vec<GitBranch> = branches.into_iter().map(|b| {
+            let name = b["name"].as_str().unwrap_or("unknown").to_string();
+            // GitHub/Forgejo don't include is_default; GitLab might not either
+            // We'll mark based on whether name matches common defaults
+            let is_default = name == "main" || name == "master";
+            GitBranch { name, is_default }
+        }).collect();
+
+        Ok(parsed)
     }
 
     // ============================================================
