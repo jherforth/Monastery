@@ -304,7 +304,7 @@ export function GitForgeSetup() {
                   <button
                     key={forge.type}
                     onClick={() => handleSelectForge(forge)}
-                    className="flex items-center gap-3 p-3 rounded-lg bg-monastery-dark-surface border border-monastery-dark-border hover:border-monastery-pine-green transition-colors text-left"
+                    className="flex items-center gap-3 p-3 rounded-lg bg-monastery-dark-surface border border-monastery-dark-border hover:border-monastery-pine transition-colors text-left"
                   >
                     <forge.icon className={`w-5 h-5 ${forge.color}`} />
                     <div className="flex-1">
@@ -337,7 +337,7 @@ export function GitForgeSetup() {
                     value={forgeUrl}
                     onChange={(e) => setForgeUrl(e.target.value)}
                     placeholder={FORGE_TEMPLATES[2].exampleBaseUrl}
-                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine-green focus:outline-none"
+                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
                   />
                 </div>
                 {error && <p className="text-xs text-red-400">{error}</p>}
@@ -350,7 +350,7 @@ export function GitForgeSetup() {
                   </button>
                   <button
                     onClick={handleVerifyUrl}
-                    className="px-4 py-1.5 text-xs bg-monastery-pine-green text-white rounded-lg hover:bg-opacity-90"
+                    className="px-4 py-1.5 text-xs bg-monastery-pine text-white rounded-lg hover:bg-opacity-90"
                   >
                     Continue
                   </button>
@@ -371,7 +371,7 @@ export function GitForgeSetup() {
                     type="text"
                     value={connectionName}
                     onChange={(e) => setConnectionName(e.target.value)}
-                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine-green focus:outline-none"
+                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine focus:outline-none"
                   />
                 </div>
 
@@ -384,7 +384,7 @@ export function GitForgeSetup() {
                     value={token}
                     onChange={(e) => setToken(e.target.value)}
                     placeholder="Paste your token here..."
-                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine-green focus:outline-none"
+                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
                   />
                 </div>
 
@@ -405,7 +405,7 @@ export function GitForgeSetup() {
                   <button
                     onClick={handleConnect}
                     disabled={!token.trim() || connecting}
-                    className="px-4 py-1.5 text-xs bg-monastery-pine-green text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center gap-2"
+                    className="px-4 py-1.5 text-xs bg-monastery-pine text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center gap-2"
                   >
                     {connecting && <Loader2 className="w-3 h-3 animate-spin" />}
                     Connect
@@ -437,13 +437,13 @@ function TokenGuide({ forge, baseUrl }: { forge: ForgeTemplate; baseUrl: string 
             href={tokenUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-monastery-lantern-gold hover:underline inline-flex items-center gap-1"
+            className="text-monastery-lantern hover:underline inline-flex items-center gap-1"
           >
             {forge.label} Token Settings <ExternalLink className="w-3 h-3" />
           </a>
         </li>
         <li>Create a new <strong>Personal Access Token</strong></li>
-        <li>Select scopes: <code className="text-monastery-lantern-gold bg-monastery-dark-bg px-1 rounded">{forge.scopes}</code></li>
+        <li>Select scopes: <code className="text-monastery-lantern bg-monastery-dark-bg px-1 rounded">{forge.scopes}</code></li>
         <li>Copy the generated token and paste it below</li>
       </ol>
       {forge.type === 'forgejo' && (
@@ -489,21 +489,21 @@ function ConnectionCard({
       </div>
       <button
         onClick={onBrowse}
-        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-pine-green transition-colors"
+        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-pine transition-colors"
         title="Browse repositories"
       >
         <FolderGit2 className="w-4 h-4" />
       </button>
       <button
         onClick={onPush}
-        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-lantern-gold transition-colors"
+        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-lantern transition-colors"
         title="Push project to forge"
       >
         <Upload className="w-4 h-4" />
       </button>
       <button
         onClick={onTest}
-        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-lantern-gold transition-colors"
+        className="p-1.5 text-xs text-monastery-text-secondary hover:text-monastery-lantern transition-colors"
         title="Test connection"
       >
         <CheckCircle className="w-4 h-4" />
@@ -573,7 +573,7 @@ function RepoBrowser({
           value={cloneBranch}
           onChange={(e) => onCloneBranchChange(e.target.value)}
           placeholder="main"
-          className="flex-1 px-2 py-1 bg-monastery-dark-bg border border-monastery-dark-border rounded text-xs text-monastery-text-primary focus:border-monastery-pine-green focus:outline-none"
+          className="flex-1 px-2 py-1 bg-monastery-dark-bg border border-monastery-dark-border rounded text-xs text-monastery-text-primary focus:border-monastery-pine focus:outline-none"
         />
       </div>
 
@@ -594,7 +594,7 @@ function RepoBrowser({
           {repos.map((repo) => (
             <div
               key={repo.id}
-              className="flex items-center gap-3 p-2.5 rounded-lg bg-monastery-dark-surface border border-monastery-dark-border hover:border-monastery-pine-green transition-colors"
+              className="flex items-center gap-3 p-2.5 rounded-lg bg-monastery-dark-surface border border-monastery-dark-border hover:border-monastery-pine transition-colors"
             >
               <FolderGit2 className="w-4 h-4 text-monastery-text-muted flex-shrink-0" />
               <div className="flex-1 min-w-0">
@@ -608,7 +608,7 @@ function RepoBrowser({
               <button
                 onClick={() => onClone(repo)}
                 disabled={cloningId === repo.id}
-                className="px-2.5 py-1.5 text-xs bg-monastery-pine-green text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0 transition-colors"
+                className="px-2.5 py-1.5 text-xs bg-monastery-pine text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center gap-1.5 flex-shrink-0 transition-colors"
               >
                 {cloningId === repo.id ? (
                   <Loader2 className="w-3 h-3 animate-spin" />
@@ -690,7 +690,7 @@ function PushForm({
             value={repoName}
             onChange={(e) => onRepoNameChange(e.target.value)}
             placeholder="my-monastery-project"
-            className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine-green focus:outline-none"
+            className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
           />
         </div>
 
@@ -701,7 +701,7 @@ function PushForm({
             value={description}
             onChange={(e) => onDescriptionChange(e.target.value)}
             placeholder="Created with Monastery"
-            className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine-green focus:outline-none"
+            className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
           />
         </div>
 
@@ -724,7 +724,7 @@ function PushForm({
               type="text"
               value={branch}
               onChange={(e) => onBranchChange(e.target.value)}
-              className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine-green focus:outline-none"
+              className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine focus:outline-none"
             />
           </div>
           <div>
@@ -733,7 +733,7 @@ function PushForm({
               type="text"
               value={commitMessage}
               onChange={(e) => onCommitMessageChange(e.target.value)}
-              className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine-green focus:outline-none"
+              className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine focus:outline-none"
             />
           </div>
         </div>
@@ -741,7 +741,7 @@ function PushForm({
         <button
           onClick={onPush}
           disabled={!repoName.trim() || pushing}
-          className="w-full px-4 py-2.5 text-sm bg-monastery-pine-green text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
+          className="w-full px-4 py-2.5 text-sm bg-monastery-pine text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 flex items-center justify-center gap-2 transition-colors"
         >
           {pushing ? (
             <Loader2 className="w-4 h-4 animate-spin" />

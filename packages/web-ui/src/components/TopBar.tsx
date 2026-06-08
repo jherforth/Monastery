@@ -1,12 +1,17 @@
 import { useState } from 'react';
-import { FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon } from 'lucide-react';
+import { FolderGit2, Bot, Plug, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
 
-export function TopBar() {
+interface TopBarProps {
+  availableProjects?: Array<{ id: string; name: string; description?: string | null }>;
+}
+
+export function TopBar({ availableProjects = [] }: TopBarProps) {
   const { 
-    currentProject, 
+    currentProject,
+    setCurrentProject,
     activeEndpoint, 
     resourceUsage, 
     toggleSidebar,
@@ -18,6 +23,7 @@ export function TopBar() {
   } = useAppStore();
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const { gitStatus } = useGitForge();
   
   return (
@@ -43,10 +49,60 @@ export function TopBar() {
             {currentProject && (
               <>
                 <span className="text-monastery-text-muted">/</span>
-                <button className="flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm">
-                  <FolderGit2 size={14} />
-                  <span className="text-monastery-text-secondary">{currentProject.name}</span>
-                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
+                    className="flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm"
+                  >
+                    <FolderGit2 size={14} />
+                    <span className="text-monastery-text-secondary">{currentProject.name}</span>
+                    {availableProjects.length > 1 && (
+                      <ChevronDown size={12} className="text-monastery-text-muted" />
+                    )}
+                  </button>
+                  
+                  {/* Project Dropdown */}
+                  {projectDropdownOpen && availableProjects.length > 1 && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-10"
+                        onClick={() => setProjectDropdownOpen(false)}
+                      />
+                      <div className="absolute top-full left-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-60 overflow-y-auto">
+                        {availableProjects.map((proj) => (
+                          <button
+                            key={proj.id}
+                            onClick={() => {
+                              setCurrentProject({
+                                id: proj.id,
+                                name: proj.name,
+                                path: '',
+                                lastOpened: Date.now(),
+                                files: [],
+                              });
+                              setProjectDropdownOpen(false);
+                            }}
+                            className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                              currentProject?.id === proj.id
+                                ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
+                                : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <FolderGit2 size={14} className="text-monastery-text-muted shrink-0" />
+                              <span className="truncate">{proj.name}</span>
+                            </div>
+                            {proj.description && (
+                              <div className="text-xs text-monastery-text-muted mt-0.5 truncate pl-6">
+                                {proj.description}
+                              </div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -84,7 +140,7 @@ export function TopBar() {
           {gitStatus && (
             <button
               onClick={() => setIsSettingsOpen(true)}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine-green transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
               title={`Branch: ${gitStatus.branch}\nAhead: ${gitStatus.ahead}, Behind: ${gitStatus.behind}\nFiles changed: ${gitStatus.changed_files.length}`}
             >
               <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />

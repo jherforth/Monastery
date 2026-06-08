@@ -371,10 +371,35 @@ pub struct TestEndpointResponse {
 
 /// List projects
 pub async fn list_projects(
-    State(_state): State<AppState>,
-) -> Json<Vec<ProjectInfo>> {
-    // Placeholder - would query database
-    Json(Vec::new())
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ProjectInfo>>, ApiError> {
+    use sqlx::Row;
+    
+    let rows = sqlx::query(
+        "SELECT id, name, description, created_at, updated_at FROM projects ORDER BY updated_at DESC"
+    )
+    .fetch_all(&*state.db)
+    .await?;
+    
+    let projects: Vec<ProjectInfo> = rows.iter().map(|row| {
+        let id: String = row.get(0);
+        let name: String = row.get(1);
+        let description: Option<String> = row.get(2);
+        let created_at: String = row.get(3);
+        let updated_at: String = row.get(4);
+        
+        ProjectInfo {
+            id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
+            name,
+            description,
+            created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
+            updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at)
+                .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
+        }
+    }).collect();
+    
+    Ok(Json(projects))
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,9 +429,37 @@ pub async fn create_project(
 /// Get a specific project
 pub async fn get_project(
     Path(id): Path<Uuid>,
+    State(state): State<AppState>,
 ) -> Result<Json<ProjectInfo>, ApiError> {
-    // Placeholder - would query database
-    Err(ApiError::NotFound(format!("Project {} not found", id)))
+    use sqlx::Row;
+    
+    let row = sqlx::query(
+        "SELECT id, name, description, created_at, updated_at FROM projects WHERE id = ?"
+    )
+    .bind(id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+    
+    match row {
+        Some(row) => {
+            let id_str: String = row.get(0);
+            let name: String = row.get(1);
+            let description: Option<String> = row.get(2);
+            let created_at: String = row.get(3);
+            let updated_at: String = row.get(4);
+            
+            Ok(Json(ProjectInfo {
+                id: Uuid::parse_str(&id_str).unwrap_or_else(|_| Uuid::new_v4()),
+                name,
+                description,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
+                updated_at: chrono::DateTime::parse_from_rfc3339(&updated_at)
+                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset()).into(),
+            }))
+        }
+        None => Err(ApiError::NotFound(format!("Project {} not found", id))),
+    }
 }
 
 // ============================================================

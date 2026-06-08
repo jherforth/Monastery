@@ -10,12 +10,13 @@ import { useSessions } from './hooks/useSessions';
 import { Message } from './types';
 
 export default function App() {
-  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme, currentProject } = useAppStore();
+  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
   const [currentFile, setCurrentFile] = useState('');
   const [editorContent, setEditorContent] = useState('// Select a file to edit');
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
+  const [availableProjects, setAvailableProjects] = useState<any[]>([]);
 
   // Session management
   const {
@@ -33,6 +34,27 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // On startup, fetch existing projects and auto-select if none active
+  useEffect(() => {
+    fetch('/api/projects')
+      .then(r => r.json())
+      .then((projects: any[]) => {
+        setAvailableProjects(projects);
+        if (projects.length > 0 && !currentProject) {
+          // Auto-select the most recently updated project
+          const recent = projects[0];
+          setCurrentProject({
+            id: recent.id,
+            name: recent.name,
+            path: '', // Will be populated by the backend file listing
+            lastOpened: Date.now(),
+            files: [],
+          });
+        }
+      })
+      .catch(() => {});
+  }, []); // Run once on mount
 
   // Fetch project files when currentProject changes
   useEffect(() => {
@@ -200,7 +222,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
-      <TopBar />
+      <TopBar availableProjects={availableProjects} />
       
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}

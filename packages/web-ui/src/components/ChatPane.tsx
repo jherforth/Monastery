@@ -104,28 +104,28 @@ export function ChatPane({
               <div className="grid grid-cols-2 gap-2 text-left max-w-sm mx-auto">
                 <button 
                   onClick={() => onSendMessage('Create a Next.js app with authentication')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Web App</div>
                   Create a Next.js app with authentication
                 </button>
                 <button 
                   onClick={() => onSendMessage('Explain how this project structure works')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Understand</div>
                   Explain this codebase structure
                 </button>
                 <button 
                   onClick={() => onSendMessage('Add unit tests to the existing module')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Testing</div>
                   Add tests to the existing module
                 </button>
                 <button 
                   onClick={() => onSendMessage('Deploy this project to my homelab server')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine-green text-left"
+                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Deploy</div>
                   Deploy this to my homelab
