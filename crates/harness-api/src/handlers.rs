@@ -1658,6 +1658,66 @@ pub async fn write_project_file(
     Ok(Json(serde_json::json!({ "success": true, "path": req.path })))
 }
 
+/// Read all project files and return their contents
+pub async fn read_all_project_files(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    if !project_path.exists() {
+        return Ok(Json(serde_json::json!({ "files": {} })));
+    }
+
+    let mut files = serde_json::Map::new();
+    read_files_recursive(&project_path, &project_path, &mut files, 0);
+    
+    Ok(Json(serde_json::json!({ "files": files })))
+}
+
+fn read_files_recursive(
+    base: &std::path::Path,
+    current: &std::path::Path,
+    files: &mut serde_json::Map<String, serde_json::Value>,
+    depth: usize,
+) {
+    if depth > 10 { return; } // Safety limit
+    if let Ok(read_dir) = std::fs::read_dir(current) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if name == ".git" || name == "node_modules" || name == "target" { continue; }
+            
+            let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
+            
+            if path.is_dir() {
+                read_files_recursive(base, &path, files, depth + 1);
+            } else {
+                // Read text files only (skip binaries)
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    // Limit file size to ~200KB per file (most source files are under this)
+                    let truncated: String = if content.len() > 200_000 {
+                        format!("{}... [truncated at 200KB]", &content[..200_000])
+                    } else {
+                        content
+                    };
+                    files.insert(rel_path, serde_json::Value::String(truncated));
+                }
+            }
+        }
+    }
+}
+
 /// Recursively walk a directory and return a FileNode tree
 fn walk_directory(base: &std::path::Path, current: &std::path::Path) -> Vec<serde_json::Value> {
     let mut entries = Vec::new();

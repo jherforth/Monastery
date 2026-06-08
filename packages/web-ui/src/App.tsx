@@ -18,6 +18,7 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
+  const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
@@ -67,12 +68,18 @@ export default function App() {
   useEffect(() => {
     if (!currentProject?.id) {
       setProjectFiles([]);
+      setAllFileContents({});
       return;
     }
     fetch(`/api/projects/${currentProject.id}/files`)
       .then(r => r.json())
       .then(files => setProjectFiles(files))
       .catch(() => setProjectFiles([]));
+    // Also fetch all file contents for LLM context
+    fetch(`/api/projects/${currentProject.id}/files/read-all`)
+      .then(r => r.json())
+      .then(data => setAllFileContents(data.files || {}))
+      .catch(() => setAllFileContents({}));
   }, [currentProject?.id]);
 
   // Fetch sessions when project changes
@@ -153,24 +160,35 @@ export default function App() {
       // Build system context from the current project
       const contextParts: string[] = [];
       if (currentProject) {
-        contextParts.push(`You are a coding assistant working in the project "${currentProject.name}". You can directly edit files — your changes will be automatically applied.`);
+        contextParts.push(`You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
       }
-      contextParts.push(`When you want to create or modify a file, use this format for code blocks:
-\`\`\`language:path/to/file
-...code...
-\`\`\`
-The file path after the colon will be used to write the file automatically. Example:
-\`\`\`tsx:src/App.tsx
-import React from 'react';
-\`\`\`
-If no file path is specified, the code will be applied to the currently open file.`);
+      contextParts.push(`FILE EDITING RULES:
+- To edit or create a file, use code blocks with the format: \`\`\`language:path/to/file
+- Example: \`\`\`tsx:src/App.tsx
+- The file path after the colon determines where the code is written.
+- To create a NEW file, just use a path that doesn't exist yet.
+- You can write multiple files in a single response — each code block becomes a file.`);
+      
       if (projectFiles.length > 0) {
         const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
-        contextParts.push(`Project files:\n${fileList}`);
+        contextParts.push(`PROJECT FILE TREE:\n${fileList}`);
       }
-      if (currentFile && editorContent) {
-        const ext = currentFile.split('.').pop() || '';
-        contextParts.push(`Currently open file: ${currentFile}\n\`\`\`${ext}\n${editorContent}\n\`\`\``);
+      
+      // Include ALL file contents so the LLM has full project visibility
+      const fileEntries = Object.entries(allFileContents);
+      if (fileEntries.length > 0) {
+        const fileContents = fileEntries
+          .filter(([, content]) => content.trim().length > 0)
+          .map(([path, content]) => {
+            const ext = path.split('.').pop() || '';
+            return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
+          })
+          .join('\n\n');
+        // Cap total context at ~400KB (fits DeepSeek's 128K token window with room for conversation)
+        const capped = fileContents.length > 400_000 
+          ? fileContents.slice(0, 400_000) + '\n\n... [additional files truncated — open specific files to include them]'
+          : fileContents;
+        contextParts.push(`PROJECT FILE CONTENTS:\n${capped}`);
       }
       const systemMessage = contextParts.length > 0 ? {
         role: 'system' as const,
@@ -303,7 +321,7 @@ If no file path is specified, the code will be applied to the currently open fil
         setIsGenerating(false);
       }, 1500);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents]);
 
   const handleStopGeneration = () => {
     setIsGenerating(false);
