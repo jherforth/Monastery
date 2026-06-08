@@ -68,19 +68,39 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     
     sqlx::query(
         r#"
-        CREATE TABLE IF NOT EXISTS chat_history (
+        CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             project_id TEXT,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            model TEXT,
+            title TEXT NOT NULL,
             created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
             FOREIGN KEY (project_id) REFERENCES projects(id)
         )
         "#,
     )
     .execute(&pool)
     .await?;
+    
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS session_messages (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            model TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    
+    // Drop legacy chat_history table if it exists (unused placeholder)
+    sqlx::query("DROP TABLE IF EXISTS chat_history")
+        .execute(&pool)
+        .await?;
     
     // Snapshots table for code versioning and rollback
     sqlx::query(

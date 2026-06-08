@@ -3,6 +3,7 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  model?: string;
   attachments?: Attachment[];
 }
 
@@ -39,9 +40,38 @@ export interface LLMEndpoint {
   priority: number;
 }
 
+// Session types (aligned with backend API)
+export interface SessionInfo {
+  id: string;
+  project_id: string | null;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface SessionMessage {
+  id: string;
+  role: string;
+  content: string;
+  model: string | null;
+  created_at: string;
+}
+
+export interface SessionDetail {
+  id: string;
+  project_id: string | null;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: SessionMessage[];
+}
+
+// Legacy session type (used in store)
 export interface Session {
   id: string;
   projectId: string;
+  title: string;
   messages: Message[];
   createdAt: number;
   updatedAt: number;

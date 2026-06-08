@@ -1,11 +1,12 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
 import { CodeEditor } from './components/CodeEditor';
 import { PreviewPane } from './components/PreviewPane';
 import { useAppStore } from './store/useAppStore';
+import { useSessions } from './hooks/useSessions';
 import { Message } from './types';
 
 export default function App() {
@@ -15,6 +16,18 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
+
+  // Session management
+  const {
+    sessions,
+    currentSession,
+    isLoading: isLoadingSessions,
+    fetchSessions,
+    createSession,
+    getSession,
+    deleteSession,
+    addMessage,
+  } = useSessions(currentProject?.id ?? null);
 
   // Sync persisted theme with the HTML data-theme attribute on load
   useEffect(() => {
@@ -33,7 +46,57 @@ export default function App() {
       .catch(() => setProjectFiles([]));
   }, [currentProject?.id]);
 
-  const handleSendMessage = (content: string, attachments?: any[]) => {
+  // Fetch sessions when project changes
+  useEffect(() => {
+    if (currentProject?.id) {
+      fetchSessions();
+    }
+  }, [currentProject?.id, fetchSessions]);
+
+  // Create a new session
+  const handleCreateSession = useCallback(async () => {
+    const session = await createSession();
+    if (session) {
+      setMessages([]);
+    }
+  }, [createSession]);
+
+  // Select an existing session and load its messages
+  const handleSelectSession = useCallback(async (sessionId: string) => {
+    const session = await getSession(sessionId);
+    if (session) {
+      const msgs: Message[] = session.messages.map(m => ({
+        id: m.id,
+        role: m.role as 'user' | 'assistant' | 'system',
+        content: m.content,
+        timestamp: new Date(m.created_at).getTime(),
+        model: m.model ?? undefined,
+      }));
+      setMessages(msgs);
+    }
+  }, [getSession]);
+
+  // Delete a session
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    await deleteSession(sessionId);
+    if (currentSession?.id === sessionId) {
+      setMessages([]);
+    }
+  }, [deleteSession, currentSession]);
+
+  const handleSendMessage = useCallback(async (content: string, attachments?: any[]) => {
+    // Auto-create a session if none exists
+    let sessionId = currentSession?.id;
+    if (!sessionId && currentProject?.id) {
+      const session = await createSession({ title: content.slice(0, 50) });
+      if (session) {
+        sessionId = session.id;
+      } else {
+        // Fallback: still show messages locally even if session creation fails
+        sessionId = null;
+      }
+    }
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -44,19 +107,92 @@ export default function App() {
     
     setMessages((prev) => [...prev, userMessage]);
     setIsGenerating(true);
+
+    // Save user message to backend if we have a session
+    if (sessionId) {
+      addMessage({ role: 'user', content }).catch(console.error);
+    }
     
-    // Simulate AI response (would connect to backend in real app)
-    setTimeout(() => {
-      const aiMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: 'This is a simulated response. Connect to the backend API for real AI interactions.',
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [...prev, aiMessage]);
-      setIsGenerating(false);
-    }, 1500);
-  };
+    // Try real backend connection, fall back to simulation
+    try {
+      const activeEndpoint = useAppStore.getState().activeEndpoint;
+      const endpointId = activeEndpoint?.id;
+      
+      const params = new URLSearchParams();
+      if (endpointId) params.set('endpoint_id', endpointId);
+      
+      const res = await fetch(`/api/models/deepseek-chat/chat?${params.toString()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...messages, userMessage].map(m => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+      });
+
+      if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) {
+        // Streaming response
+        const reader = res.body?.getReader();
+        const decoder = new TextDecoder();
+        let fullContent = '';
+        
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            // Parse SSE data lines
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.slice(6);
+                if (data === '[DONE]') continue;
+                fullContent += data;
+              }
+            }
+          }
+        }
+        
+        if (fullContent) {
+          const aiMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            role: 'assistant',
+            content: fullContent,
+            timestamp: Date.now(),
+          };
+          setMessages((prev) => [...prev, aiMessage]);
+          
+          // Save AI response to backend
+          if (sessionId) {
+            addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
+          }
+        }
+      } else {
+        throw new Error('Backend returned non-streaming response or error');
+      }
+    } catch {
+      // Fallback: simulated response
+      setTimeout(() => {
+        const aiMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: 'This is a simulated response. Connect to the backend API for real AI interactions.',
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, aiMessage]);
+        
+        if (sessionId) {
+          addMessage({ role: 'assistant', content: aiMessage.content }).catch(console.error);
+        }
+        setIsGenerating(false);
+      }, 1500);
+      return; // Don't set isGenerating to false yet (handled in setTimeout)
+    }
+    
+    setIsGenerating(false);
+  }, [messages, currentSession, currentProject, createSession, addMessage]);
 
   const handleStopGeneration = () => {
     setIsGenerating(false);
@@ -78,7 +214,6 @@ export default function App() {
               files={projectFiles}
               onSelectFile={async (path) => {
                 setCurrentFile(path);
-                // Fetch file content from the backend
                 try {
                   const res = await fetch(`/api/projects/${currentProject!.id}/files/read?path=${encodeURIComponent(path)}`);
                   if (res.ok) {
@@ -91,6 +226,12 @@ export default function App() {
                   setEditorContent(`// ${path}`);
                 }
               }}
+              sessions={sessions}
+              currentSessionId={currentSession?.id ?? null}
+              isLoadingSessions={isLoadingSessions}
+              onCreateSession={handleCreateSession}
+              onSelectSession={handleSelectSession}
+              onDeleteSession={handleDeleteSession}
             />
           </div>
         </div>

@@ -5,7 +5,7 @@ mod db;
 mod middleware;
 mod snapshot_service;
 
-use axum::{Router, routing::get, routing::post, routing::delete};
+use axum::{Router, routing::get, routing::post, routing::patch, routing::delete};
 use tower_http::{cors::{CorsLayer, Any}, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use std::sync::Arc;
@@ -79,6 +79,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:id", get(handlers::get_project))
         .route("/api/projects/:id/files", get(handlers::list_project_files))
         .route("/api/projects/:id/files/read", get(handlers::read_project_file))
+        // Session routes
+        .route("/api/projects/:project_id/sessions", get(handlers::list_sessions))
+        .route("/api/projects/:project_id/sessions", post(handlers::create_session))
+        .route("/api/projects/:project_id/sessions/:session_id", get(handlers::get_session))
+        .route("/api/projects/:project_id/sessions/:session_id", patch(handlers::update_session))
+        .route("/api/projects/:project_id/sessions/:session_id", delete(handlers::delete_session))
+        .route("/api/projects/:project_id/sessions/:session_id/messages", post(handlers::add_session_message))
         .route("/api/discovery", get(handlers::discover_services))
         // Snapshot routes
         .route("/api/projects/:project_id/snapshots", get(handlers::list_snapshots))
