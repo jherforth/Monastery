@@ -25,6 +25,9 @@ pub enum Error {
     #[error("OpenAI API error: {0}")]
     OpenAI(#[from] async_openai::error::OpenAIError),
 
+    #[error("{0}")]
+    OpenAIWithMessage(String),
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 

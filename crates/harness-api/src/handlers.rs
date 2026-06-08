@@ -353,12 +353,16 @@ pub async fn test_endpoint(
     };
     
     let client = harness_core::LLMClient::new(endpoint_config);
-    let is_healthy = client.health_check().await.unwrap_or(false);
+    let (is_healthy, message) = match client.health_check().await {
+        Ok(true) => (true, "Connection successful".to_string()),
+        Ok(false) => (false, "Connection failed".to_string()),
+        Err(e) => (false, e.to_string()),
+    };
     
     Ok(Json(TestEndpointResponse {
         endpoint_id: id,
         is_healthy,
-        message: if is_healthy { "Connection successful".into() } else { "Connection failed".into() },
+        message,
     }))
 }
 

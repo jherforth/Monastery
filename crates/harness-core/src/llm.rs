@@ -74,14 +74,18 @@ impl LLMClient {
         Ok(Box::pin(mapped))
     }
     
-    /// Test connection to the endpoint
+    /// Test connection to the endpoint — returns detailed result
     pub async fn health_check(&self) -> Result<bool> {
         let client = self.create_client();
         
         // Try to list models as a health check
         match client.models().list().await {
             Ok(_) => Ok(true),
-            Err(_) => Ok(false), // Return false instead of error for health checks
+            Err(e) => {
+                let msg = e.to_string();
+                // Return the error message so the caller can display it
+                Err(Error::OpenAIWithMessage(format!("Health check failed: {}", msg)))
+            },
         }
     }
     

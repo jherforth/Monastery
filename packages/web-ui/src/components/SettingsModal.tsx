@@ -18,7 +18,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     api_key: '',
   });
   const [testingId, setTestingId] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, boolean>>({});
+  const [testResults, setTestResults] = useState<Record<string, { is_healthy: boolean; message: string }>>({});
   const [activeTab, setActiveTab] = useState<SettingsTab>('llm');
 
   if (!isOpen) return null;
@@ -53,13 +53,10 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     setTestingId(id);
     try {
       const result = await testEndpoint(id);
-      setTestResults(prev => ({ ...prev, [id]: result.is_healthy }));
-      if (!result.is_healthy) {
-        alert(`Connection failed: ${result.message}`);
-      }
+      setTestResults(prev => ({ ...prev, [id]: { is_healthy: result.is_healthy, message: result.message } }));
     } catch (error) {
       console.error('Failed to test endpoint:', error);
-      setTestResults(prev => ({ ...prev, [id]: false }));
+      setTestResults(prev => ({ ...prev, [id]: { is_healthy: false, message: error instanceof Error ? error.message : 'Request failed' } }));
     } finally {
       setTestingId(null);
     }
@@ -201,9 +198,9 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                             <p className="text-sm text-monastery-text-secondary mt-1">{endpoint.base_url}</p>
                             
                             {testResults[endpoint.id] !== undefined && (
-                              <p className={`text-sm mt-2 ${testResults[endpoint.id] ? 'text-green-500' : 'text-red-500'}`}>
-                                {testResults[endpoint.id] ? '✓ Connection successful' : '✗ Connection failed'}
-                              </p>
+                              <div className={`mt-2 p-2 rounded text-xs ${testResults[endpoint.id].is_healthy ? 'bg-green-400/10 text-green-400' : 'bg-red-400/10 text-red-400'}`}>
+                                {testResults[endpoint.id].is_healthy ? '✓ Connection successful' : `✗ ${testResults[endpoint.id].message}`}
+                              </div>
                             )}
                           </div>
                           
