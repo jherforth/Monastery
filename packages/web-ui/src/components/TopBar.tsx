@@ -8,9 +8,10 @@ import type { EndpointConfig } from '../hooks/useEndpoints';
 interface TopBarProps {
   availableProjects?: Array<{ id: string; name: string; description?: string | null }>;
   endpoints?: EndpointConfig[];
+  onRefreshProjects?: () => void;
 }
 
-export function TopBar({ availableProjects = [], endpoints = [] }: TopBarProps) {
+export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects }: TopBarProps) {
   const { 
     currentProject,
     setCurrentProject,
@@ -316,7 +317,7 @@ export function TopBar({ availableProjects = [], endpoints = [] }: TopBarProps) 
         </div>
       </header>
 
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+      <SettingsModal isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); onRefreshProjects?.(); }} />
     </>
   );
 }

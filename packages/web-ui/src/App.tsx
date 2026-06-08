@@ -40,24 +40,27 @@ export default function App() {
   }, [theme]);
 
   // On startup, fetch existing projects and auto-select if none active
-  useEffect(() => {
+  const refreshProjects = useCallback(() => {
     fetch('/api/projects')
       .then(r => r.json())
       .then((projects: any[]) => {
         setAvailableProjects(projects);
-        if (projects.length > 0 && !currentProject) {
-          // Auto-select the most recently updated project
+        if (projects.length > 0 && !useAppStore.getState().currentProject) {
           const recent = projects[0];
           setCurrentProject({
             id: recent.id,
             name: recent.name,
-            path: '', // Will be populated by the backend file listing
+            path: '',
             lastOpened: Date.now(),
             files: [],
           });
         }
       })
       .catch(() => {});
+  }, [setCurrentProject]);
+
+  useEffect(() => {
+    refreshProjects();
   }, []); // Run once on mount
 
   // Fetch project files when currentProject changes
@@ -147,7 +150,8 @@ export default function App() {
       const params = new URLSearchParams();
       if (endpointId) params.set('endpoint_id', endpointId);
       
-      const res = await fetch(`/api/models/deepseek-chat/chat?${params.toString()}`, {
+      const modelId = 'deepseek-chat';
+      const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -158,47 +162,64 @@ export default function App() {
         }),
       });
 
-      if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) {
-        // Streaming response
-        const reader = res.body?.getReader();
-        const decoder = new TextDecoder();
-        let fullContent = '';
+      if (!res.ok) {
+        const errText = await res.text().catch(() => 'Unknown error');
+        console.error('Chat API returned', res.status, errText);
+        throw new Error(`Backend returned ${res.status}`);
+      }
+
+      // Read the response as a stream using the SSE protocol
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No response body');
+      
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      let buffer = '';
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
         
-        if (reader) {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            // Parse SSE data lines
-            const lines = chunk.split('\n');
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                const data = line.slice(6);
-                if (data === '[DONE]') continue;
-                fullContent += data;
-              }
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Process complete SSE events (terminated by double newline)
+        const events = buffer.split('\n\n');
+        // The last element may be incomplete — keep it in the buffer
+        buffer = events.pop() || '';
+        
+        for (const event of events) {
+          const lines = event.split('\n');
+          const dataLines: string[] = [];
+          for (const line of lines) {
+            // Handle "data: ..." lines (with or without space after colon)
+            if (line.startsWith('data:')) {
+              const content = line.slice(5).trimStart();
+              if (content === '[DONE]') continue;
+              dataLines.push(content);
             }
           }
-        }
-        
-        if (fullContent) {
-          const aiMessage: Message = {
-            id: (Date.now() + 1).toString(),
-            role: 'assistant',
-            content: fullContent,
-            timestamp: Date.now(),
-          };
-          setMessages((prev) => [...prev, aiMessage]);
-          
-          // Save AI response to backend
-          if (sessionId) {
-            addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
+          // Join multi-line data with \n per SSE spec
+          if (dataLines.length > 0) {
+            fullContent += dataLines.join('\n');
           }
         }
-      } else {
-        throw new Error('Backend returned non-streaming response or error');
       }
-    } catch {
+      
+      if (fullContent) {
+        const aiMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: fullContent,
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, aiMessage]);
+        
+        if (sessionId) {
+          addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
+        }
+      } else {
+        throw new Error('Empty response from LLM');
+      }
       // Fallback: simulated response
       setTimeout(() => {
         const aiMessage: Message = {
@@ -226,7 +247,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
-      <TopBar availableProjects={availableProjects} endpoints={endpoints} />
+      <TopBar availableProjects={availableProjects} endpoints={endpoints} onRefreshProjects={refreshProjects} />
       
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}
