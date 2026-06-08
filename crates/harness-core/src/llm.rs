@@ -2,7 +2,7 @@
 
 use async_openai::Client;
 use async_openai::config::Config as OpenAIConfig;
-use async_openai::types::{ChatCompletionRequestMessage, CreateChatCompletionRequest};
+use async_openai::types::ChatCompletionRequestMessage;
 use futures::Stream;
 use std::pin::Pin;
 use secrecy::SecretBox;

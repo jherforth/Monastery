@@ -160,6 +160,7 @@ pub async fn chat_stream(
         }
     };
     
+    let base_url = endpoint_config.base_url.clone();
     let client = harness_core::LLMClient::new(endpoint_config);
     
     // Convert messages to OpenAI format
@@ -187,9 +188,10 @@ pub async fn chat_stream(
         })
         .collect();
     
+    let model_for_log = model_id.clone();
     let stream = match client.chat_stream(messages, model_id).await {
         Ok(s) => {
-            tracing::info!("Chat stream created for model {} at {}", model_id, endpoint_config.base_url);
+            tracing::info!("Chat stream created for model {} at {}", model_for_log, base_url);
             s
         },
         Err(e) => {
