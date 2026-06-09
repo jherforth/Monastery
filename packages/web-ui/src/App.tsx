@@ -74,6 +74,10 @@ export default function App() {
 
   // Fetch project files when currentProject changes
   useEffect(() => {
+    // Clear tabs when switching projects
+    setOpenTabs([]);
+    setActiveTabIndex(0);
+    
     if (!currentProject?.id) {
       setProjectFiles([]);
       setAllFileContents({});
@@ -455,7 +459,18 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
-      <TopBar availableProjects={availableProjects} endpoints={endpoints} onRefreshProjects={refreshProjects} />
+      <TopBar availableProjects={availableProjects} endpoints={endpoints} onRefreshProjects={refreshProjects}
+        onCommitComplete={(msg, snapshotId) => {
+          const markerMsg: Message = {
+            id: `commit-${Date.now()}`,
+            role: 'system',
+            content: `✅ ${msg}`,
+            timestamp: Date.now(),
+            model: snapshotId || undefined, // Store snapshot ID in model field
+          };
+          setMessages(prev => [...prev, markerMsg]);
+        }}
+      />
       
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}

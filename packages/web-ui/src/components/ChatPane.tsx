@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
+import { useSnapshots } from '../hooks/useSnapshots';
 
 interface ChatPaneProps {
   messages: Message[];
@@ -21,6 +22,19 @@ export function ChatPane({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { activeEndpoint, theme } = useAppStore();
+  const { restoreSnapshot } = useSnapshots();
+  const [revertingId, setRevertingId] = useState<string | null>(null);
+
+  const handleRevert = async (snapshotId: string) => {
+    setRevertingId(snapshotId);
+    try {
+      await restoreSnapshot(snapshotId, { create_backup: true });
+    } catch (e) {
+      console.error('Revert failed:', e);
+    } finally {
+      setRevertingId(null);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -226,6 +240,8 @@ export function ChatPane({
                 className={`max-w-[85%] rounded-2xl px-4 py-3 ${
                   message.role === 'user'
                     ? 'bg-monastery-pine text-white'
+                    : message.role === 'system'
+                    ? 'bg-monastery-dark-tertiary border border-monastery-dark-border text-center'
                     : 'bg-monastery-dark-surface border border-monastery-dark-border'
                 }`}
               >
@@ -242,7 +258,20 @@ export function ChatPane({
                     ))}
                   </div>
                 )}
-                <div className="text-sm">{renderContent(message.content)}</div>
+                <div className={`text-sm ${message.role === 'system' ? 'text-monastery-text-secondary' : ''}`}>
+                  {renderContent(message.content)}
+                </div>
+                {/* Revert button on commit markers */}
+                {message.role === 'system' && message.model && (
+                  <button
+                    onClick={() => handleRevert(message.model!)}
+                    disabled={revertingId === message.model}
+                    className="mt-2 flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-dark-surface hover:bg-monastery-lantern hover:text-monastery-dark-bg rounded-lg transition-colors disabled:opacity-50 mx-auto"
+                  >
+                    <RotateCcw size={12} />
+                    {revertingId === message.model ? 'Reverting...' : 'Revert to this snapshot'}
+                  </button>
+                )}
               </div>
             </div>
           ))

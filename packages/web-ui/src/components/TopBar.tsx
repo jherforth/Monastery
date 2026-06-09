@@ -3,15 +3,17 @@ import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, Arro
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
+import { useSnapshots } from '../hooks/useSnapshots';
 import type { EndpointConfig } from '../hooks/useEndpoints';
 
 interface TopBarProps {
   availableProjects?: Array<{ id: string; name: string; description?: string | null }>;
   endpoints?: EndpointConfig[];
   onRefreshProjects?: () => void;
+  onCommitComplete?: (message: string, snapshotId?: string) => void;
 }
 
-export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects }: TopBarProps) {
+export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete }: TopBarProps) {
   const { 
     currentProject,
     setCurrentProject,
@@ -31,7 +33,30 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
   const [gitDropdownOpen, setGitDropdownOpen] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [snapshots, setSnapshots] = useState<any[]>([]);
+  const [restoringId, setRestoringId] = useState<string | null>(null);
   const { gitStatus } = useGitForge(currentProject?.id);
+  const { listSnapshots, restoreSnapshot } = useSnapshots();
+
+  // Fetch snapshots when git dropdown opens
+  const handleGitDropdownToggle = async () => {
+    if (!gitDropdownOpen && currentProject?.id) {
+      const result = await listSnapshots();
+      if (result?.snapshots) setSnapshots(result.snapshots);
+    }
+    setGitDropdownOpen(!gitDropdownOpen);
+  };
+
+  const handleRestoreSnapshot = async (snapshotId: string) => {
+    setRestoringId(snapshotId);
+    try {
+      await restoreSnapshot(snapshotId, { create_backup: true });
+    } catch (e) {
+      console.error('Restore failed:', e);
+    } finally {
+      setRestoringId(null);
+    }
+  };
 
   const handleCommitPush = async () => {
     if (!currentProject?.id) return;
@@ -42,9 +67,11 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: 'Update from Monastery' }),
       });
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Failed' }));
-        console.error('Commit/push failed:', err.error);
+        console.error('Commit/push failed:', data.error);
+      } else {
+        onCommitComplete?.(data.message || 'Committed', data.snapshot_id);
       }
     } catch (e) {
       console.error('Commit/push error:', e);
@@ -219,7 +246,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
           {gitStatus && currentProject && (
             <div className="relative">
               <button
-                onClick={() => setGitDropdownOpen(!gitDropdownOpen)}
+                onClick={handleGitDropdownToggle}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
                 title={`Branch: ${gitStatus.branch}\nAhead: ${gitStatus.ahead}, Behind: ${gitStatus.behind}\nFiles changed: ${gitStatus.changed_files.length}`}
               >
@@ -286,6 +313,34 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                         </button>
                       );
                     })}
+                    
+                    {/* Snapshot History */}
+                    {snapshots.length > 0 && (
+                      <>
+                        <div className="border-t border-monastery-dark-border my-1" />
+                        <div className="px-3 py-1 text-xs text-monastery-text-muted font-medium uppercase tracking-wider">
+                          History
+                        </div>
+                        {snapshots.map((snap: any) => (
+                          <div key={snap.id} className="flex items-center gap-2 px-3 py-1.5 text-sm text-monastery-text-secondary hover:bg-monastery-dark-tertiary transition-colors">
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs truncate">{snap.name}</div>
+                              <div className="text-[10px] text-monastery-text-muted">
+                                {new Date(snap.created_at).toLocaleString()} · {snap.files_count} files
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleRestoreSnapshot(snap.id); }}
+                              disabled={restoringId === snap.id}
+                              className="px-2 py-0.5 text-[10px] bg-monastery-dark-tertiary hover:bg-monastery-lantern hover:text-monastery-dark-bg rounded transition-colors disabled:opacity-50"
+                              title="Revert project to this snapshot"
+                            >
+                              {restoringId === snap.id ? '...' : 'Revert'}
+                            </button>
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </div>
                 </>
               )}

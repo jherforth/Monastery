@@ -1335,11 +1335,13 @@ pub async fn git_commit_push(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     use sqlx::Row;
     
-    let project_id = params.get("project_id")
+    let project_id_str = params.get("project_id")
         .ok_or_else(|| ApiError::Config("Missing project_id".into()))?;
+    let project_id = uuid::Uuid::parse_str(project_id_str)
+        .map_err(|_| ApiError::Config("Invalid project_id".into()))?;
     
     let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
-        .bind(project_id)
+        .bind(project_id_str)
         .fetch_optional(&*state.db)
         .await?;
     
@@ -1349,6 +1351,36 @@ pub async fn git_commit_push(
     };
     
     let project_path = state.config.data_dir.join(&project_name);
+    let message = req.message.unwrap_or_else(|| "Update from Monastery".to_string());
+    
+    // --- Create a snapshot before committing ---
+    let snapshot_id = Uuid::new_v4();
+    let snapshot_result: Option<String> = {
+        let mut files = Vec::new();
+        read_files_for_snapshot(&project_path, &project_path, &mut files);
+        
+        if !files.is_empty() {
+            let snapshot_req = CreateSnapshotRequest {
+                project_id,
+                name: Some(format!("Pre-commit: {}", message)),
+                description: Some(message.clone()),
+                created_by: Some("Monastery AI".into()),
+                trigger: SnapshotTrigger::BeforeChange,
+                files,
+                parent_snapshot_id: None,
+            };
+            
+            match state.snapshot_service.create_snapshot(snapshot_req).await {
+                Ok(resp) => Some(resp.snapshot.id.to_string()),
+                Err(e) => {
+                    tracing::warn!("Failed to create pre-commit snapshot: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
     
     // Look up git connection for author identity
     let author = sqlx::query(
@@ -1365,8 +1397,6 @@ pub async fn git_commit_push(
         }
         None => (None, None),
     };
-    
-    let message = req.message.unwrap_or_else(|| "Update from Monastery".to_string());
     
     let result = GitService::git_commit_and_push(
         &project_path, &message,
@@ -1385,7 +1415,34 @@ pub async fn git_commit_push(
     Ok(Json(serde_json::json!({
         "success": true,
         "message": result,
+        "snapshot_id": snapshot_result,
     })))
+}
+
+/// Helper: recursively read files for snapshot creation
+fn read_files_for_snapshot(
+    base: &std::path::Path,
+    current: &std::path::Path,
+    files: &mut Vec<harness_core::snapshot::SnapshotFileInput>,
+) {
+    if let Ok(read_dir) = std::fs::read_dir(current) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if name == ".git" || name == "node_modules" || name == "target" { continue; }
+            
+            let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
+            
+            if path.is_dir() {
+                read_files_for_snapshot(base, &path, files);
+            } else if let Ok(content) = std::fs::read_to_string(&path) {
+                files.push(harness_core::snapshot::SnapshotFileInput {
+                    file_path: rel_path,
+                    content: Some(content),
+                });
+            }
+        }
+    }
 }
 
 /// Push project to a Git forge repository
