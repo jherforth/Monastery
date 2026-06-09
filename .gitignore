@@ -18,4 +18,7 @@ target/
 # Build artifacts
 dist/
 build/
+
+# Reference examples (not part of Monastery)
+boltdiyexample/
 ```

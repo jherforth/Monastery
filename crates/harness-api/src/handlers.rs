@@ -1687,6 +1687,60 @@ pub async fn write_project_file(
     Ok(Json(serde_json::json!({ "success": true, "path": req.path })))
 }
 
+/// Execute a shell command in a project directory
+#[derive(Debug, Deserialize)]
+pub struct ShellRequest {
+    pub command: String,
+}
+
+pub async fn project_shell(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<ShellRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    
+    // Security: only allow safe commands
+    let safe_prefixes = ["npm", "npx", "node", "pnpm", "yarn", "git", "ls", "cat", "echo", "mkdir", "touch", "rm", "cp", "mv"];
+    let cmd_lower = req.command.trim().to_lowercase();
+    let is_safe = safe_prefixes.iter().any(|prefix| cmd_lower.starts_with(prefix));
+    
+    if !is_safe {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Command not allowed for security reasons. Allowed: npm, git, ls, cat, echo, mkdir, touch, etc."
+        })));
+    }
+    
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&req.command)
+        .current_dir(&project_path)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("Failed to execute command: {}", e)))?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    
+    Ok(Json(serde_json::json!({
+        "success": output.status.success(),
+        "output": stdout,
+        "stderr": stderr,
+        "exit_code": output.status.code().unwrap_or(-1),
+    })))
+}
+
 /// Read all project files and return their contents
 pub async fn read_all_project_files(
     Path(project_id): Path<uuid::Uuid>,

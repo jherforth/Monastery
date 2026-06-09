@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 
@@ -68,19 +68,62 @@ export function ChatPane({
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Render message content with syntax-highlighted code blocks
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const copyToClipboard = (text: string, index: number) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    });
+  };
+
+  // Render markdown-style formatting inline
+  const renderInline = (text: string) => {
+    // Bold **text**
+    const withBold = text.split(/(\*\*[^*]+\*\*)/g).map((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**')) {
+        return <strong key={i} className="text-monastery-text-primary">{part.slice(2, -2)}</strong>;
+      }
+      return part;
+    });
+    // Inline code `text`
+    return withBold.flatMap((part, i) => {
+      if (typeof part === 'string') {
+        return part.split(/(`[^`]+`)/g).map((sub, j) => {
+          if (sub.startsWith('`') && sub.endsWith('`')) {
+            return <code key={`${i}-${j}`} className="px-1 py-0.5 bg-monastery-dark-tertiary rounded text-xs font-mono">{sub.slice(1, -1)}</code>;
+          }
+          return sub;
+        });
+      }
+      return [part];
+    });
+  };
+
+  // Render message content with markdown and code blocks
   const renderContent = (content: string) => {
     const parts = content.split(/(```[\s\S]*?```)/g);
+    let codeBlockIndex = -1;
+    
     return parts.map((part, i) => {
       if (part.startsWith('```') && part.endsWith('```')) {
+        codeBlockIndex++;
+        const ci = codeBlockIndex;
         const lines = part.split('\n');
         const lang = lines[0].replace('```', '').trim();
         const code = lines.slice(1, -1).join('\n');
         
         return (
           <div key={i} className="mt-2 mb-2 rounded-lg overflow-hidden border border-monastery-dark-border">
-            <div className="flex items-center px-3 py-1.5 bg-monastery-dark-tertiary">
+            <div className="flex items-center justify-between px-3 py-1.5 bg-monastery-dark-tertiary">
               <span className="text-xs text-monastery-text-muted">{lang || 'code'}</span>
+              <button
+                onClick={() => copyToClipboard(code, ci)}
+                className="flex items-center gap-1 px-2 py-0.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-bg rounded transition-colors"
+              >
+                {copiedIndex === ci ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                {copiedIndex === ci ? 'Copied' : 'Copy'}
+              </button>
             </div>
             <pre className="p-3 bg-monastery-dark-bg overflow-x-auto">
               <code className="text-xs font-mono text-monastery-text-primary">{code}</code>
@@ -88,7 +131,12 @@ export function ChatPane({
           </div>
         );
       }
-      return <span key={i} className="whitespace-pre-wrap">{part}</span>;
+      // Render markdown-like paragraphs
+      return (
+        <div key={i} className="whitespace-pre-wrap text-sm leading-relaxed">
+          {renderInline(part)}
+        </div>
+      );
     });
   };
 

@@ -1,5 +1,6 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useState, useEffect, useCallback } from 'react';
+import { X } from 'lucide-react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
@@ -12,8 +13,15 @@ import { Message } from './types';
 
 export default function App() {
   const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
-  const [currentFile, setCurrentFile] = useState('');
-  const [editorContent, setEditorContent] = useState('// Select a file to edit');
+  
+  // Multi-tab editor state
+  interface EditorTab { path: string; content: string; isDirty: boolean; }
+  const [openTabs, setOpenTabs] = useState<EditorTab[]>([]);
+  const [activeTabIndex, setActiveTabIndex] = useState(0);
+  const activeTab = openTabs[activeTabIndex];
+  const currentFile = activeTab?.path || '';
+  const editorContent = activeTab?.content || '// Select a file to edit';
+  
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
@@ -119,6 +127,65 @@ export default function App() {
       setMessages([]);
     }
   }, [deleteSession, currentSession]);
+
+  // --- Multi-tab editor helpers ---
+  const openFileInTab = useCallback(async (path: string) => {
+    // Check if already open
+    const existingIdx = openTabs.findIndex(t => t.path === path);
+    if (existingIdx >= 0) {
+      setActiveTabIndex(existingIdx);
+      return;
+    }
+    // Fetch file content and add as new tab
+    try {
+      const res = await fetch(`/api/projects/${currentProject!.id}/files/read?path=${encodeURIComponent(path)}`);
+      const data = res.ok ? await res.json() : null;
+      const content = data?.content || `// ${path}`;
+      const newTab: EditorTab = { path, content, isDirty: false };
+      setOpenTabs(prev => {
+        const updated = [...prev, newTab];
+        setActiveTabIndex(updated.length - 1);
+        return updated;
+      });
+    } catch {
+      const newTab: EditorTab = { path, content: `// ${path}`, isDirty: false };
+      setOpenTabs(prev => {
+        const updated = [...prev, newTab];
+        setActiveTabIndex(updated.length - 1);
+        return updated;
+      });
+    }
+  }, [currentProject, openTabs]);
+
+  const closeTab = useCallback((index: number) => {
+    setOpenTabs(prev => {
+      const updated = prev.filter((_, i) => i !== index);
+      if (activeTabIndex >= updated.length) {
+        setActiveTabIndex(Math.max(0, updated.length - 1));
+      } else if (index < activeTabIndex) {
+        setActiveTabIndex(prev => prev - 1);
+      }
+      return updated;
+    });
+  }, [activeTabIndex]);
+
+  const updateTabContent = useCallback((content: string) => {
+    setOpenTabs(prev => prev.map((t, i) =>
+      i === activeTabIndex ? { ...t, content, isDirty: true } : t
+    ));
+  }, [activeTabIndex]);
+
+  const markTabSaved = useCallback(() => {
+    setOpenTabs(prev => prev.map((t, i) =>
+      i === activeTabIndex ? { ...t, isDirty: false } : t
+    ));
+  }, [activeTabIndex]);
+
+  const updateTabContentByPath = useCallback((path: string, content: string) => {
+    setOpenTabs(prev => prev.map(t =>
+      t.path === path ? { ...t, content, isDirty: false } : t
+    ));
+  }, []);
 
   const handleSendMessage = useCallback(async (content: string, attachments?: any[]) => {
     // Auto-create a session if none exists
@@ -264,37 +331,96 @@ export default function App() {
           addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
         }
 
-        // Auto-apply code blocks to files
+        // Auto-apply code blocks and shell commands to files
         if (currentProject?.id) {
-          const codeBlockRegex = /```(\w+)?(?::(\S+))?\s*\n([\s\S]*?)```/g;
-          let match;
           const writes: Promise<void>[] = [];
-          while ((match = codeBlockRegex.exec(fullContent)) !== null) {
-            const [, _lang, filePath, code] = match;
-            const targetPath = filePath || currentFile;
-            if (targetPath) {
+          const modifiedFiles: string[] = [];
+          
+          // --- Enhanced code block parser (patterns from bolt.diy) ---
+          
+          // Pattern 1: language:path/to/file (original)
+          const pattern1 = /```(\w+)?:(\S+)\s*\n([\s\S]*?)```/g;
+          
+          // Pattern 2: file path on line before code block
+          const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)```/gm;
+          
+          // Pattern 3: create/update/modify/write file language
+          const pattern3 = /(?:create|update|modify|edit|write|add|generate)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:called\s+)?[`'"]*([\/\w\-\.]+\.\w+)[`'"]*:?\s*\n+```(\w*)\n([\s\S]*?)```/gi;
+          
+          // Pattern 4: file comment inside code block
+          const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)```/gi;
+          
+          const allPatterns = [pattern1, pattern2, pattern3, pattern4];
+          const seenPaths = new Set<string>();
+          
+          for (const pattern of allPatterns) {
+            let match;
+            pattern.lastIndex = 0;
+            while ((match = pattern.exec(fullContent)) !== null) {
+              let filePath: string;
+              let code: string;
+              
+              if (pattern === pattern1) {
+                filePath = match[2];
+                code = match[3];
+              } else if (pattern === pattern4) {
+                filePath = match[2];
+                code = match[3];
+              } else {
+                filePath = match[1];
+                code = match[3];
+              }
+              
+              if (!filePath || seenPaths.has(filePath)) continue;
+              seenPaths.add(filePath);
+              
+              const cleanCode = code.trimEnd() + '\n';
+              modifiedFiles.push(filePath);
+              
               writes.push(
                 fetch(`/api/projects/${currentProject.id}/files/write`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ path: targetPath, content: code.trimEnd() + '\n' }),
+                  body: JSON.stringify({ path: filePath, content: cleanCode }),
                 }).then(r => {
-                  if (!r.ok) console.error(`Failed to write ${targetPath}`);
-                  else console.log(`Auto-applied: ${targetPath}`);
-                }).catch(e => console.error(`Write error for ${targetPath}:`, e))
+                  if (!r.ok) console.error(`Failed to write ${filePath}`);
+                }).catch(e => console.error(`Write error for ${filePath}:`, e))
               );
             }
           }
-          // After all writes complete, refresh the editor if current file was updated
+          
+          // --- Shell command detection ---
+          const shellRegex = /```(?:shell|bash|sh|zsh)\s*\n([\s\S]*?)```/gi;
+          let shellMatch;
+          const shellCommands: string[] = [];
+          while ((shellMatch = shellRegex.exec(fullContent)) !== null) {
+            const cmd = shellMatch[1].trim();
+            if (cmd) shellCommands.push(cmd);
+          }
+          
+          if (shellCommands.length > 0 && currentProject.id) {
+            for (const cmd of shellCommands) {
+              writes.push(
+                fetch(`/api/projects/${currentProject.id}/shell`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ command: cmd }),
+                }).then(async r => {
+                  const data = await r.json().catch(() => ({}));
+                  if (!r.ok) console.error(`Shell failed: ${data.error || cmd}`);
+                }).catch(e => console.error(`Shell error:`, e))
+              );
+            }
+          }
+          
           if (writes.length > 0) {
             Promise.all(writes).then(() => {
               if (currentFile) {
                 fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`)
                   .then(r => r.ok ? r.json() : null)
-                  .then(data => { if (data?.content) setEditorContent(data.content); })
+                  .then(data => { if (data?.content) updateTabContentByPath(currentFile, data.content); })
                   .catch(() => {});
               }
-              // Refresh project files and git status
               fetch(`/api/projects/${currentProject.id}/files`)
                 .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
             });
@@ -341,20 +467,7 @@ export default function App() {
           <div className="w-64 h-full flex-shrink-0">
             <Sidebar
               files={projectFiles}
-              onSelectFile={async (path) => {
-                setCurrentFile(path);
-                try {
-                  const res = await fetch(`/api/projects/${currentProject!.id}/files/read?path=${encodeURIComponent(path)}`);
-                  if (res.ok) {
-                    const data = await res.json();
-                    setEditorContent(data.content || `// ${path}`);
-                  } else {
-                    setEditorContent(`// ${path}`);
-                  }
-                } catch {
-                  setEditorContent(`// ${path}`);
-                }
-              }}
+              onSelectFile={openFileInTab}
               sessions={sessions}
               currentSessionId={currentSession?.id ?? null}
               isLoadingSessions={isLoadingSessions}
@@ -391,18 +504,47 @@ export default function App() {
                 onResize={(size) => updatePaneLayout({ ...paneLayout, editor: size })}
               >
                 <div className="h-full bg-monastery-dark-surface flex flex-col animate-slideInRight">
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-monastery-dark-border">
-                    <span className="text-xs font-medium text-monastery-text-secondary">
+                  {/* Tab Bar */}
+                  {openTabs.length > 0 && (
+                    <div className="flex items-center border-b border-monastery-dark-border bg-monastery-dark-bg overflow-x-auto shrink-0">
+                      {openTabs.map((tab, i) => (
+                        <div
+                          key={tab.path}
+                          onClick={() => setActiveTabIndex(i)}
+                          className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-r border-monastery-dark-border transition-colors shrink-0 ${
+                            i === activeTabIndex
+                              ? 'bg-monastery-dark-surface text-monastery-text-primary border-t-2 border-t-monastery-lantern'
+                              : 'text-monastery-text-secondary hover:bg-monastery-dark-surface hover:text-monastery-text-primary'
+                          }`}
+                        >
+                          <span className="max-w-[120px] truncate">{tab.path.split('/').pop()}</span>
+                          {tab.isDirty && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-monastery-lantern" title="Unsaved changes" />
+                          )}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); closeTab(i); }}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-monastery-dark-tertiary rounded transition-all"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* Editor Toolbar */}
+                  <div className="flex items-center justify-between px-3 py-1.5 border-b border-monastery-dark-border shrink-0">
+                    <span className="text-xs text-monastery-text-muted truncate">
                       {currentFile || 'No file selected'}
                     </span>
                     <div className="flex items-center gap-2">
-                      <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                      <button className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary">
                         Explain
                       </button>
-                      <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                      <button className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary">
                         Refactor
                       </button>
-                      <button className="px-2 py-1 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors">
+                      <button className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary">
                         Add Tests
                       </button>
                       {currentFile && (
@@ -415,22 +557,27 @@ export default function App() {
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ path: currentFile, content: editorContent }),
                               });
+                              markTabSaved();
                             } catch (e) {
                               console.error('Save failed:', e);
                             }
                           }}
-                          className="px-3 py-1 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded transition-colors font-medium"
+                          className="px-3 py-0.5 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded transition-colors font-medium"
                         >
                           Save
                         </button>
                       )}
                     </div>
                   </div>
-                  <CodeEditor
-                    value={editorContent}
-                    language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
-                    onChange={setEditorContent}
-                  />
+                  
+                  {/* Editor */}
+                  <div className="flex-1 overflow-hidden">
+                    <CodeEditor
+                      value={editorContent}
+                      language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
+                      onChange={updateTabContent}
+                    />
+                  </div>
                 </div>
               </Panel>
             </>
