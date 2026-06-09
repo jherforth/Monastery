@@ -10,7 +10,7 @@ interface TopBarProps {
   availableProjects?: Array<{ id: string; name: string; description?: string | null }>;
   endpoints?: EndpointConfig[];
   onRefreshProjects?: () => void;
-  onCommitComplete?: (message: string, snapshotId?: string) => void;
+  onCommitComplete?: (message: string, snapshotId?: string, wasRestore?: boolean) => void;
   onRestoreComplete?: () => void;
 }
 
@@ -36,6 +36,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const [committing, setCommitting] = useState(false);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [lastRestoredSnapshotId, setLastRestoredSnapshotId] = useState<string | null>(null);
   const { gitStatus } = useGitForge(currentProject?.id);
   const { listSnapshots, restoreSnapshot } = useSnapshots();
 
@@ -52,6 +53,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
     setRestoringId(snapshotId);
     try {
       await restoreSnapshot(snapshotId, { create_backup: true });
+      setLastRestoredSnapshotId(snapshotId);
       setGitDropdownOpen(false);
       onRestoreComplete?.();
     } catch (e) {
@@ -64,17 +66,19 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const handleCommitPush = async () => {
     if (!currentProject?.id) return;
     setCommitting(true);
+    const wasRestore = !!lastRestoredSnapshotId;
     try {
       const res = await fetch(`/api/git/commit-push?project_id=${encodeURIComponent(currentProject.id)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: 'Update from Monastery' }),
+        body: JSON.stringify({ message: wasRestore ? 'Restore from snapshot' : 'Update from Monastery' }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         console.error('Commit/push failed:', data.error);
       } else {
-        onCommitComplete?.(data.message || 'Committed', data.snapshot_id);
+        onCommitComplete?.(data.message || 'Committed', data.snapshot_id, wasRestore);
+        setLastRestoredSnapshotId(null); // Clear restore flag after commit
       }
     } catch (e) {
       console.error('Commit/push error:', e);

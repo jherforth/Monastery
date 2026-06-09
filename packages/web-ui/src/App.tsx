@@ -464,16 +464,19 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
       <TopBar availableProjects={availableProjects} endpoints={endpoints} onRefreshProjects={refreshProjects}
-        onCommitComplete={(msg, snapshotId) => {
+        onCommitComplete={(msg, snapshotId, wasRestore) => {
           const markerMsg: Message = {
             id: `commit-${Date.now()}`,
             role: 'system',
-            content: `✅ ${msg}`,
+            content: wasRestore
+              ? `⏪ ${msg} — restored from snapshot`
+              : `✅ ${msg}`,
             timestamp: Date.now(),
-            model: snapshotId || undefined, // Store snapshot ID in model field
+            model: snapshotId || undefined,
           };
           setMessages(prev => [...prev, markerMsg]);
-        }}        onRestoreComplete={() => {
+        }}
+        onRestoreComplete={() => {
           // Full refresh after snapshot restore
           setOpenTabs([]);
           setActiveTabIndex(0);
