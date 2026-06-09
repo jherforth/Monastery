@@ -128,7 +128,8 @@ impl LLMClient {
                             let data = if let Some(d) = line.strip_prefix("data: ") {
                                 d
                             } else if let Some(d) = line.strip_prefix("data:") {
-                                d.trim_start()
+                                // SSE spec: at most one space after colon — strip only one, not all whitespace
+                                d.strip_prefix(' ').unwrap_or(d)
                             } else {
                                 continue;
                             };

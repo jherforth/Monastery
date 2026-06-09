@@ -308,11 +308,15 @@ export default function App() {
           const lines = event.split('\n');
           const dataLines: string[] = [];
           for (const line of lines) {
-            // Handle "data: ..." lines (with or without space after colon)
-            if (line.startsWith('data:')) {
-              const content = line.slice(5).trimStart();
+            // Handle "data: ..." lines — per SSE spec, strip at most one space after colon
+            if (line.startsWith('data: ')) {
+              const content = line.slice(6);
               if (content === '[DONE]') continue;
               dataLines.push(content);
+            } else if (line.startsWith('data:')) {
+              const content = line.slice(5);
+              if (content === '[DONE]') continue;
+              dataLines.push(content.startsWith(' ') ? content.slice(1) : content);
             }
           }
           // Join multi-line data with \n per SSE spec
