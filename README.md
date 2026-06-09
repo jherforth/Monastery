@@ -150,7 +150,7 @@ The built-in wizard helps you:
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+AGPL v3 - see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
