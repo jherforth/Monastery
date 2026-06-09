@@ -608,7 +608,7 @@ export default function App() {
                 onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
               >
                 <div className="h-full animate-slideInRight">
-                  <PreviewPane />
+                  <PreviewPane projectId={currentProject?.id} />
                 </div>
               </Panel>
             </>

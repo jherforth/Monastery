@@ -109,44 +109,63 @@ impl LLMClient {
         
         use futures::stream::StreamExt;
         
-        let stream = resp.bytes_stream().map(|item| {
+        // Buffer across chunks to handle split SSE events
+        let mut buffer = String::new();
+        
+        let stream = resp.bytes_stream().filter_map(move |item| {
             match item {
                 Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes).to_string();
-                    // Parse SSE: look for "data:" lines
-                    let mut result = String::new();
-                    for line in text.lines() {
-                        if let Some(data) = line.strip_prefix("data: ") {
+                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+                    
+                    // Extract complete SSE events (terminated by \n\n)
+                    let mut results = Vec::new();
+                    while let Some(pos) = buffer.find("\n\n") {
+                        let event = buffer[..pos].to_string();
+                        buffer = buffer[pos + 2..].to_string();
+                        
+                        // Parse "data:" lines from the event
+                        let mut content = String::new();
+                        for line in event.lines() {
+                            let data = if let Some(d) = line.strip_prefix("data: ") {
+                                d
+                            } else if let Some(d) = line.strip_prefix("data:") {
+                                d.trim_start()
+                            } else {
+                                continue;
+                            };
+                            
                             if data == "[DONE]" {
                                 continue;
                             }
-                            // Try to parse as JSON to extract content delta
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
-                                    result.push_str(content);
+                                if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
+                                    content.push_str(text);
                                 }
-                            } else {
-                                // Not JSON? Just pass through as-is
-                                result.push_str(data);
-                            }
-                        } else if let Some(data) = line.strip_prefix("data:") {
-                            // Handle "data:" without space
-                            let data = data.trim_start();
-                            if data == "[DONE]" {
-                                continue;
-                            }
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
-                                    result.push_str(content);
-                                }
-                            } else {
-                                result.push_str(data);
                             }
                         }
+                        
+                        if !content.is_empty() {
+                            results.push(Ok(content));
+                        }
                     }
-                    Ok(result)
+                    
+                    if results.is_empty() {
+                        None // No complete events yet, buffer more
+                    } else {
+                        // Emit each content chunk as a separate stream item
+                        // (we return only the first; rest go into a side channel)
+                        // Actually, let's combine them
+                        let combined: String = results.into_iter()
+                            .filter_map(|r| r.ok())
+                            .collect();
+                        if combined.is_empty() {
+                            None
+                        } else {
+                            Some(Ok(combined))
+                        }
+                    }
                 }
-                Err(e) => Err(Error::OpenAIWithMessage(format!("Stream read error: {}", e))),
+                Err(e) => Some(Err(Error::OpenAIWithMessage(format!("Stream read error: {}", e)))),
             }
         });
         

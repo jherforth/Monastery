@@ -1744,6 +1744,59 @@ pub async fn write_project_file(
     Ok(Json(serde_json::json!({ "success": true, "path": req.path })))
 }
 
+/// Serve a project file for preview (static file serving)
+pub async fn project_preview(
+    Path((project_id, path)): Path<(uuid::Uuid, String)>,
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let file_path = state.config.data_dir.join(&project_name).join(&path);
+    
+    // Security: prevent directory traversal
+    let base = state.config.data_dir.join(&project_name);
+    match file_path.canonicalize() {
+        Ok(resolved) if resolved.starts_with(&base) => {
+            match tokio::fs::read(&resolved).await {
+                Ok(content) => {
+                    let mime = if path.ends_with(".html") || path.ends_with(".htm") {
+                        "text/html"
+                    } else if path.ends_with(".css") {
+                        "text/css"
+                    } else if path.ends_with(".js") {
+                        "application/javascript"
+                    } else if path.ends_with(".json") {
+                        "application/json"
+                    } else if path.ends_with(".svg") {
+                        "image/svg+xml"
+                    } else if path.ends_with(".png") {
+                        "image/png"
+                    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+                        "image/jpeg"
+                    } else {
+                        "text/plain"
+                    };
+                    Ok((
+                        [(axum::http::header::CONTENT_TYPE, mime)],
+                        content,
+                    ))
+                }
+                Err(_) => Err(ApiError::NotFound("File not found".into())),
+            }
+        }
+        _ => Err(ApiError::Config("Path traversal not allowed".into())),
+    }
+}
+
 /// Execute a shell command in a project directory
 #[derive(Debug, Deserialize)]
 pub struct ShellRequest {

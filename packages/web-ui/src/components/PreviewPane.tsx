@@ -1,14 +1,23 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { useState } from 'react';
-import { Terminal as TerminalIcon, Play, Eye, GitCompare } from 'lucide-react';
-import { CodeEditor } from './CodeEditor';
+import { useState, useEffect } from 'react';
+import { Terminal as TerminalIcon, Eye, GitCompare, RefreshCw } from 'lucide-react';
 
 interface PreviewPaneProps {
-  activeTab?: 'preview' | 'terminal' | 'diff';
+  projectId?: string | null;
 }
 
-export function PreviewPane({ activeTab = 'preview' }: PreviewPaneProps) {
-  const [selectedTab, setSelectedTab] = useState<'preview' | 'terminal' | 'diff'>(activeTab);
+export function PreviewPane({ projectId }: PreviewPaneProps) {
+  const [selectedTab, setSelectedTab] = useState<'preview' | 'terminal' | 'diff'>('preview');
+  const [previewUrl, setPreviewUrl] = useState('about:blank');
+  const [previewKey, setPreviewKey] = useState(0);
+
+  useEffect(() => {
+    if (projectId) {
+      setPreviewUrl(`/api/projects/${projectId}/preview/index.html`);
+    } else {
+      setPreviewUrl('about:blank');
+    }
+  }, [projectId]);
 
   return (
     <PanelGroup direction="vertical" className="h-full">
@@ -20,14 +29,21 @@ export function PreviewPane({ activeTab = 'preview' }: PreviewPaneProps) {
               <div className="flex items-center justify-between px-3 py-2 border-b border-monastery-dark-border bg-monastery-dark-surface">
                 <div className="flex items-center gap-2">
                   <Eye size={14} className="text-monastery-text-secondary" />
-                  <span className="text-xs font-medium text-monastery-text-secondary">Preview</span>
+                  <span className="text-xs font-medium text-monastery-text-secondary">
+                    {projectId ? 'Live Preview' : 'Preview (no project)'}
+                  </span>
                 </div>
-                <button className="p-1.5 hover:bg-monastery-dark-tertiary rounded transition-colors">
-                  <Play size={14} className="text-monastery-lantern" />
+                <button
+                  onClick={() => setPreviewKey(k => k + 1)}
+                  className="p-1.5 hover:bg-monastery-dark-tertiary rounded transition-colors"
+                  title="Refresh preview"
+                >
+                  <RefreshCw size={14} className="text-monastery-lantern" />
                 </button>
               </div>
               <iframe
-                src="about:blank"
+                key={previewKey}
+                src={previewUrl}
                 className="flex-1 w-full bg-white"
                 title="Preview"
                 sandbox="allow-scripts allow-same-origin"
