@@ -29,6 +29,7 @@ export function ChatPane({
     setRevertingId(snapshotId);
     try {
       await restoreSnapshot(snapshotId, { create_backup: true });
+      useAppStore.getState().setLastRestoredSnapshotId(snapshotId);
     } catch (e) {
       console.error('Revert failed:', e);
     } finally {
@@ -139,7 +140,7 @@ export function ChatPane({
                 {copiedIndex === ci ? 'Copied' : 'Copy'}
               </button>
             </div>
-            <pre className="p-3 bg-monastery-dark-bg overflow-x-auto">
+            <pre className="p-3 bg-monastery-dark-bg overflow-x-auto overflow-y-auto max-h-64">
               <code className="text-xs font-mono text-monastery-text-primary">{code}</code>
             </pre>
           </div>

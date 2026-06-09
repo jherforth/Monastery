@@ -36,7 +36,8 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const [committing, setCommitting] = useState(false);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [restoringId, setRestoringId] = useState<string | null>(null);
-  const [lastRestoredSnapshotId, setLastRestoredSnapshotId] = useState<string | null>(null);
+  const lastRestoredSnapshotId = useAppStore(s => s.lastRestoredSnapshotId);
+  const setLastRestoredSnapshotId = useAppStore(s => s.setLastRestoredSnapshotId);
   const { gitStatus } = useGitForge(currentProject?.id);
   const { listSnapshots, restoreSnapshot } = useSnapshots();
 
@@ -78,7 +79,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
         console.error('Commit/push failed:', data.error);
       } else {
         onCommitComplete?.(data.message || 'Committed', data.snapshot_id, wasRestore);
-        setLastRestoredSnapshotId(null); // Clear restore flag after commit
+        setLastRestoredSnapshotId(null);
       }
     } catch (e) {
       console.error('Commit/push error:', e);

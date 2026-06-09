@@ -33,6 +33,8 @@ interface AppStore extends AppState {
   setSelectedSnapshot: (snapshot: SnapshotDetail | null) => void;
   setCreatingSnapshot: (creating: boolean) => void;
   setRestoring: (restoring: boolean) => void;
+  lastRestoredSnapshotId: string | null;
+  setLastRestoredSnapshotId: (id: string | null) => void;
 }
 
 export const useAppStore = create<AppStore>()(
@@ -127,6 +129,8 @@ export const useAppStore = create<AppStore>()(
       setCreatingSnapshot: (creating) => set({ isCreatingSnapshot: creating }),
       
       setRestoring: (restoring) => set({ isRestoring: restoring }),
+      lastRestoredSnapshotId: null,
+      setLastRestoredSnapshotId: (id) => set({ lastRestoredSnapshotId: id }),
     }),
     {
       name: 'monastery-storage',
