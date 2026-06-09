@@ -112,19 +112,18 @@ impl LLMClient {
         // Buffer across chunks to handle split SSE events
         let mut buffer = String::new();
         
-        let stream = resp.bytes_stream().filter_map(move |item| {
+        let stream = resp.bytes_stream().map(move |item| {
             match item {
                 Ok(bytes) => {
                     buffer.push_str(&String::from_utf8_lossy(&bytes));
                     
                     // Extract complete SSE events (terminated by \n\n)
-                    let mut results = Vec::new();
+                    let mut content = String::new();
                     while let Some(pos) = buffer.find("\n\n") {
                         let event = buffer[..pos].to_string();
                         buffer = buffer[pos + 2..].to_string();
                         
                         // Parse "data:" lines from the event
-                        let mut content = String::new();
                         for line in event.lines() {
                             let data = if let Some(d) = line.strip_prefix("data: ") {
                                 d
@@ -143,29 +142,11 @@ impl LLMClient {
                                 }
                             }
                         }
-                        
-                        if !content.is_empty() {
-                            results.push(Ok(content));
-                        }
                     }
                     
-                    if results.is_empty() {
-                        None // No complete events yet, buffer more
-                    } else {
-                        // Emit each content chunk as a separate stream item
-                        // (we return only the first; rest go into a side channel)
-                        // Actually, let's combine them
-                        let combined: String = results.into_iter()
-                            .filter_map(|r| r.ok())
-                            .collect();
-                        if combined.is_empty() {
-                            None
-                        } else {
-                            Some(Ok(combined))
-                        }
-                    }
+                    Ok(content)
                 }
-                Err(e) => Some(Err(Error::OpenAIWithMessage(format!("Stream read error: {}", e)))),
+                Err(e) => Err(Error::OpenAIWithMessage(format!("Stream read error: {}", e))),
             }
         });
         
