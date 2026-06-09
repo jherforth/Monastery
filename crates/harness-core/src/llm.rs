@@ -111,19 +111,18 @@ impl LLMClient {
         
         // Buffer across chunks to handle split SSE events
         let mut buffer = String::new();
-        let mut last_char: Option<char> = None; // Track last emitted char for space insertion
-        
+
         let stream = resp.bytes_stream().map(move |item| {
             match item {
                 Ok(bytes) => {
                     buffer.push_str(&String::from_utf8_lossy(&bytes));
-                    
+
                     // Extract complete SSE events (terminated by \n\n)
                     let mut content = String::new();
                     while let Some(pos) = buffer.find("\n\n") {
                         let event = buffer[..pos].to_string();
                         buffer = buffer[pos + 2..].to_string();
-                        
+
                         // Parse "data:" lines from the event
                         for line in event.lines() {
                             let data = if let Some(d) = line.strip_prefix("data: ") {
@@ -133,26 +132,13 @@ impl LLMClient {
                             } else {
                                 continue;
                             };
-                            
+
                             if data == "[DONE]" {
                                 continue;
                             }
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                                 if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
-                                    // Insert space if previous char and current char are both word chars
-                                    // and the new text doesn't already start with whitespace/punctuation
-                                    if let Some(lc) = last_char {
-                                        let first_char = text.chars().next();
-                                        if let Some(fc) = first_char {
-                                            if lc.is_alphanumeric() && fc.is_alphanumeric()
-                                                && !text.starts_with(' ') && !text.starts_with('\n')
-                                            {
-                                                content.push(' ');
-                                            }
-                                        }
-                                    }
                                     content.push_str(text);
-                                    last_char = text.chars().last();
                                 }
                             }
                         }
