@@ -473,8 +473,17 @@ export default function App() {
             model: snapshotId || undefined, // Store snapshot ID in model field
           };
           setMessages(prev => [...prev, markerMsg]);
-        }}
-      />
+        }}        onRestoreComplete={() => {
+          // Full refresh after snapshot restore
+          setOpenTabs([]);
+          setActiveTabIndex(0);
+          if (currentProject?.id) {
+            fetch(`/api/projects/${currentProject.id}/files`)
+              .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
+            fetch(`/api/projects/${currentProject.id}/files/read-all`)
+              .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
+          }
+        }}      />
       
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}

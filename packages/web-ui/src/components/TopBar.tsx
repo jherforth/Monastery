@@ -11,9 +11,10 @@ interface TopBarProps {
   endpoints?: EndpointConfig[];
   onRefreshProjects?: () => void;
   onCommitComplete?: (message: string, snapshotId?: string) => void;
+  onRestoreComplete?: () => void;
 }
 
-export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete }: TopBarProps) {
+export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete, onRestoreComplete }: TopBarProps) {
   const { 
     currentProject,
     setCurrentProject,
@@ -51,6 +52,8 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
     setRestoringId(snapshotId);
     try {
       await restoreSnapshot(snapshotId, { create_backup: true });
+      setGitDropdownOpen(false);
+      onRestoreComplete?.();
     } catch (e) {
       console.error('Restore failed:', e);
     } finally {
