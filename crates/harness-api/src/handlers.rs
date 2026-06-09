@@ -852,14 +852,16 @@ pub async fn restore_snapshot(
     State(state): State<AppState>,
     Json(req): Json<RestoreSnapshotBody>,
 ) -> Result<Json<harness_core::RestoreSnapshotResponse>, ApiError> {
+    use sqlx::Row;
+    
     let request = RestoreSnapshotRequest {
         snapshot_id,
         dry_run: req.dry_run.unwrap_or(false),
         create_backup: req.create_backup.unwrap_or(true),
     };
     
-    // First verify the snapshot belongs to this project
-    let (snapshot, _) = state.snapshot_service
+    // Get the snapshot with its files
+    let (snapshot, files) = state.snapshot_service
         .get_snapshot(snapshot_id)
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -868,12 +870,60 @@ pub async fn restore_snapshot(
         return Err(ApiError::NotFound("Snapshot does not belong to this project".into()));
     }
     
-    let response = state.snapshot_service
-        .restore_snapshot(request)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    // Look up project directory
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+    let project_name: String = match row {
+        Some(r) => r.get(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+    let project_path = state.config.data_dir.join(&project_name);
     
-    Ok(Json(response))
+    // If dry_run, just report what would be restored
+    if request.dry_run {
+        return Ok(Json(harness_core::RestoreSnapshotResponse {
+            success: true,
+            restored_files: files.len() as u32,
+            failed_files: 0,
+            backup_snapshot_id: None,
+            errors: Vec::new(),
+        }));
+    }
+    
+    // Write snapshot files to disk
+    let mut failed = 0u32;
+    let mut errors = Vec::new();
+    
+    for file in &files {
+        if let Some(ref content) = file.content {
+            let target = project_path.join(&file.file_path);
+            if let Some(parent) = target.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            match tokio::fs::write(&target, content).await {
+                Ok(_) => {}
+                Err(e) => {
+                    failed += 1;
+                    errors.push(format!("{}: {}", file.file_path, e));
+                }
+            }
+        }
+    }
+    
+    // Mark snapshot as active in DB
+    let _ = state.snapshot_service
+        .restore_snapshot(request)
+        .await;
+    
+    Ok(Json(harness_core::RestoreSnapshotResponse {
+        success: failed == 0,
+        restored_files: files.len() as u32 - failed,
+        failed_files: failed,
+        backup_snapshot_id: None,
+        errors,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
