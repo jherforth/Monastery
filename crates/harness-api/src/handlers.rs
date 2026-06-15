@@ -1418,7 +1418,7 @@ pub async fn git_commit_push(
     let message = req.message.unwrap_or_else(|| "Update from Monastery".to_string());
     
     // --- Create a snapshot before committing ---
-    let snapshot_id = Uuid::new_v4();
+    let _snapshot_id = Uuid::new_v4();
     let snapshot_result: Option<String> = {
         let mut files = Vec::new();
         read_files_for_snapshot(&project_path, &project_path, &mut files);
