@@ -110,3 +110,49 @@ export interface AppState {
     preview: number;
   };
 }
+
+// Snapshot types (shared between hooks and store)
+export interface SnapshotSummary {
+  id: string;
+  project_id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  created_by?: string;
+  parent_snapshot_id?: string;
+  is_active: boolean;
+  tags: string[];
+  files_count: number;
+  total_size_bytes: number;
+}
+
+export interface SnapshotFile {
+  id: string;
+  snapshot_id: string;
+  file_path: string;
+  content?: string;
+  file_hash: string;
+  created_at: string;
+  size_bytes: number;
+}
+
+export interface SnapshotDetail {
+  snapshot: SnapshotSummary;
+  files: SnapshotFile[];
+}
+
+export interface SnapshotDiff {
+  added_files: FileDiff[];
+  removed_files: FileDiff[];
+  modified_files: FileDiff[];
+  unchanged_files: FileDiff[];
+}
+
+export interface FileDiff {
+  file_path: string;
+  old_hash?: string;
+  new_hash?: string;
+  old_size: number;
+  new_size: number;
+  change_type: 'added' | 'removed' | 'modified' | 'unchanged';
+}

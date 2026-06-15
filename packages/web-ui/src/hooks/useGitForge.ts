@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import useSWR from 'swr';
+import { fetcher } from '../lib/fetch';
 
 export type GitForgeType = 'github' | 'gitlab' | 'forgejo' | 'gitea';
 
@@ -59,21 +60,12 @@ export interface GitPushRequest {
   commit_message?: string;
 }
 
-export interface GitCloneRequest {
+interface GitCloneRequest {
   connection_id: string;
   repo_full_name: string;
   project_name?: string;
   branch?: string;
 }
-
-const fetcher = async (url: string) => {
-  const res = await fetch(url);
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(error.error || 'Request failed');
-  }
-  return res.json();
-};
 
 export function useGitForge(projectId?: string | null) {
   const { data: connections, error, mutate } = useSWR<GitConnection[]>(

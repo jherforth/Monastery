@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import useSWR from 'swr';
+import { fetcher } from '../lib/fetch';
 
 export interface EndpointConfig {
   id: string;
@@ -11,27 +12,11 @@ export interface EndpointConfig {
   created_at: string;
 }
 
-export interface ModelInfo {
-  id: string;
-  name: string;
-  provider?: string;
-  capabilities?: string[];
-}
-
-export interface TestEndpointResponse {
+interface TestEndpointResponse {
   endpoint_id: string;
   is_healthy: boolean;
   message: string;
 }
-
-const fetcher = async (url: string) => {
-  const res = await fetch(url);
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ error: 'Request failed' }));
-    throw new Error(error.error || 'Request failed');
-  }
-  return res.json();
-};
 
 export function useEndpoints() {
   const { data: endpoints, error, mutate } = useSWR<EndpointConfig[]>(
@@ -93,21 +78,6 @@ export function useEndpoints() {
     addEndpoint,
     deleteEndpoint,
     testEndpoint,
-    mutate,
-  };
-}
-
-export function useModels(endpointId?: string) {
-  const url = endpointId 
-    ? `/api/models?endpoint_id=${endpointId}`
-    : '/api/models';
-  
-  const { data: models, error, mutate } = useSWR<ModelInfo[]>(url, fetcher);
-
-  return {
-    models: models || [],
-    isLoading: !error && !models,
-    isError: error,
     mutate,
   };
 }

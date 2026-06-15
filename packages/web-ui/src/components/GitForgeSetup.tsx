@@ -7,6 +7,20 @@ import { useAppStore } from '../store/useAppStore';
 type WizardStep = 'select' | 'url' | 'token' | 'verify';
 type ViewMode = 'list' | 'browse' | 'push';
 
+function BackHeader({ title, subtitle, onBack }: { title: string; subtitle: string; onBack: () => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <button onClick={onBack} className="p-1 hover:bg-monastery-dark-surface rounded transition-colors">
+        <ArrowLeft className="w-4 h-4 text-monastery-text-secondary" />
+      </button>
+      <div>
+        <h3 className="text-sm font-medium text-monastery-text-primary">{title}</h3>
+        <p className="text-xs text-monastery-text-muted">{subtitle}</p>
+      </div>
+    </div>
+  );
+}
+
 interface ForgeTemplate {
   type: GitForgeType;
   label: string;
@@ -618,15 +632,7 @@ function RepoBrowser({
 }) {
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-1 hover:bg-monastery-dark-surface rounded transition-colors">
-          <ArrowLeft className="w-4 h-4 text-monastery-text-secondary" />
-        </button>
-        <div>
-          <h3 className="text-sm font-medium text-monastery-text-primary">{connection.name} — Repositories</h3>
-          <p className="text-xs text-monastery-text-muted">{connection.base_url}</p>
-        </div>
-      </div>
+      <BackHeader title={`${connection.name} — Repositories`} subtitle={connection.base_url} onBack={onBack} />
 
       {cloneResult && (
         <div className={`p-3 rounded-lg text-xs ${
@@ -783,15 +789,7 @@ function PushForm({
 }) {
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-1 hover:bg-monastery-dark-surface rounded transition-colors">
-          <ArrowLeft className="w-4 h-4 text-monastery-text-secondary" />
-        </button>
-        <div>
-          <h3 className="text-sm font-medium text-monastery-text-primary">Push to {connection.name}</h3>
-          <p className="text-xs text-monastery-text-muted">Create a new repo and push your project</p>
-        </div>
-      </div>
+      <BackHeader title={`Push to ${connection.name}`} subtitle="Create a new repo and push your project" onBack={onBack} />
 
       {pushResult && (
         <div className={`p-3 rounded-lg text-xs ${

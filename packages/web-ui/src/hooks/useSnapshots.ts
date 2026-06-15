@@ -1,34 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useAppStore } from '../store/useAppStore';
-
-export interface SnapshotSummary {
-  id: string;
-  project_id: string;
-  name: string;
-  description?: string;
-  created_at: string;
-  created_by?: string;
-  parent_snapshot_id?: string;
-  is_active: boolean;
-  tags: string[];
-  files_count: number;
-  total_size_bytes: number;
-}
-
-export interface SnapshotFile {
-  id: string;
-  snapshot_id: string;
-  file_path: string;
-  content?: string;
-  file_hash: string;
-  created_at: string;
-  size_bytes: number;
-}
-
-export interface SnapshotDetail {
-  snapshot: SnapshotSummary;
-  files: SnapshotFile[];
-}
+import type { SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../types';
 
 export interface CreateSnapshotRequest {
   name?: string;
@@ -41,25 +13,9 @@ export interface CreateSnapshotRequest {
   }>;
 }
 
-export interface RestoreSnapshotOptions {
+interface RestoreSnapshotOptions {
   dry_run?: boolean;
   create_backup?: boolean;
-}
-
-export interface SnapshotDiff {
-  added_files: FileDiff[];
-  removed_files: FileDiff[];
-  modified_files: FileDiff[];
-  unchanged_files: FileDiff[];
-}
-
-export interface FileDiff {
-  file_path: string;
-  old_hash?: string;
-  new_hash?: string;
-  old_size: number;
-  new_size: number;
-  change_type: 'added' | 'removed' | 'modified' | 'unchanged';
 }
 
 const API_BASE = '/api';

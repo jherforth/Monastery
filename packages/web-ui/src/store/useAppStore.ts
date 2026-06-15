@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { AppState, Message, LLMEndpoint, Project, Session } from '../types';
-import { SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../hooks/useSnapshots';
+import { AppState, Message, LLMEndpoint, Project, Session, SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../types';
 
 const defaultLayout = {
   chat: 25,
