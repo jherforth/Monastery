@@ -294,15 +294,6 @@ export default function App() {
       let reasoningContent = '';
       let buffer = '';
       
-      // Create a placeholder assistant message for real-time streaming updates
-      const streamingId = (Date.now() + 1).toString();
-      setMessages((prev) => [...prev, {
-        id: streamingId,
-        role: 'assistant' as const,
-        content: '',
-        timestamp: Date.now(),
-      }]);
-      
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -346,24 +337,21 @@ export default function App() {
             }
           }
         }
+      }
+      
+      if (fullContent || reasoningContent) {
+        const aiMessage: Message = {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: fullContent,
+          reasoning: reasoningContent || undefined,
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, aiMessage]);
         
-        // Update the streaming message in real-time
-        setMessages((prev) => prev.map((m) =>
-          m.id === streamingId
-            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
-            : m
-        ));
-      }
-      
-      // Finalize the message (remove placeholder if empty)
-      if (!fullContent && !reasoningContent) {
-        setMessages((prev) => prev.filter((m) => m.id !== streamingId));
-      }
-      // Message is already in the list with final content — no need to add again
-      
-      if (sessionId && fullContent) {
-        addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
-      }
+        if (sessionId) {
+          addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
+        }
 
       // Auto-apply code blocks and shell commands to files
       if (currentProject?.id) {
