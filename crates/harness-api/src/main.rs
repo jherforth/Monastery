@@ -109,6 +109,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/git/commit-push", post(handlers::git_commit_push))
         .route("/api/git/push", post(handlers::git_push))
         .route("/api/git/clone", post(handlers::git_clone))
+        // Hosting service routes (Self-Host Wizard)
+        .route("/api/hosting/connections", get(handlers::list_hosting_connections))
+        .route("/api/hosting/connections", post(handlers::connect_hosting_service))
+        .route("/api/hosting/connections/:id", delete(handlers::delete_hosting_connection))
+        .route("/api/hosting/connections/:id/test", post(handlers::test_hosting_connection))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 

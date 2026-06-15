@@ -2010,3 +2010,192 @@ fn walk_directory(base: &std::path::Path, current: &std::path::Path) -> Vec<serd
     });
     entries
 }
+
+// ============================================================
+// Hosting Service Connection Handlers (Self-Host Wizard)
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct ConnectHostingRequest {
+    name: String,
+    service_type: String, // "dokploy" | "coolify" | "pocketbase"
+    base_url: String,
+    api_token: String,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+/// List all hosting service connections
+pub async fn list_hosting_connections(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let rows = sqlx::query(
+        "SELECT id, name, service_type, base_url, api_token, username, email, is_default, created_at, last_synced_at FROM hosting_connections ORDER BY created_at DESC"
+    )
+    .fetch_all(&*state.db)
+    .await?;
+
+    let connections: Vec<serde_json::Value> = rows.iter().map(|row| {
+        let id: String = row.get(0);
+        let name: String = row.get(1);
+        let service_type: String = row.get(2);
+        let base_url: String = row.get(3);
+        let _api_token: String = row.get(4); // Don't expose token in list
+        let username: Option<String> = row.get(5);
+        let email: Option<String> = row.get(6);
+        let is_default: i64 = row.get(7);
+        let created_at: String = row.get(8);
+        let last_synced_at: Option<String> = row.get(9);
+
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "service_type": service_type,
+            "base_url": base_url,
+            "username": username,
+            "email": email,
+            "is_default": is_default != 0,
+            "created_at": created_at,
+            "last_synced_at": last_synced_at,
+        })
+    }).collect();
+
+    Ok(Json(connections))
+}
+
+/// Connect a new hosting service
+pub async fn connect_hosting_service(
+    State(state): State<AppState>,
+    Json(req): Json<ConnectHostingRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Validate service type
+    if !["dokploy", "coolify", "pocketbase"].contains(&req.service_type.as_str()) {
+        return Err(ApiError::Config(format!(
+            "Invalid service_type '{}'. Must be one of: dokploy, coolify, pocketbase",
+            req.service_type
+        )));
+    }
+
+    // Validate URL
+    if !req.base_url.starts_with("http://") && !req.base_url.starts_with("https://") {
+        return Err(ApiError::Config("Base URL must start with http:// or https://".into()));
+    }
+
+    let id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "INSERT INTO hosting_connections (id, name, service_type, base_url, api_token, username, email, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    )
+    .bind(id.to_string())
+    .bind(&req.name)
+    .bind(&req.service_type)
+    .bind(&req.base_url)
+    .bind(&req.api_token)
+    .bind(None::<String>) // username filled after test
+    .bind(req.email.as_deref())
+    .bind(0i64)
+    .bind(&now)
+    .execute(&*state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "id": id.to_string(),
+        "name": req.name,
+        "service_type": req.service_type,
+        "base_url": req.base_url,
+        "username": null,
+        "email": req.email,
+        "is_default": false,
+        "created_at": now,
+        "last_synced_at": null,
+    })))
+}
+
+/// Delete a hosting service connection
+pub async fn delete_hosting_connection(
+    Path(id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<StatusCode, ApiError> {
+    sqlx::query("DELETE FROM hosting_connections WHERE id = ?")
+        .bind(id.to_string())
+        .execute(&*state.db)
+        .await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Test a hosting service connection
+pub async fn test_hosting_connection(
+    Path(id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let row = sqlx::query(
+        "SELECT service_type, base_url, api_token FROM hosting_connections WHERE id = ?"
+    )
+    .bind(id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let (service_type, base_url, api_token) = match row {
+        Some(r) => {
+            let st: String = r.get(0);
+            let bu: String = r.get(1);
+            let at: String = r.get(2);
+            (st, bu, at)
+        }
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+
+    // Try to reach the service's health or user endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("Failed to build HTTP client: {}", e)))?;
+
+    let test_url = match service_type.as_str() {
+        "dokploy" => format!("{}/api/application", base_url.trim_end_matches('/')),
+        "coolify" => format!("{}/api/v1/applications", base_url.trim_end_matches('/')),
+        "pocketbase" => format!("{}/api/collections", base_url.trim_end_matches('/')),
+        _ => format!("{}/api", base_url.trim_end_matches('/')),
+    };
+
+    match client
+        .get(&test_url)
+        .header("Authorization", format!("Bearer {}", api_token))
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.is_success() {
+                // Update last_synced_at
+                let now = chrono::Utc::now().to_rfc3339();
+                let _ = sqlx::query("UPDATE hosting_connections SET last_synced_at = ? WHERE id = ?")
+                    .bind(&now)
+                    .bind(id.to_string())
+                    .execute(&*state.db)
+                    .await;
+
+                Ok(Json(serde_json::json!({
+                    "healthy": true,
+                    "message": format!("Connection successful (HTTP {})", status.as_u16()),
+                })))
+            } else if status.as_u16() == 401 || status.as_u16() == 403 {
+                Ok(Json(serde_json::json!({
+                    "healthy": false,
+                    "message": "Authentication failed. Check your API token.",
+                })))
+            } else {
+                Ok(Json(serde_json::json!({
+                    "healthy": false,
+                    "message": format!("Service returned HTTP {}. Check the URL and try again.", status.as_u16()),
+                })))
+            }
+        }
+        Err(e) => Ok(Json(serde_json::json!({
+            "healthy": false,
+            "message": format!("Connection failed: {}", e),
+        }))),
+    }
+}

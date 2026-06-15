@@ -156,3 +156,19 @@ export interface FileDiff {
   new_size: number;
   change_type: 'added' | 'removed' | 'modified' | 'unchanged';
 }
+
+// Hosting service types (Self-Host Wizard)
+export type HostingServiceType = 'dokploy' | 'coolify' | 'pocketbase';
+
+export interface HostingServiceConnection {
+  id: string;
+  name: string;
+  service_type: HostingServiceType;
+  base_url: string;
+  api_token: string;
+  username: string | null;
+  email: string | null;
+  is_default: boolean;
+  created_at: string;
+  last_synced_at: string | null;
+}

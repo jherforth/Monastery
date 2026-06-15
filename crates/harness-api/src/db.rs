@@ -199,5 +199,25 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
         .execute(&pool)
         .await;
     
+    // Hosting service connections table (Self-Host Wizard)
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS hosting_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            service_type TEXT NOT NULL CHECK(service_type IN ('dokploy', 'coolify', 'pocketbase')),
+            base_url TEXT NOT NULL,
+            api_token TEXT NOT NULL,
+            username TEXT,
+            email TEXT,
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_synced_at TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+    
     Ok(pool)
 }

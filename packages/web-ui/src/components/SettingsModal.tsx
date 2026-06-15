@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import { useEndpoints, EndpointConfig } from '../hooks/useEndpoints';
 import { GitForgeSetup } from './GitForgeSetup';
+import { HostingServicesTab } from './HostingServicesTab';
 import { useAppStore } from '../store/useAppStore';
-import { Cpu, GitBranch } from 'lucide-react';
+import { Cpu, GitBranch, Server } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-type SettingsTab = 'llm' | 'git';
+type SettingsTab = 'llm' | 'git' | 'hosting';
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { endpoints, isLoading, addEndpoint, deleteEndpoint, testEndpoint, mutate } = useEndpoints();
@@ -107,6 +108,17 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             >
               <GitBranch className="w-4 h-4" />
               Git Forges
+            </button>
+            <button
+              onClick={() => setActiveTab('hosting')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                activeTab === 'hosting'
+                  ? 'bg-monastery-dark-surface text-monastery-text-primary'
+                  : 'text-monastery-text-secondary hover:text-monastery-text-primary'
+              }`}
+            >
+              <Server className="w-4 h-4" />
+              Hosting Services
             </button>
           </div>
         </div>
@@ -236,6 +248,8 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 )}
               </div>
             </>
+          ) : activeTab === 'hosting' ? (
+            <HostingServicesTab />
           ) : (
             <GitForgeSetup />
           )}
