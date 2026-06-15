@@ -448,6 +448,7 @@ export default function App() {
             });
           }
         }
+      }
       
       setIsGenerating(false);
     } catch (err) {
