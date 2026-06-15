@@ -11,6 +11,19 @@ use http::header::HeaderMap;
 use crate::models::EndpointConfig;
 use crate::error::{Error, Result};
 
+/// A chunk from the streaming response, tagged with its type.
+#[derive(Debug, Clone)]
+pub struct StreamChunk {
+    pub chunk_type: ChunkType,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChunkType {
+    Reasoning,
+    Content,
+}
+
 /// Unified LLM client supporting multiple endpoints
 pub struct LLMClient {
     config: EndpointConfig,
@@ -33,19 +46,6 @@ impl LLMClient {
             base_url: self.config.base_url.clone(),
         };
         Client::with_config(custom_config)
-    }
-    
-    /// A chunk from the streaming response, tagged with its type.
-    #[derive(Debug, Clone)]
-    pub struct StreamChunk {
-        pub chunk_type: ChunkType,
-        pub content: String,
-    }
-
-    #[derive(Debug, Clone, PartialEq)]
-    pub enum ChunkType {
-        Reasoning,
-        Content,
     }
 
     /// Send a chat completion request and stream the response.
@@ -190,7 +190,7 @@ impl LLMClient {
         })
         // Flatten Vec<StreamChunk> into individual chunks
         .flat_map(|result| {
-            let items: Vec<Result<StreamChunk, Error>> = match result {
+            let items: Vec<Result<StreamChunk>> = match result {
                 Ok(chunks) => chunks.into_iter().map(Ok).collect(),
                 Err(e) => vec![Err(e)],
             };
