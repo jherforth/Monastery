@@ -180,7 +180,7 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
         CREATE TABLE IF NOT EXISTS git_connections (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            forge_type TEXT NOT NULL CHECK(forge_type IN ('github', 'gitlab', 'forgejo')),
+            forge_type TEXT NOT NULL CHECK(forge_type IN ('github', 'gitlab', 'forgejo', 'gitea')),
             base_url TEXT NOT NULL,
             api_token TEXT NOT NULL,
             username TEXT,

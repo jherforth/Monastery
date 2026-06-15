@@ -291,7 +291,17 @@ export default function App() {
       
       const decoder = new TextDecoder();
       let fullContent = '';
+      let reasoningContent = '';
       let buffer = '';
+      
+      // Create a placeholder assistant message for real-time streaming updates
+      const streamingId = (Date.now() + 1).toString();
+      setMessages((prev) => [...prev, {
+        id: streamingId,
+        role: 'assistant' as const,
+        content: '',
+        timestamp: Date.now(),
+      }]);
       
       while (true) {
         const { done, value } = await reader.read();
@@ -306,41 +316,57 @@ export default function App() {
         
         for (const event of events) {
           const lines = event.split('\n');
+          let eventType = '';
           const dataLines: string[] = [];
           for (const line of lines) {
+            // Handle "event: ..." lines — determine SSE event type
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith('event:')) {
+              eventType = line.slice(6).trim();
+            }
             // Handle "data: ..." lines — per SSE spec, strip at most one space after colon
             if (line.startsWith('data: ')) {
-              const content = line.slice(6);
-              if (content === '[DONE]') continue;
-              dataLines.push(content);
+              const chunkContent = line.slice(6);
+              if (chunkContent === '[DONE]') continue;
+              dataLines.push(chunkContent);
             } else if (line.startsWith('data:')) {
-              const content = line.slice(5);
-              if (content === '[DONE]') continue;
-              dataLines.push(content.startsWith(' ') ? content.slice(1) : content);
+              const chunkContent = line.slice(5);
+              if (chunkContent === '[DONE]') continue;
+              dataLines.push(chunkContent.startsWith(' ') ? chunkContent.slice(1) : chunkContent);
             }
           }
           // Join multi-line data with \n per SSE spec
           if (dataLines.length > 0) {
-            fullContent += dataLines.join('\n');
+            const chunkText = dataLines.join('\n');
+            if (eventType === 'reasoning') {
+              reasoningContent += chunkText;
+            } else {
+              fullContent += chunkText;
+            }
           }
         }
+        
+        // Update the streaming message in real-time
+        setMessages((prev) => prev.map((m) =>
+          m.id === streamingId
+            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
+            : m
+        ));
       }
       
-      if (fullContent) {
-        const aiMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: fullContent,
-          timestamp: Date.now(),
-        };
-        setMessages((prev) => [...prev, aiMessage]);
-        
-        if (sessionId) {
-          addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
-        }
+      // Finalize the message (remove placeholder if empty)
+      if (!fullContent && !reasoningContent) {
+        setMessages((prev) => prev.filter((m) => m.id !== streamingId));
+      }
+      // Message is already in the list with final content — no need to add again
+      
+      if (sessionId && fullContent) {
+        addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
+      }
 
-        // Auto-apply code blocks and shell commands to files
-        if (currentProject?.id) {
+      // Auto-apply code blocks and shell commands to files
+      if (currentProject?.id) {
           const writes: Promise<void>[] = [];
           const modifiedFiles: string[] = [];
           

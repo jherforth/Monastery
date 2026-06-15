@@ -206,7 +206,17 @@ pub async fn chat_stream(
     
     let event_stream = stream.map(|result| {
         match result {
-            Ok(content) => Ok(axum::response::sse::Event::default().data(content)),
+            Ok(chunk) => {
+                let event = axum::response::sse::Event::default().data(chunk.content);
+                match chunk.chunk_type {
+                    harness_core::ChunkType::Reasoning => {
+                        Ok(event.event("reasoning"))
+                    }
+                    harness_core::ChunkType::Content => {
+                        Ok(event)
+                    }
+                }
+            }
             Err(e) => {
                 tracing::warn!("Stream error: {}", e);
                 Err(axum::Error::new(e))
@@ -1094,6 +1104,7 @@ pub async fn list_git_connections(
             forge_type: match forge_type.as_str() {
                 "gitlab" => GitForgeType::GitLab,
                 "forgejo" => GitForgeType::Forgejo,
+                "gitea" => GitForgeType::Gitea,
                 _ => GitForgeType::GitHub,
             },
             base_url,
@@ -1117,15 +1128,15 @@ pub async fn connect_git_forge(
     State(state): State<AppState>,
     Json(req): Json<ConnectGitForgeRequest>,
 ) -> Result<Json<GitConnection>, ApiError> {
-    // Validate Forgejo requires a URL
-    if req.forge_type == GitForgeType::Forgejo {
+    // Validate Forgejo/Gitea requires a URL
+    if req.forge_type == GitForgeType::Forgejo || req.forge_type == GitForgeType::Gitea {
         match &req.base_url {
             Some(url) if !url.is_empty() => {
                 if !url.starts_with("http://") && !url.starts_with("https://") {
-                    return Err(ApiError::Config("Forgejo URL must start with http:// or https://".into()));
+                    return Err(ApiError::Config("Forgejo/Gitea URL must start with http:// or https://".into()));
                 }
             }
-            _ => return Err(ApiError::Config("Forgejo requires a base URL (e.g., https://git.yourdomain.com)".into())),
+            _ => return Err(ApiError::Config("Forgejo/Gitea requires a base URL (e.g., https://git.yourdomain.com)".into())),
         }
     }
 
@@ -1208,6 +1219,7 @@ pub async fn test_git_connection(
             let ft = match ft.as_str() {
                 "gitlab" => GitForgeType::GitLab,
                 "forgejo" => GitForgeType::Forgejo,
+                "gitea" => GitForgeType::Gitea,
                 _ => GitForgeType::GitHub,
             };
             (ft, bu, at)
@@ -1261,6 +1273,7 @@ pub async fn list_git_repos(
                 forge_type: match forge_type.as_str() {
                     "gitlab" => GitForgeType::GitLab,
                     "forgejo" => GitForgeType::Forgejo,
+                    "gitea" => GitForgeType::Gitea,
                     _ => GitForgeType::GitHub,
                 },
                 base_url,
@@ -1329,6 +1342,7 @@ fn build_git_connection(row: &sqlx::sqlite::SqliteRow) -> GitConnection {
         forge_type: match forge_type.as_str() {
             "gitlab" => GitForgeType::GitLab,
             "forgejo" => GitForgeType::Forgejo,
+            "gitea" => GitForgeType::Gitea,
             _ => GitForgeType::GitHub,
         },
         base_url,
@@ -1517,6 +1531,7 @@ pub async fn git_push(
             let ft = match ft.as_str() {
                 "gitlab" => GitForgeType::GitLab,
                 "forgejo" => GitForgeType::Forgejo,
+                "gitea" => GitForgeType::Gitea,
                 _ => GitForgeType::GitHub,
             };
             (ft, bu, at)
@@ -1600,6 +1615,7 @@ pub async fn git_clone(
             let ft = match ft.as_str() {
                 "gitlab" => GitForgeType::GitLab,
                 "forgejo" => GitForgeType::Forgejo,
+                "gitea" => GitForgeType::Gitea,
                 _ => GitForgeType::GitHub,
             };
             (ft, bu, at)
@@ -1619,7 +1635,7 @@ pub async fn git_clone(
                 format!("{}/{}.git", domain, req.repo_full_name)
             }
         }
-        GitForgeType::Forgejo => {
+        GitForgeType::Forgejo | GitForgeType::Gitea => {
             format!("{}/{}.git", base_url.trim_end_matches("/api/v1"), req.repo_full_name)
         }
     };

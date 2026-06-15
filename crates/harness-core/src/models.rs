@@ -71,6 +71,7 @@ pub enum GitForgeType {
     GitHub,
     GitLab,
     Forgejo,
+    Gitea,
 }
 
 impl std::fmt::Display for GitForgeType {
@@ -79,6 +80,7 @@ impl std::fmt::Display for GitForgeType {
             GitForgeType::GitHub => write!(f, "github"),
             GitForgeType::GitLab => write!(f, "gitlab"),
             GitForgeType::Forgejo => write!(f, "forgejo"),
+            GitForgeType::Gitea => write!(f, "gitea"),
         }
     }
 }
@@ -90,6 +92,7 @@ impl GitForgeType {
             GitForgeType::GitHub => "https://api.github.com",
             GitForgeType::GitLab => "https://gitlab.com/api/v4",
             GitForgeType::Forgejo => "", // User must provide their instance URL
+            GitForgeType::Gitea => "",   // User must provide their instance URL
         }
     }
 
@@ -99,6 +102,7 @@ impl GitForgeType {
             GitForgeType::GitHub => "/user/repos?per_page=100",
             GitForgeType::GitLab => "/projects?membership=true&per_page=100",
             GitForgeType::Forgejo => "/api/v1/user/repos?limit=100",
+            GitForgeType::Gitea => "/api/v1/user/repos?limit=100",
         }
     }
 
@@ -108,6 +112,7 @@ impl GitForgeType {
             GitForgeType::GitHub => "/user/repos",
             GitForgeType::GitLab => "/projects",
             GitForgeType::Forgejo => "/api/v1/user/repos",
+            GitForgeType::Gitea => "/api/v1/user/repos",
         }
     }
 
@@ -117,6 +122,7 @@ impl GitForgeType {
             GitForgeType::GitHub => format!("/repos/{}/{}/branches", owner, repo),
             GitForgeType::GitLab => format!("/projects/{}%2F{}/repository/branches", owner, repo),
             GitForgeType::Forgejo => format!("/api/v1/repos/{}/{}/branches", owner, repo),
+            GitForgeType::Gitea => format!("/api/v1/repos/{}/{}/branches", owner, repo),
         }
     }
 }

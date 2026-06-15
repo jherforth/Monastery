@@ -35,13 +35,27 @@ impl LLMClient {
         Client::with_config(custom_config)
     }
     
+    /// A chunk from the streaming response, tagged with its type.
+    #[derive(Debug, Clone)]
+    pub struct StreamChunk {
+        pub chunk_type: ChunkType,
+        pub content: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum ChunkType {
+        Reasoning,
+        Content,
+    }
+
     /// Send a chat completion request and stream the response.
     /// Uses a direct reqwest call for better control and error visibility.
+    /// Emits `StreamChunk` values tagged as Reasoning or Content.
     pub async fn chat_stream(
         &self,
         messages: Vec<ChatCompletionRequestMessage>,
         model: String,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<String>> + Send>>> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
         let base = self.config.base_url.trim_end_matches('/');
         let url = format!("{}/chat/completions", base);
         
@@ -118,7 +132,7 @@ impl LLMClient {
                     buffer.push_str(&String::from_utf8_lossy(&bytes));
 
                     // Extract complete SSE events (terminated by \n\n)
-                    let mut content = String::new();
+                    let mut chunks: Vec<StreamChunk> = Vec::new();
                     while let Some(pos) = buffer.find("\n\n") {
                         let event = buffer[..pos].to_string();
                         buffer = buffer[pos + 2..].to_string();
@@ -128,7 +142,6 @@ impl LLMClient {
                             let data = if let Some(d) = line.strip_prefix("data: ") {
                                 d
                             } else if let Some(d) = line.strip_prefix("data:") {
-                                // SSE spec: at most one space after colon — strip only one, not all whitespace
                                 d.strip_prefix(' ').unwrap_or(d)
                             } else {
                                 continue;
@@ -138,17 +151,50 @@ impl LLMClient {
                                 continue;
                             }
                             if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
-                                if let Some(text) = json["choices"][0]["delta"]["content"].as_str() {
-                                    content.push_str(text);
+                                let delta = &json["choices"][0]["delta"];
+                                // Check for reasoning_content first (DeepSeek, o1, etc.)
+                                if let Some(reasoning) = delta["reasoning_content"].as_str() {
+                                    if !reasoning.is_empty() {
+                                        chunks.push(StreamChunk {
+                                            chunk_type: ChunkType::Reasoning,
+                                            content: reasoning.to_string(),
+                                        });
+                                    }
+                                }
+                                // Also check for reasoning (alternative field name)
+                                if let Some(reasoning) = delta["reasoning"].as_str() {
+                                    if !reasoning.is_empty() {
+                                        chunks.push(StreamChunk {
+                                            chunk_type: ChunkType::Reasoning,
+                                            content: reasoning.to_string(),
+                                        });
+                                    }
+                                }
+                                // Regular content
+                                if let Some(text) = delta["content"].as_str() {
+                                    if !text.is_empty() {
+                                        chunks.push(StreamChunk {
+                                            chunk_type: ChunkType::Content,
+                                            content: text.to_string(),
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
                     
-                    Ok(content)
+                    Ok(chunks)
                 }
                 Err(e) => Err(Error::OpenAIWithMessage(format!("Stream read error: {}", e))),
             }
+        })
+        // Flatten Vec<StreamChunk> into individual chunks
+        .flat_map(|result| {
+            let items: Vec<Result<StreamChunk, Error>> = match result {
+                Ok(chunks) => chunks.into_iter().map(Ok).collect(),
+                Err(e) => vec![Err(e)],
+            };
+            futures::stream::iter(items)
         });
         
         Ok(Box::pin(stream))

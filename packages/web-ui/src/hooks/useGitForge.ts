@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import useSWR from 'swr';
 
-export type GitForgeType = 'github' | 'gitlab' | 'forgejo';
+export type GitForgeType = 'github' | 'gitlab' | 'forgejo' | 'gitea';
 
 export interface GitConnection {
   id: string;

@@ -1,7 +1,7 @@
 //! Git Forge Integration Service
 //!
 //! Handles Git operations (status, push, pull, clone) and forge API calls
-//! for GitHub, GitLab, and Forgejo. Uses system `git` CLI for local operations
+//! for GitHub, GitLab, Forgejo, and Gitea. Uses system `git` CLI for local operations
 //! and `reqwest` for forge REST APIs.
 
 use crate::models::{
@@ -36,6 +36,7 @@ impl GitService {
             GitForgeType::GitHub => (base_url.to_string(), "/user"),
             GitForgeType::GitLab => (base_url.to_string(), "/user"),
             GitForgeType::Forgejo => (base_url.to_string(), "/api/v1/user"),
+            GitForgeType::Gitea => (base_url.to_string(), "/api/v1/user"),
         };
 
         let resp = client
@@ -58,7 +59,7 @@ impl GitService {
             .map_err(|e| crate::Error::Network(e.to_string()))?;
 
         let username = match forge_type {
-            GitForgeType::GitHub | GitForgeType::Forgejo => {
+            GitForgeType::GitHub | GitForgeType::Forgejo | GitForgeType::Gitea => {
                 json["login"].as_str().unwrap_or("unknown").to_string()
             }
             GitForgeType::GitLab => {
@@ -76,6 +77,17 @@ impl GitService {
         }
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(crate::Error::Config("Forgejo URL must start with http:// or https://".into()));
+        }
+        Ok(())
+    }
+
+    /// Validate that a Gitea instance URL is plausible
+    pub fn validate_gitea_url(url: &str) -> Result<()> {
+        if url.is_empty() {
+            return Err(crate::Error::Config("Gitea requires a base URL (e.g., https://git.yourdomain.com)".into()));
+        }
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(crate::Error::Config("Gitea URL must start with http:// or https://".into()));
         }
         Ok(())
     }
@@ -131,7 +143,7 @@ impl GitService {
                     repo["visibility"].as_str().map(|v| v == "private").unwrap_or(false),
                     repo["default_branch"].as_str().unwrap_or("main").to_string(),
                 ),
-                GitForgeType::Forgejo => (
+                GitForgeType::Forgejo | GitForgeType::Gitea => (
                     repo["id"].as_i64().unwrap_or(0),
                     repo["name"].as_str().unwrap_or("").to_string(),
                     repo["full_name"].as_str().unwrap_or("").to_string(),
@@ -185,7 +197,7 @@ impl GitService {
                 "description": description.unwrap_or("Created with Monastery"),
                 "visibility": if private { "private" } else { "public" },
             }),
-            GitForgeType::Forgejo => serde_json::json!({
+            GitForgeType::Forgejo | GitForgeType::Gitea => serde_json::json!({
                 "name": name,
                 "description": description.unwrap_or("Created with Monastery"),
                 "private": private,
@@ -215,7 +227,7 @@ impl GitService {
             .map_err(|e| crate::Error::Network(e.to_string()))?;
 
         let git_repo = match connection.forge_type {
-            GitForgeType::GitHub | GitForgeType::Forgejo => GitRepo {
+            GitForgeType::GitHub | GitForgeType::Forgejo | GitForgeType::Gitea => GitRepo {
                 id: repo["id"].as_i64().unwrap_or(0),
                 name: repo["name"].as_str().unwrap_or(name).to_string(),
                 full_name: repo["full_name"].as_str().unwrap_or(name).to_string(),
@@ -283,7 +295,7 @@ impl GitService {
 
         let parsed: Vec<GitBranch> = branches.into_iter().map(|b| {
             let name = b["name"].as_str().unwrap_or("unknown").to_string();
-            // GitHub/Forgejo don't include is_default; GitLab might not either
+            // GitHub/Forgejo/Gitea don't include is_default; GitLab might not either
             // We'll mark based on whether name matches common defaults
             let is_default = name == "main" || name == "master";
             GitBranch { name, is_default }

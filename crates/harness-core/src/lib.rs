@@ -18,7 +18,7 @@ pub use models::{
     GitForgeType, GitConnection, GitRepo, GitStatus,
     ConnectGitForgeRequest, GitPushRequest, GitCloneRequest,
 };
-pub use llm::LLMClient;
+pub use llm::{LLMClient, StreamChunk, ChunkType};
 pub use discovery::ServiceDiscovery;
 pub use git::GitService;
 pub use snapshot::{

@@ -1,8 +1,34 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
+
+// Reasoning window — collapsible, scrollable, max ~12 rows
+function ReasoningWindow({ reasoning }: { reasoning: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  return (
+    <div className="mt-2 rounded-lg overflow-hidden border border-monastery-dark-border bg-monastery-dark-bg/50">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-tertiary/50 transition-colors"
+      >
+        <Brain size={14} className="text-monastery-lantern flex-shrink-0" />
+        <span className="font-medium">Reasoning</span>
+        <span className="text-monastery-text-muted">
+          {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </span>
+      </button>
+      {isExpanded && (
+        <div className="px-3 pb-2">
+          <pre className="text-xs text-monastery-text-secondary whitespace-pre-wrap font-mono leading-relaxed overflow-y-auto" style={{ maxHeight: '18em' }}>
+            {reasoning}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface ChatPaneProps {
   messages: Message[];
@@ -258,6 +284,10 @@ export function ChatPane({
                       </span>
                     ))}
                   </div>
+                )}
+                {/* Reasoning window for assistant messages */}
+                {message.role === 'assistant' && message.reasoning && (
+                  <ReasoningWindow reasoning={message.reasoning} />
                 )}
                 <div className={`text-sm ${message.role === 'system' ? 'text-monastery-text-secondary' : ''}`}>
                   {renderContent(message.content)}

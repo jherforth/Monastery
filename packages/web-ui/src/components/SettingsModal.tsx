@@ -220,7 +220,7 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                               disabled={testingId === endpoint.id}
                               className="px-3 py-1.5 text-sm bg-monastery-dark-tertiary text-monastery-text-primary rounded hover:bg-monastery-lantern hover:text-monastery-dark-bg transition-colors disabled:opacity-50"
                             >
-                              {testingId === endpoint.id ? 'Testing...' : 'Test'}
+                              {testingId === endpoint.id ? 'Validating...' : 'Validate'}
                             </button>
                             <button
                               onClick={() => handleDelete(endpoint.id)}

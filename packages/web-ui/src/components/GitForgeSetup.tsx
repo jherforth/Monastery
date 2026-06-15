@@ -45,6 +45,15 @@ const FORGE_TEMPLATES: ForgeTemplate[] = [
     exampleBaseUrl: 'https://git.yourdomain.com',
     color: 'text-emerald-400',
   },
+  {
+    type: 'gitea',
+    label: 'Gitea (Self-Hosted)',
+    icon: Server,
+    tokenUrl: '', // User provides their own URL
+    scopes: 'repo (Read & Write repositories)',
+    exampleBaseUrl: 'https://git.yourdomain.com',
+    color: 'text-teal-400',
+  },
 ];
 
 export function GitForgeSetup() {
@@ -98,7 +107,7 @@ export function GitForgeSetup() {
   const handleSelectForge = (forge: ForgeTemplate) => {
     setSelectedForge(forge);
     setConnectionName(`My ${forge.label}`);
-    if (forge.type === 'forgejo') {
+    if (forge.type === 'forgejo' || forge.type === 'gitea') {
       setStep('url');
     } else {
       setForgeUrl(forge.exampleBaseUrl);
@@ -108,7 +117,7 @@ export function GitForgeSetup() {
 
   const handleVerifyUrl = () => {
     if (!forgeUrl.trim()) {
-      setError('Please enter your Forgejo instance URL');
+      setError(`Please enter your ${selectedForge?.label} instance URL`);
       return;
     }
     setError(null);
@@ -125,7 +134,7 @@ export function GitForgeSetup() {
         name: connectionName || `My ${selectedForge.label}`,
         forge_type: selectedForge.type,
         api_token: token.trim(),
-        base_url: selectedForge.type === 'forgejo' ? forgeUrl.trim() : undefined,
+        base_url: (selectedForge.type === 'forgejo' || selectedForge.type === 'gitea') ? forgeUrl.trim() : undefined,
         email: gitEmail.trim() || undefined,
       };
       await connectForge(req);
@@ -347,7 +356,7 @@ export function GitForgeSetup() {
                     <div className="flex-1">
                       <div className="text-sm font-medium text-monastery-text-primary">{forge.label}</div>
                       <div className="text-xs text-monastery-text-muted">
-                        {forge.type === 'forgejo' ? 'Your own self-hosted Git service' : `Connect to ${forge.label}.com`}
+                        {(forge.type === 'forgejo' || forge.type === 'gitea') ? 'Your own self-hosted Git service' : `Connect to ${forge.label}.com`}
                       </div>
                     </div>
                     <ChevronRight className="w-4 h-4 text-monastery-text-muted" />
@@ -356,24 +365,24 @@ export function GitForgeSetup() {
               </div>
             )}
 
-            {/* Step 2: Forgejo URL */}
+            {/* Step 2: Self-Hosted Instance URL */}
             {step === 'url' && selectedForge && (
               <div className="space-y-4">
                 <div className="bg-monastery-dark-bg rounded-lg p-3 border border-monastery-dark-border">
                   <p className="text-xs text-monastery-text-secondary leading-relaxed">
-                    Enter the full URL of your Forgejo instance. This must be reachable from the Monastery container
+                    Enter the full URL of your {selectedForge.label} instance. This must be reachable from the Monastery container
                     (same Docker network or LAN).
                   </p>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-monastery-text-secondary mb-1">
-                    Forgejo Instance URL
+                    {selectedForge.label} Instance URL
                   </label>
                   <input
                     type="text"
                     value={forgeUrl}
                     onChange={(e) => setForgeUrl(e.target.value)}
-                    placeholder={FORGE_TEMPLATES[2].exampleBaseUrl}
+                    placeholder={selectedForge.exampleBaseUrl}
                     className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
                   />
                 </div>
@@ -450,7 +459,7 @@ export function GitForgeSetup() {
 
                 <div className="flex gap-2">
                   <button
-                    onClick={() => selectedForge.type === 'forgejo' ? setStep('url') : setStep('select')}
+                    onClick={() => (selectedForge.type === 'forgejo' || selectedForge.type === 'gitea') ? setStep('url') : setStep('select')}
                     className="px-3 py-1.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary"
                   >
                     Back
@@ -474,7 +483,7 @@ export function GitForgeSetup() {
 }
 
 function TokenGuide({ forge, baseUrl }: { forge: ForgeTemplate; baseUrl: string }) {
-  const tokenUrl = forge.type === 'forgejo'
+  const tokenUrl = (forge.type === 'forgejo' || forge.type === 'gitea')
     ? `${baseUrl}/user/settings/applications`
     : forge.tokenUrl;
 
@@ -499,9 +508,9 @@ function TokenGuide({ forge, baseUrl }: { forge: ForgeTemplate; baseUrl: string 
         <li>Select scopes: <code className="text-monastery-lantern bg-monastery-dark-bg px-1 rounded">{forge.scopes}</code></li>
         <li>Copy the generated token and paste it below</li>
       </ol>
-      {forge.type === 'forgejo' && (
+      {(forge.type === 'forgejo' || forge.type === 'gitea') && (
         <div className="mt-2 p-2 bg-amber-400/10 border border-amber-400/20 rounded text-xs text-amber-300">
-          <strong>Self-Hosted Note:</strong> Your Forgejo instance at <code className="text-amber-200">{baseUrl}</code> must
+          <strong>Self-Hosted Note:</strong> Your {forge.label} instance at <code className="text-amber-200">{baseUrl}</code> must
           be reachable from the Monastery container. If running in Docker, ensure both are on the same network.
         </div>
       )}
@@ -525,10 +534,12 @@ function ConnectionCard({
 }) {
   const ForgeIcon = connection.forge_type === 'gitlab' ? Gitlab
     : connection.forge_type === 'forgejo' ? Server
+    : connection.forge_type === 'gitea' ? Server
     : Github;
 
   const forgeColor = connection.forge_type === 'gitlab' ? 'text-orange-400'
     : connection.forge_type === 'forgejo' ? 'text-emerald-400'
+    : connection.forge_type === 'gitea' ? 'text-teal-400'
     : 'text-gray-300';
 
   return (
