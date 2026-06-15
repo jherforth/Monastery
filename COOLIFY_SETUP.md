@@ -1,9 +1,10 @@
-
 1. Setup your Coolify Base Server: https://community-scripts.org/scripts/debian-13-vm
 
 Copy the run command and run it on your proxmox host.
 
-User default or Advanced - I selected Advanced to setup the below values:
+Note: If you enabled Cloud-Init like I did, just follow these directions once the VM is up and running: https://github.com/community-scripts/ProxmoxVE/discussions/272
+
+Use default or Advanced - I selected Advanced to setup the below values:
 
   🧩  Using Advanced Settings
   🆔  Virtual Machine ID: Whatever number you decide goes here
@@ -23,6 +24,8 @@ User default or Advanced - I selected Advanced to setup the below values:
   🚀  Creating a Debian 13 VM using the above advanced settings
 
 2. Second verse, same as the first: Setup your Coolify Base Server: https://community-scripts.org/scripts/debian-13-vm
+   a. So this server would be what most youtube tutorials would recognize as your VPS, but we're aiming to do everything entirely self hosted, so this is the VPS alternative.
+   b. I've called it "coolify-deploy" but that's just a stand in name for whatever name you've given your project/site.
 
 Copy the run command and run it on your proxmox host.
 
@@ -83,4 +86,4 @@ docker run -d \
 
    e. SSH into your Coolify-Deploy server and run the docker command that you saved in the text doc. 
    f. Once you connected up Cloudflare we can head back into Coolify and use the automated connection.
-   g. Go to servers > coolify deploy > cloudflare tunnel and paste in your long token and put in the ssh.domain.com address in and connect. Done.
+   g. Go to servers > coolify deploy > cloudflare tunnel and paste in your long token and put in the ssh.domain.com address in and connect. Done. You should be ready to deploy a project.
