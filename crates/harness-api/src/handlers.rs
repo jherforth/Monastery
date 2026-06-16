@@ -2154,9 +2154,9 @@ pub async fn test_hosting_connection(
         .map_err(|e| ApiError::Internal(format!("Failed to build HTTP client: {}", e)))?;
 
     let test_url = match service_type.as_str() {
-        "dokploy" => format!("{}/api/application", base_url.trim_end_matches('/')),
-        "coolify" => format!("{}/api/v1/applications", base_url.trim_end_matches('/')),
-        "pocketbase" => format!("{}/api/collections", base_url.trim_end_matches('/')),
+        "dokploy" => format!("{}/api/health", base_url.trim_end_matches('/')),
+        "coolify" => format!("{}/api/v1/health", base_url.trim_end_matches('/')),
+        "pocketbase" => format!("{}/api/health", base_url.trim_end_matches('/')),
         _ => format!("{}/api", base_url.trim_end_matches('/')),
     };
 

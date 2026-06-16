@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Server, Database, Loader2, CheckCircle, XCircle, Trash2 } from 'lucide-react';
+import { Server, Database, Loader2, CheckCircle, XCircle, Trash2, AlertTriangle } from 'lucide-react';
 import { useHostingServices, ConnectHostingRequest } from '../hooks/useHostingServices';
 import type { HostingServiceConnection, HostingServiceType } from '../types';
 
@@ -144,11 +144,22 @@ export function HostingServicesTab() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <h4 className="font-medium text-monastery-text-primary text-sm">{template.label}</h4>
-                    {existingConn && (
-                      <span className="px-2 py-0.5 text-xs bg-green-400/10 text-green-400 rounded">
-                        ✓ Connected
+                    {existingConn && testResult && testResult.healthy ? (
+                      <span className="px-2 py-0.5 text-xs bg-green-400/10 text-green-400 rounded flex items-center gap-1">
+                        <CheckCircle size={12} />
+                        Connected
                       </span>
-                    )}
+                    ) : existingConn && testResult && !testResult.healthy ? (
+                      <span className="px-2 py-0.5 text-xs bg-red-400/10 text-red-400 rounded flex items-center gap-1">
+                        <XCircle size={12} />
+                        Failed
+                      </span>
+                    ) : existingConn ? (
+                      <span className="px-2 py-0.5 text-xs bg-amber-400/10 text-amber-400 rounded flex items-center gap-1">
+                        <AlertTriangle size={12} />
+                        Not Verified
+                      </span>
+                    ) : null}
                   </div>
                   <p className="text-xs text-monastery-text-muted mt-0.5">{template.description}</p>
                   {existingConn && (
