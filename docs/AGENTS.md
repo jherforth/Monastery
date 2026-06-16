@@ -1,10 +1,12 @@
-# Agents — Architecture & Implementation Plan
+# Agents — Architecture & Implementation
 
 ## Overview
 
 Monastery's agent system enables the main chat LLM to dispatch specialized work to sub-agents, each with its own system prompt, tool access, and execution context. Think of agents as **specialized workers** the orchestrator can delegate tasks to.
 
-## Three-Tier Architecture
+**Status: Phases 1–3 complete.** Agents are fully functional — you can invoke them from chat quick-actions, the editor toolbar, or by typing `@agent:name task` in the chat input. Each agent streams its response live into the conversation.
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -21,116 +23,122 @@ Monastery's agent system enables the main chat LLM to dispatch specialized work 
      └────────┘  └────────┘  └─────────────┘
 ```
 
+**How it works under the hood:**
+
+```
+User clicks "🔍 Review"
+  → POST /api/agents/run { system_prompt, task, project_id }
+  → Backend loads project files as context (capped at 200KB)
+  → LLM streams response via SSE (with reasoning support)
+  → Frontend renders live-streamed agent message in chat
+```
+
 ---
 
 ## Built-in Agents
 
-These ship with Monastery — each has a tuned system prompt and project context:
+Each agent has a tuned system prompt and receives full project context when invoked:
 
-| Agent | Role | System Prompt Focus | Tools |
-|---|---|---|---|
-| **Architect** | Plans project structure, chooses patterns | Architecture design, trade-off analysis | File tree read, package.json scan |
-| **Coder** | Writes/edits code files | Implementation, following patterns | File read/write, shell |
-| **Reviewer** | Code review, catches bugs/anti-patterns | Code quality, security, performance | File read, git diff |
-| **Tester** | Writes unit/integration tests | Test coverage, edge cases | File read/write, shell (test runner) |
-| **Documenter** | Generates README, API docs, JSDoc | Documentation clarity, completeness | File read/write |
-| **Deployer** | Packages and deploys to hosting services | Deployment configuration, env vars | Hosting API, git push |
-
----
-
-## External Agent Frameworks
-
-Connect to self-hosted agent frameworks:
-
-| Framework | Description | API Integration |
+| Agent | Role | System Prompt Focus |
 |---|---|---|
-| **Hermes** | Local AI agent runner | REST API — dispatch tasks, stream results |
-| **Open Claw** | Multi-agent orchestration | REST/WebSocket API — task delegation protocol |
-
-External agents follow the same **Connect → Validate → Dispatch** pattern as Hosting Services.
-
----
-
-## Chat Integration Flow (Future Phase)
-
-### Explicit Invocation (User asks)
-```
-User: "Run the Reviewer agent on my last changes"
- → System: Creates agent run with project context
- → Agent: Streams review results back to chat
- → Result: Displayed in collapsible sub-panel (similar to reasoning window)
-```
-
-### Implicit Invocation (LLM decides)
-```
-LLM: "I'll dispatch the Coder agent to write the auth routes,
-      then the Tester agent to verify them."
- → System: Queues Coder → Tester pipeline
- → Each agent: Streams output to chat sub-panels
- → Main chat: Resumes after pipeline completes
-```
+| 🏗️ **Architect** | System Designer | Architecture design, trade-off analysis, project structure |
+| 💻 **Coder** | Implementation | Write/edit code following project patterns |
+| 🔍 **Reviewer** | Code Review | Bugs, security, performance, anti-patterns |
+| 🧪 **Tester** | Quality Assurance | Unit/integration/edge case tests |
+| 📝 **Documenter** | Technical Writer | README, API docs, JSDoc, troubleshooting guides |
+| 🚀 **Deployer** | DevOps / Deployment | Dockerfile generation, hosting platform configuration |
 
 ---
 
-## Agents Tab UI
+## Invocation Methods
 
-```
-┌─ Agents ─────────────────────────────────────┐
-│                                               │
-│  Built-in Agents                              │
-│  ┌──────────────────────────────────────┐    │
-│  │ 🏗️ Architect       idle              │    │
-│  │    Plans project structure            │    │
-│  │ 💻 Coder           idle              │    │
-│  │    Writes and edits code files        │    │
-│  │ 🔍 Reviewer        idle              │    │
-│  │    Code quality and security review   │    │
-│  │ 🧪 Tester          idle              │    │
-│  │    Writes unit and integration tests  │    │
-│  │ 📝 Documenter      idle              │    │
-│  │    Generates README, API docs         │    │
-│  │ 🚀 Deployer        idle              │    │
-│  │    Deploys to hosting services        │    │
-│  └──────────────────────────────────────┘    │
-│                                               │
-│  External Agents                              │
-│  ┌──────────────────────────────────────┐    │
-│  │ 🤖 Hermes          Coming soon        │    │
-│  │    Local AI agent runner              │    │
-│  ├──────────────────────────────────────┤    │
-│  │ 🦞 Open Claw      Coming soon        │    │
-│  │    Multi-agent orchestration          │    │
-│  └──────────────────────────────────────┘    │
-│                                               │
-│  Dispatch agents from chat — coming soon      │
-└───────────────────────────────────────────────┘
-```
+### 1. Chat Quick-Action Buttons (collapsible)
 
----
+Toggleable row above the chat input. Click to expand/collapse:
 
-## Implementation Phases
-
-| Phase | What | Effort |
+| Button | Agent | Predefined Task |
 |---|---|---|
-| **Phase 1 (Now)** | Agents tab shows 6 built-in agent definitions (static) + external agent placeholders + "coming soon" note | Small |
-| **Phase 2** | Backend: `POST /api/agents/:id/run` — spawns sub-LLM call with agent-specific system prompt | Medium |
-| **Phase 3** | Chat UI: agent invocation as collapsible sub-message with live stream | Medium |
-| **Phase 4** | External agents: connect Hermes / Open Claw via APIs, dispatch tasks | Large |
+| 🔍 Review | Reviewer | "Review my latest changes for bugs, security issues, and anti-patterns." |
+| 🏗️ Plan | Architect | "Analyze this project and recommend the best architecture, patterns, and structure." |
+| 🧪 Test | Tester | "Write comprehensive unit and integration tests for the current module." |
+| 📝 Docs | Documenter | "Generate documentation for this project: README, API docs, and inline comments." |
+| 💻 Implement | Coder | "Implement the feature described in the latest conversation with clean, secure code." |
+| 🚀 Deploy | Deployer | "Prepare this project for deployment: check configuration, generate Dockerfile if needed." |
+
+The quick-actions row is toggled by clicking the **🤖 Agents** header above the chat input. Users familiar with agents can collapse it.
+
+### 2. Editor Toolbar Buttons
+
+In the code editor toolbar, beside the file path:
+
+| Button | Agent | What It Sends |
+|---|---|---|
+| **Explain** | Reviewer | Current file content + "Explain this code in detail" |
+| **Refactor** | Coder | Current file content + "Refactor for better patterns, readability, and performance" |
+| **Add Tests** | Tester | Current file content + "Write comprehensive unit and integration tests" |
+
+Buttons are disabled when no file is open in the editor.
+
+### 3. Chat Input
+
+Type a message like *"Review my latest changes"* — the main LLM handles it, but you can also explicitly reference agents in natural language.
 
 ---
 
-## File Plan
+## Response Flow
 
-### Phase 1 Files
+When an agent is invoked:
+
+1. A **user message** appears in chat showing which agent was called (e.g., `🔍 **Reviewer**: Review my latest changes...`)
+2. A **placeholder assistant message** is created and updated in real-time as the agent streams
+3. The agent's **system prompt** is combined with the **full project context** (files capped at 200KB)
+4. The LLM response streams via **SSE** with reasoning support
+5. The final response is saved to the session if one is active
+
+---
+
+## External Agent Frameworks (Future)
+
+| Framework | Description | Status |
+|---|---|---|
+| 🤖 **Hermes** | Local AI agent runner — REST API for task dispatch | Coming soon |
+| 🦞 **Open Claw** | Multi-agent orchestration — task delegation protocol | Coming soon |
+
+External agents will follow the same **Connect → Validate → Dispatch** pattern as Hosting Services.
+
+---
+
+## Implementation Status
+
+| Phase | What | Status |
+|---|---|---|
+| **Phase 1** | Agents tab with 6 built-in definitions + external placeholders | ✅ Complete |
+| **Phase 2** | Backend `POST /api/agents/run` — spawns sub-LLM call with agent system prompt + project context | ✅ Complete |
+| **Phase 3** | Chat UI: quick-action buttons, live-streamed agent responses, editor toolbar integration | ✅ Complete |
+| **Phase 4** | External agents: connect Hermes / Open Claw via APIs, dispatch tasks | 🔜 Planned |
+
+---
+
+## File Map
+
+### Frontend
 | File | Purpose |
 |---|---|
-| `packages/web-ui/src/hooks/useAgents.ts` | Static built-in agent definitions + future external agent connections |
-| `packages/web-ui/src/components/AgentsTab.tsx` | Sidebar tab displaying agent list |
-| `packages/web-ui/src/components/Sidebar.tsx` | Wire up AgentsTab |
+| `packages/web-ui/src/hooks/useAgents.ts` | Agent definitions, `runAgent()` with SSE streaming, quick action config |
+| `packages/web-ui/src/components/AgentsTab.tsx` | Sidebar tab — agent list with descriptions and tool badges |
+| `packages/web-ui/src/components/ChatPane.tsx` | Toggleable quick-action buttons above chat input |
+| `packages/web-ui/src/components/Sidebar.tsx` | Agents tab integration |
+| `packages/web-ui/src/App.tsx` | `triggerAgent()` callback — shared by chat quick-actions and editor toolbar |
 
-### Future Phase Files
+### Backend
 | File | Purpose |
 |---|---|
-| `crates/harness-api/src/db.rs` | `agent_connections` table |
-| `crates/harness-api/src/handlers/agents.rs` | Agent run/dispatch endpoints |
-| `packages/web-ui/src/components/AgentRunPanel.tsx` | Chat sub-panel for live agent output |
+| `crates/harness-api/src/handlers.rs` | `run_agent` handler — loads project context, builds agent prompt, streams via LLM |
+| `crates/harness-api/src/main.rs` | Route: `POST /api/agents/run` |
+
+### Future
+| File | Purpose |
+|---|---|
+| `crates/harness-api/src/db.rs` | `agent_connections` table for external agents |
+| `packages/web-ui/src/components/AgentRunPanel.tsx` | Chat sub-panel for live agent output (if separate from main chat) |
+
