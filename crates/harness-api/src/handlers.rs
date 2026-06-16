@@ -2294,11 +2294,12 @@ pub async fn deploy_to_hosting(
                 .await
                 .map_err(|e| ApiError::Internal(format!("Coolify API request failed: {}", e)))?;
 
-            if !resp.status().is_success() {
+            let coolify_status = resp.status();
+            if !coolify_status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 return Err(ApiError::Internal(format!(
                     "Coolify returned HTTP {}: {}",
-                    resp.status().as_u16(),
+                    coolify_status.as_u16(),
                     if body.len() > 300 { format!("{}...", &body[..300]) } else { body }
                 )));
             }
@@ -2352,11 +2353,12 @@ pub async fn deploy_to_hosting(
                 .await
                 .map_err(|e| ApiError::Internal(format!("Dokploy API request failed: {}", e)))?;
 
-            if !resp.status().is_success() {
+            let dokploy_status = resp.status();
+            if !dokploy_status.is_success() {
                 let body = resp.text().await.unwrap_or_default();
                 return Err(ApiError::Internal(format!(
                     "Dokploy returned HTTP {}: {}",
-                    resp.status().as_u16(),
+                    dokploy_status.as_u16(),
                     if body.len() > 300 { format!("{}...", &body[..300]) } else { body }
                 )));
             }
