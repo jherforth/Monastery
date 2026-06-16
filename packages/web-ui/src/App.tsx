@@ -33,6 +33,20 @@ export default function App() {
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
+
+  // Session management
+  const {
+    sessions,
+    currentSession,
+    isLoading: isLoadingSessions,
+    fetchSessions,
+    createSession,
+    getSession,
+    deleteSession,
+    addMessage,
+  } = useSessions(currentProject?.id ?? null);
+
+  // Agent system
   const { runAgent, getAgent } = useAgents();
 
   // Shared agent trigger — used by both ChatPane quick-actions and editor toolbar
@@ -80,18 +94,6 @@ export default function App() {
       setIsGenerating(false);
     }
   }, [currentProject?.id, getAgent, runAgent, currentSession?.id, addMessage]);
-
-  // Session management
-  const {
-    sessions,
-    currentSession,
-    isLoading: isLoadingSessions,
-    fetchSessions,
-    createSession,
-    getSession,
-    deleteSession,
-    addMessage,
-  } = useSessions(currentProject?.id ?? null);
 
   // Sync persisted theme with the HTML data-theme attribute on load
   useEffect(() => {
