@@ -2016,7 +2016,7 @@ fn walk_directory(base: &std::path::Path, current: &std::path::Path) -> Vec<serd
 // ============================================================
 
 #[derive(Debug, Deserialize)]
-struct ConnectHostingRequest {
+pub(crate) struct ConnectHostingRequest {
     name: String,
     service_type: String, // "dokploy" | "coolify" | "pocketbase"
     base_url: String,
