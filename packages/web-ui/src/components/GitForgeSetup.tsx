@@ -57,7 +57,7 @@ const FORGE_TEMPLATES: ForgeTemplate[] = [
     tokenUrl: '', // User provides their own URL
     scopes: 'repo (Read & Write repositories)',
     exampleBaseUrl: 'https://git.yourdomain.com',
-    color: 'text-emerald-400',
+    color: 'text-red-400',
   },
   {
     type: 'gitea',
