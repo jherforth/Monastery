@@ -12,9 +12,10 @@ interface TopBarProps {
   onRefreshProjects?: () => void;
   onCommitComplete?: (message: string, snapshotId?: string, wasRestore?: boolean) => void;
   onRestoreComplete?: () => void;
+  onOpenWizard?: () => void;
 }
 
-export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete, onRestoreComplete }: TopBarProps) {
+export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete, onRestoreComplete, onOpenWizard }: TopBarProps) {
   const { 
     currentProject,
     setCurrentProject,
@@ -394,6 +395,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
           )}
 
           <button
+            onClick={onOpenWizard}
             className="px-3 py-1.5 bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg text-sm font-medium transition-colors"
             title="Self-Host Wizard (Ctrl+Shift+D)"
           >

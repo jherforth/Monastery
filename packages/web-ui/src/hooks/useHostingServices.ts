@@ -11,6 +11,26 @@ export interface ConnectHostingRequest {
   email?: string;
 }
 
+export interface DeployRequest {
+  connection_id: string;
+  project_id: string;
+  app_name: string;
+  domain?: string;
+  port?: number;
+}
+
+export interface DeployResult {
+  success: boolean;
+  platform: string;
+  app_uuid?: string;
+  app_id?: string;
+  app_name: string;
+  deploy_triggered: boolean;
+  dashboard_url: string;
+  framework: string;
+  port: number;
+}
+
 export function useHostingServices() {
   const { data: connections, error, mutate } = useSWR<HostingServiceConnection[]>(
     '/api/hosting/connections',
@@ -50,6 +70,19 @@ export function useHostingServices() {
     return res.json() as Promise<{ healthy: boolean; message: string }>;
   }, []);
 
+  const deployProject = useCallback(async (req: DeployRequest): Promise<DeployResult> => {
+    const res = await fetch('/api/hosting/deploy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Deploy failed' }));
+      throw new Error(err.error || 'Deploy failed');
+    }
+    return res.json();
+  }, []);
+
   return {
     connections: connections || [],
     isLoading: !error && !connections,
@@ -57,6 +90,7 @@ export function useHostingServices() {
     connectService,
     deleteConnection,
     testConnection,
+    deployProject,
     refreshConnections: mutate,
   };
 }

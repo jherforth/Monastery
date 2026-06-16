@@ -6,6 +6,7 @@ import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
 import { CodeEditor } from './components/CodeEditor';
 import { PreviewPane } from './components/PreviewPane';
+import { SelfHostWizard } from './components/SelfHostWizard';
 import { useAppStore } from './store/useAppStore';
 import { useSessions } from './hooks/useSessions';
 import { useEndpoints } from './hooks/useEndpoints';
@@ -27,6 +28,7 @@ export default function App() {
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
+  const [isWizardOpen, setIsWizardOpen] = useState(false);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
@@ -47,6 +49,18 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  // Keyboard shortcut: Ctrl+Shift+D opens Self-Host Wizard
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setIsWizardOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   // On startup, fetch existing projects and auto-select if none active
   const refreshProjects = useCallback(() => {
@@ -478,6 +492,7 @@ export default function App() {
   return (
     <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
       <TopBar availableProjects={availableProjects} endpoints={endpoints} onRefreshProjects={refreshProjects}
+        onOpenWizard={() => setIsWizardOpen(true)}
         onCommitComplete={(msg, snapshotId, wasRestore) => {
           const markerMsg: Message = {
             id: `commit-${Date.now()}`,
@@ -502,6 +517,8 @@ export default function App() {
           }
         }}      />
       
+      <SelfHostWizard isOpen={isWizardOpen} onClose={() => setIsWizardOpen(false)} />
+
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}
         <div

@@ -2199,3 +2199,319 @@ pub async fn test_hosting_connection(
         }))),
     }
 }
+
+// ============================================================
+// Self-Host Deployment Handler
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DeployRequest {
+    pub connection_id: uuid::Uuid,
+    pub project_id: uuid::Uuid,
+    pub app_name: String,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+}
+
+/// Deploy a project to a connected hosting service
+pub async fn deploy_to_hosting(
+    State(state): State<AppState>,
+    Json(req): Json<DeployRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Look up the hosting connection
+    let conn_row = sqlx::query(
+        "SELECT service_type, base_url, api_token FROM hosting_connections WHERE id = ?"
+    )
+    .bind(req.connection_id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let (service_type, base_url, api_token) = match conn_row {
+        Some(r) => {
+            let st: String = r.get(0);
+            let bu: String = r.get(1);
+            let at: String = r.get(2);
+            (st, bu, at)
+        }
+        None => return Err(ApiError::NotFound("Hosting connection not found".into())),
+    };
+
+    // Look up the project
+    let proj_row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(req.project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match proj_row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    if !project_path.exists() {
+        return Err(ApiError::NotFound(format!("Project directory not found: {:?}", project_path)));
+    }
+
+    // Detect framework from package.json
+    let (framework, build_cmd, output_dir, default_port) = detect_framework(&project_path);
+    
+    // Generate Dockerfile if one doesn't exist
+    let dockerfile_path = project_path.join("Dockerfile");
+    if !dockerfile_path.exists() {
+        let dockerfile = generate_dockerfile(&framework, &build_cmd, &output_dir, default_port);
+        std::fs::write(&dockerfile_path, &dockerfile)
+            .map_err(|e| ApiError::Internal(format!("Failed to write Dockerfile: {}", e)))?;
+    }
+
+    let port = req.port.unwrap_or(default_port);
+
+    // Build and deploy based on service type
+    let base = base_url.trim_end_matches('/');
+    let client = reqwest::Client::new();
+
+    match service_type.as_str() {
+        "coolify" => {
+            // Create a Dockerfile-based application on Coolify
+            let create_url = format!("{}/api/v1/applications/dockerfile", base);
+            
+            let payload = serde_json::json!({
+                "name": req.app_name,
+                "description": format!("Deployed from Monastery — project: {}", project_name),
+                "ports_exposes": port.to_string(),
+                "base_directory": "/",
+                "dockerfile": std::fs::read_to_string(&dockerfile_path)
+                    .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port)),
+            });
+
+            let resp = client
+                .post(&create_url)
+                .header("Authorization", format!("Bearer {}", api_token))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Coolify API request failed: {}", e)))?;
+
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(ApiError::Internal(format!(
+                    "Coolify returned HTTP {}: {}",
+                    resp.status().as_u16(),
+                    if body.len() > 300 { format!("{}...", &body[..300]) } else { body }
+                )));
+            }
+
+            let app: serde_json::Value = resp.json().await
+                .map_err(|e| ApiError::Internal(format!("Failed to parse Coolify response: {}", e)))?;
+
+            let app_uuid = app["uuid"].as_str().unwrap_or("unknown");
+
+            // Trigger deployment
+            let deploy_url = format!("{}/api/v1/applications/{}/deploy", base, app_uuid);
+            let deploy_resp = client
+                .post(&deploy_url)
+                .header("Authorization", format!("Bearer {}", api_token))
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Deploy trigger failed: {}", e)))?;
+
+            let deploy_success = deploy_resp.status().is_success();
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "platform": "coolify",
+                "app_uuid": app_uuid,
+                "app_name": req.app_name,
+                "deploy_triggered": deploy_success,
+                "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), app_uuid),
+                "framework": framework,
+                "port": port,
+            })))
+        }
+        "dokploy" => {
+            // Dokploy: create an application
+            let create_url = format!("{}/api/application", base);
+            
+            let payload = serde_json::json!({
+                "name": req.app_name,
+                "description": format!("Deployed from Monastery — project: {}", project_name),
+                "type": "dockerfile",
+                "port": port,
+                "dockerfile": std::fs::read_to_string(&dockerfile_path)
+                    .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port)),
+            });
+
+            let resp = client
+                .post(&create_url)
+                .header("Authorization", format!("Bearer {}", api_token))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Dokploy API request failed: {}", e)))?;
+
+            if !resp.status().is_success() {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(ApiError::Internal(format!(
+                    "Dokploy returned HTTP {}: {}",
+                    resp.status().as_u16(),
+                    if body.len() > 300 { format!("{}...", &body[..300]) } else { body }
+                )));
+            }
+
+            let app: serde_json::Value = resp.json().await
+                .map_err(|e| ApiError::Internal(format!("Failed to parse Dokploy response: {}", e)))?;
+
+            let app_id = app["applicationId"].as_str()
+                .or_else(|| app["id"].as_str())
+                .unwrap_or("unknown");
+
+            // Trigger deploy
+            let deploy_url = format!("{}/api/application/{}/deploy", base, app_id);
+            let deploy_resp = client
+                .post(&deploy_url)
+                .header("Authorization", format!("Bearer {}", api_token))
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Deploy trigger failed: {}", e)))?;
+
+            let deploy_success = deploy_resp.status().is_success();
+
+            Ok(Json(serde_json::json!({
+                "success": true,
+                "platform": "dokploy",
+                "app_id": app_id,
+                "app_name": req.app_name,
+                "deploy_triggered": deploy_success,
+                "dashboard_url": format!("{}/dashboard/applications/{}", base.trim_end_matches("/api"), app_id),
+                "framework": framework,
+                "port": port,
+            })))
+        }
+        other => Err(ApiError::Config(format!(
+            "Deployment not yet supported for service type '{}'. Supported: coolify, dokploy",
+            other
+        ))),
+    }
+}
+
+/// Detect the project framework from package.json
+fn detect_framework(project_path: &std::path::Path) -> (String, String, String, u16) {
+    let pkg_path = project_path.join("package.json");
+    if !pkg_path.exists() {
+        return ("static".into(), "echo 'No build needed'".into(), ".".into(), 3000);
+    }
+
+    let content = match std::fs::read_to_string(&pkg_path) {
+        Ok(c) => c,
+        Err(_) => return ("unknown".into(), "npm run build".into(), "dist".into(), 3000),
+    };
+
+    let pkg: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return ("unknown".into(), "npm run build".into(), "dist".into(), 3000),
+    };
+
+    let deps = pkg["dependencies"].as_object();
+    let dev_deps = pkg["devDependencies"].as_object();
+    let scripts = pkg["scripts"].as_object();
+
+    let has_dep = |name: &str| -> bool {
+        deps.map(|d| d.contains_key(name)).unwrap_or(false)
+            || dev_deps.map(|d| d.contains_key(name)).unwrap_or(false)
+    };
+
+    if has_dep("next") {
+        return ("nextjs".into(), "npm run build".into(), ".next".into(), 3000);
+    }
+    if has_dep("react") && has_dep("vite") {
+        return ("vite-react".into(), "npm run build".into(), "dist".into(), 5173);
+    }
+    if has_dep("vue") || has_dep("@vue/cli-service") {
+        return ("vue".into(), "npm run build".into(), "dist".into(), 8080);
+    }
+    if has_dep("react") {
+        // Check for CRA
+        if has_dep("react-scripts") {
+            return ("react".into(), "npm run build".into(), "build".into(), 3000);
+        }
+        return ("react".into(), "npm run build".into(), "dist".into(), 3000);
+    }
+    if has_dep("express") {
+        return ("express".into(), "echo 'No build step'".into(), ".".into(), 3000);
+    }
+    if has_dep("fastify") {
+        return ("fastify".into(), "echo 'No build step'".into(), ".".into(), 3000);
+    }
+
+    // Check scripts for build commands
+    if let Some(scripts) = scripts {
+        if scripts.contains_key("build") {
+            return ("node".into(), "npm run build".into(), "dist".into(), 3000);
+        }
+    }
+
+    ("node".into(), "echo 'No build step'".into(), ".".into(), 3000)
+}
+
+/// Generate a Dockerfile for the detected framework
+fn generate_dockerfile(framework: &str, _build_cmd: &str, output_dir: &str, port: u16) -> String {
+    match framework {
+        "nextjs" => format!(
+            r#"FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:18-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV production
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/{} ./{}
+COPY --from=builder /app/node_modules ./node_modules
+EXPOSE {}
+CMD ["npm", "start"]
+"#,
+            output_dir, output_dir, port
+        ),
+        "vite-react" | "vue" | "react" => format!(
+            r#"FROM node:18-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/{} /usr/share/nginx/html
+EXPOSE {}
+CMD ["nginx", "-g", "daemon off;"]
+"#,
+            output_dir, port
+        ),
+        "express" | "fastify" | "node" => format!(
+            r#"FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --production
+COPY . .
+EXPOSE {}
+CMD ["node", "index.js"]
+"#,
+            port
+        ),
+        _ => format!(
+            r#"FROM node:18-alpine
+WORKDIR /app
+COPY . .
+EXPOSE {}
+CMD ["npx", "serve", "-l", "{}"]
+"#,
+            port, port
+        ),
+    }
+}
