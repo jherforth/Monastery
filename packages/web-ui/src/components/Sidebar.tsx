@@ -1,6 +1,142 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2 } from 'lucide-react';
+import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2 } from 'lucide-react';
 import { useState } from 'react';
 import { FileNode, SessionInfo, SessionDetail } from '../types';
+import { useEndpoints } from '../hooks/useEndpoints';
+import { useGitForge } from '../hooks/useGitForge';
+import { useHostingServices } from '../hooks/useHostingServices';
+
+function IntegrationsStatus() {
+  const { endpoints, isLoading: llmLoading } = useEndpoints();
+  const { connections: gitConns, isLoading: gitLoading } = useGitForge();
+  const { connections: hostingConns, isLoading: hostingLoading } = useHostingServices();
+
+  const isLoading = llmLoading || gitLoading || hostingLoading;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-8 text-monastery-text-muted">
+        <Loader2 size={18} className="animate-spin" />
+      </div>
+    );
+  }
+
+  const activeLLM = endpoints.filter(e => e.is_favorite).length;
+  const totalLLM = endpoints.length;
+  const activeGit = gitConns.length;
+  const activeHosting = hostingConns.length;
+  const totalActive = activeLLM + activeGit + activeHosting;
+
+  const serviceLabel = (type: string) => {
+    switch (type) {
+      case 'dokploy': return 'Dokploy';
+      case 'coolify': return 'Coolify';
+      case 'pocketbase': return 'Pocketbase';
+      default: return type;
+    }
+  };
+
+  const serviceIcon = (type: string) => {
+    switch (type) {
+      case 'pocketbase': return <Database size={12} className="text-amber-400" />;
+      default: return <Server size={12} className="text-blue-400" />;
+    }
+  };
+
+  return (
+    <div className="px-3 py-2 space-y-4">
+      {/* Summary */}
+      <div className="flex items-center gap-2 px-1">
+        <div className={`w-2 h-2 rounded-full ${totalActive > 0 ? 'bg-green-400' : 'bg-monastery-text-muted'}`} />
+        <span className="text-xs text-monastery-text-secondary">
+          {totalActive > 0 ? `${totalActive} active` : 'No active integrations'}
+        </span>
+      </div>
+
+      {/* LLM Endpoints */}
+      <div>
+        <div className="flex items-center gap-1.5 px-1 mb-1.5">
+          <Cpu size={12} className="text-monastery-lantern" />
+          <span className="text-xs font-medium text-monastery-text-primary">LLM Endpoints</span>
+          <span className="text-xs text-monastery-text-muted">({totalLLM})</span>
+        </div>
+        {endpoints.length === 0 ? (
+          <p className="px-3 text-xs text-monastery-text-muted italic">None configured</p>
+        ) : (
+          <div className="space-y-0.5">
+            {endpoints.map(ep => (
+              <div key={ep.id} className="flex items-center gap-1.5 px-3 py-1 text-xs">
+                {ep.is_favorite ? (
+                  <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
+                ) : (
+                  <CheckCircle2 size={12} className="text-monastery-text-muted flex-shrink-0" />
+                )}
+                <span className="text-monastery-text-secondary truncate">{ep.name}</span>
+                {ep.is_local && (
+                  <span className="text-[10px] text-monastery-text-muted bg-monastery-dark-tertiary px-1 rounded">local</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Git Forges */}
+      <div>
+        <div className="flex items-center gap-1.5 px-1 mb-1.5">
+          <GitBranch size={12} className="text-monastery-pine" />
+          <span className="text-xs font-medium text-monastery-text-primary">Git Forges</span>
+          <span className="text-xs text-monastery-text-muted">({activeGit})</span>
+        </div>
+        {gitConns.length === 0 ? (
+          <p className="px-3 text-xs text-monastery-text-muted italic">None configured</p>
+        ) : (
+          <div className="space-y-0.5">
+            {gitConns.map(conn => (
+              <div key={conn.id} className="flex items-center gap-1.5 px-3 py-1 text-xs">
+                <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
+                <span className="text-monastery-text-secondary truncate">
+                  {conn.forge_type === 'github' ? 'GitHub' : conn.forge_type === 'gitlab' ? 'GitLab' : conn.forge_type === 'forgejo' ? 'Forgejo' : 'Gitea'}
+                </span>
+                {conn.username && (
+                  <span className="text-[10px] text-monastery-text-muted">({conn.username})</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Hosting Services */}
+      <div>
+        <div className="flex items-center gap-1.5 px-1 mb-1.5">
+          <Server size={12} className="text-purple-400" />
+          <span className="text-xs font-medium text-monastery-text-primary">Hosting Services</span>
+          <span className="text-xs text-monastery-text-muted">({activeHosting})</span>
+        </div>
+        {hostingConns.length === 0 ? (
+          <p className="px-3 text-xs text-monastery-text-muted italic">None configured</p>
+        ) : (
+          <div className="space-y-0.5">
+            {hostingConns.map(conn => (
+              <div key={conn.id} className="flex items-center gap-1.5 px-3 py-1 text-xs">
+                <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
+                <span className="text-monastery-text-secondary truncate">{serviceLabel(conn.service_type)}</span>
+                <span className="text-[10px] text-monastery-text-muted truncate">{conn.base_url}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Quick link to Settings */}
+      <div className="pt-1 border-t border-monastery-dark-border">
+        <p className="px-1 text-[10px] text-monastery-text-muted italic">
+          Manage connections in Settings
+        </p>
+      </div>
+    </div>
+  );
+}
 
 interface FileTreeItemProps {
   node: FileNode;
@@ -91,7 +227,7 @@ export function Sidebar({
     { id: 'files', label: 'Files', icon: Folder },
     { id: 'sessions', label: 'Sessions', icon: MessageSquare },
     { id: 'agents', label: 'Agents', icon: Folder },
-    { id: 'integrations', label: 'Integrations', icon: Folder },
+    { id: 'integrations', label: 'Integrations', icon: Server },
   ] as const;
 
   const formatDate = (dateStr: string) => {
@@ -229,9 +365,7 @@ export function Sidebar({
         )}
         
         {activeTab === 'integrations' && (
-          <div className="px-4 py-8 text-center text-monastery-text-muted text-sm">
-            Homelab integrations (Proxmox, Coolify, etc.)
-          </div>
+          <IntegrationsStatus />
         )}
       </div>
     </aside>
