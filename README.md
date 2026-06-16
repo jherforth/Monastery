@@ -163,4 +163,4 @@ Contributions welcome! Please read our contributing guidelines before submitting
 
 **Built with calm intention for the homelab community**
 
-*"Build in silence. Deploy with purpose."*
+*With a little (lOT) of help from my frields - Qwen, Claude, and DeepSeek - For AI by AI*
