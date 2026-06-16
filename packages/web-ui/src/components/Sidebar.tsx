@@ -1,9 +1,10 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2 } from 'lucide-react';
+import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot } from 'lucide-react';
 import { useState } from 'react';
 import { FileNode, SessionInfo, SessionDetail } from '../types';
 import { useEndpoints } from '../hooks/useEndpoints';
 import { useGitForge } from '../hooks/useGitForge';
 import { useHostingServices } from '../hooks/useHostingServices';
+import { AgentsTab } from './AgentsTab';
 
 function IntegrationsStatus() {
   const { endpoints, isLoading: llmLoading } = useEndpoints();
@@ -226,7 +227,7 @@ export function Sidebar({
   const tabs = [
     { id: 'files', label: 'Files', icon: Folder },
     { id: 'sessions', label: 'Sessions', icon: MessageSquare },
-    { id: 'agents', label: 'Agents', icon: Folder },
+    { id: 'agents', label: 'Agents', icon: Bot },
     { id: 'integrations', label: 'Integrations', icon: Server },
   ] as const;
 
@@ -359,9 +360,7 @@ export function Sidebar({
         )}
         
         {activeTab === 'agents' && (
-          <div className="px-4 py-8 text-center text-monastery-text-muted text-sm">
-            Agents & tools library
-          </div>
+          <AgentsTab />
         )}
         
         {activeTab === 'integrations' && (
