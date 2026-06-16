@@ -10,6 +10,7 @@ import { SelfHostWizard } from './components/SelfHostWizard';
 import { useAppStore } from './store/useAppStore';
 import { useSessions } from './hooks/useSessions';
 import { useEndpoints } from './hooks/useEndpoints';
+import { useAgents } from './hooks/useAgents';
 import { Message } from './types';
 
 export default function App() {
@@ -32,6 +33,53 @@ export default function App() {
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
+  const { runAgent, getAgent } = useAgents();
+
+  // Shared agent trigger — used by both ChatPane quick-actions and editor toolbar
+  const triggerAgent = useCallback(async (agentId: string, task: string) => {
+    if (!currentProject?.id) return;
+
+    const agent = getAgent(agentId);
+
+    const userMsg: Message = {
+      id: Date.now().toString(),
+      role: 'user' as const,
+      content: `${agent?.icon || '🤖'} **${agent?.name || agentId}**: ${task}`,
+      timestamp: Date.now(),
+    };
+    setMessages(prev => [...prev, userMsg]);
+    setIsGenerating(true);
+
+    const agentMsgId = (Date.now() + 1).toString();
+    setMessages(prev => [...prev, {
+      id: agentMsgId,
+      role: 'assistant' as const,
+      content: '',
+      timestamp: Date.now(),
+    }]);
+
+    try {
+      let finalContent = '';
+      await runAgent(agentId, task, currentProject.id, (content) => {
+        finalContent = content;
+        setMessages(prev => prev.map(m =>
+          m.id === agentMsgId ? { ...m, content } : m
+        ));
+      });
+
+      if (currentSession?.id) {
+        addMessage({ role: 'assistant', content: finalContent }).catch(() => {});
+      }
+    } catch (e: any) {
+      setMessages(prev => prev.map(m =>
+        m.id === agentMsgId
+          ? { ...m, content: `⚠️ Agent error: ${e.message}` }
+          : m
+      ));
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [currentProject?.id, getAgent, runAgent, currentSession?.id, addMessage]);
 
   // Session management
   const {
@@ -551,6 +599,7 @@ export default function App() {
             <ChatPane
               messages={messages}
               onSendMessage={handleSendMessage}
+              onRunAgent={triggerAgent}
               onStopGeneration={handleStopGeneration}
               isGenerating={isGenerating}
             />
@@ -600,13 +649,34 @@ export default function App() {
                       {currentFile || 'No file selected'}
                     </span>
                     <div className="flex items-center gap-2">
-                      <button className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary">
+                      <button
+                        onClick={() => {
+                          if (!currentFile) return;
+                          triggerAgent('reviewer', `Explain this code in detail:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``);
+                        }}
+                        disabled={!currentFile}
+                        className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
+                      >
                         Explain
                       </button>
-                      <button className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary">
+                      <button
+                        onClick={() => {
+                          if (!currentFile) return;
+                          triggerAgent('coder', `Refactor this code for better patterns, readability, and performance:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``);
+                        }}
+                        disabled={!currentFile}
+                        className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
+                      >
                         Refactor
                       </button>
-                      <button className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary">
+                      <button
+                        onClick={() => {
+                          if (!currentFile) return;
+                          triggerAgent('tester', `Write comprehensive unit and integration tests for this code:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``);
+                        }}
+                        disabled={!currentFile}
+                        className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
+                      >
                         Add Tests
                       </button>
                       {currentFile && (

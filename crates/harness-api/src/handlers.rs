@@ -2517,3 +2517,172 @@ CMD ["npx", "serve", "-l", "{}"]
         ),
     }
 }
+
+// ============================================================
+// Agent Run Handler
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RunAgentRequest {
+    pub system_prompt: String,
+    pub task: String,
+    pub project_id: uuid::Uuid,
+}
+
+/// Run a built-in agent with a custom system prompt, streaming the result via SSE
+pub async fn run_agent(
+    State(state): State<AppState>,
+    Json(req): Json<RunAgentRequest>,
+) -> Response {
+    use futures::StreamExt;
+
+    // Look up the project
+    let proj_row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(req.project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await;
+
+    let project_name = match proj_row {
+        Ok(Some(r)) => r.get::<String, _>(0),
+        _ => String::new(),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+
+    // Build project context from files
+    let mut project_context = String::new();
+    if project_path.exists() {
+        let mut files = Vec::new();
+        collect_files_for_context(&project_path, &project_path, &mut files);
+        // Cap at ~200KB for agent context
+        for (path, content) in files.iter().take(50) {
+            let ext = std::path::Path::new(path).extension()
+                .and_then(|e| e.to_str()).unwrap_or("");
+            project_context.push_str(&format!("### {}\n```{}\n{}\n```\n\n", path, ext, content));
+            if project_context.len() > 200_000 {
+                project_context.push_str("\n... [additional files truncated]\n");
+                break;
+            }
+        }
+    }
+
+    let full_system_prompt = format!(
+        "{}\n\n## Project Context\nProject: {}\n\n{}",
+        req.system_prompt, project_name, project_context
+    );
+
+    // Get the first available endpoint
+    let endpoint_row = sqlx::query(
+        "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints LIMIT 1"
+    )
+    .fetch_optional(&*state.db)
+    .await
+    .ok()
+    .flatten();
+
+    let endpoint_config = match endpoint_row {
+        Some(row) => {
+            let id: String = row.get(0);
+            let name: String = row.get(1);
+            let base_url: String = row.get(2);
+            let api_key: Option<String> = row.get(3);
+            let is_favorite: i64 = row.get(4);
+            let is_local: i64 = row.get(5);
+            let created_at: String = row.get(6);
+            harness_core::models::EndpointConfig {
+                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                name,
+                base_url,
+                api_key,
+                is_favorite: is_favorite != 0,
+                is_local: is_local != 0,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
+                    .into(),
+            }
+        }
+        None => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                "error": "No LLM endpoint configured. Add an endpoint in Settings."
+            }))).into_response();
+        }
+    };
+
+    let client = harness_core::LLMClient::new(endpoint_config);
+
+    // Build messages
+    let messages: Vec<async_openai::types::ChatCompletionRequestMessage> = vec![
+        async_openai::types::ChatCompletionRequestSystemMessage {
+            content: async_openai::types::ChatCompletionRequestSystemMessageContent::Text(full_system_prompt),
+            name: None,
+        }.into(),
+        async_openai::types::ChatCompletionRequestUserMessage {
+            content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(req.task),
+            name: None,
+        }.into(),
+    ];
+
+    let model_id = "deepseek-chat".to_string();
+    let stream = match client.chat_stream(messages, model_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Agent stream failed: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "error": e.to_string()
+            }))).into_response();
+        }
+    };
+
+    // Stream as SSE
+    use axum::response::Sse;
+    use std::time::Duration;
+
+    let event_stream = stream.map(|result| {
+        match result {
+            Ok(chunk) => {
+                let event = axum::response::sse::Event::default().data(chunk.content);
+                match chunk.chunk_type {
+                    harness_core::ChunkType::Reasoning => Ok(event.event("reasoning")),
+                    harness_core::ChunkType::Content => Ok(event),
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Agent stream error: {}", e);
+                Err(axum::Error::new(e))
+            }
+        }
+    });
+
+    Sse::new(event_stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive")
+        )
+        .into_response()
+}
+
+/// Collect files for agent context (recursive)
+fn collect_files_for_context(
+    base: &std::path::Path,
+    current: &std::path::Path,
+    files: &mut Vec<(String, String)>,
+) {
+    if let Ok(read_dir) = std::fs::read_dir(current) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name == ".git" || name == "node_modules" || name == "target" || name == ".next" || name == "dist" || name == "build" {
+                continue;
+            }
+            let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
+            if path.is_dir() {
+                collect_files_for_context(base, &path, files);
+            } else if let Ok(content) = std::fs::read_to_string(&path) {
+                if content.len() < 100_000 {
+                    files.push((rel_path, content));
+                }
+            }
+        }
+    }
+}

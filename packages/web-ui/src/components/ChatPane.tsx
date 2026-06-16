@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, ChevronUp } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
+import { useAgents } from '../hooks/useAgents';
 
 // Reasoning window — collapsible, scrollable, max ~12 rows
 function ReasoningWindow({ reasoning }: { reasoning: string }) {
@@ -33,22 +34,26 @@ function ReasoningWindow({ reasoning }: { reasoning: string }) {
 interface ChatPaneProps {
   messages: Message[];
   onSendMessage: (content: string, attachments?: Attachment[]) => void;
+  onRunAgent?: (agentId: string, task: string) => void;
   onStopGeneration?: () => void;
   isGenerating?: boolean;
 }
 
 export function ChatPane({ 
   messages, 
-  onSendMessage, 
+  onSendMessage,
+  onRunAgent,
   onStopGeneration,
   isGenerating = false,
 }: ChatPaneProps) {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [showQuickActions, setShowQuickActions] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { activeEndpoint, theme } = useAppStore();
   const { restoreSnapshot } = useSnapshots();
+  const { quickActions } = useAgents();
   const [revertingId, setRevertingId] = useState<string | null>(null);
 
   const handleRevert = async (snapshotId: string) => {
@@ -323,6 +328,34 @@ export function ChatPane({
         
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Agent Quick Actions */}
+      {onRunAgent && quickActions.length > 0 && (
+        <div className="px-4 pb-1">
+          <button
+            onClick={() => setShowQuickActions(!showQuickActions)}
+            className="flex items-center gap-1 text-xs text-monastery-text-muted hover:text-monastery-text-secondary transition-colors mb-1"
+          >
+            <Bot size={12} />
+            Agents
+            {showQuickActions ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+          </button>
+          {showQuickActions && (
+            <div className="flex flex-wrap gap-1.5">
+              {quickActions.map(action => (
+                <button
+                  key={action.agentId}
+                  onClick={() => onRunAgent(action.agentId, action.prompt)}
+                  disabled={isGenerating}
+                  className="px-2 py-1 text-xs bg-monastery-dark-surface border border-monastery-dark-border rounded-lg text-monastery-text-secondary hover:text-monastery-text-primary hover:border-monastery-pine transition-colors disabled:opacity-50"
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Input */}
       <form onSubmit={handleSubmit} className="border-t border-monastery-dark-border p-4">

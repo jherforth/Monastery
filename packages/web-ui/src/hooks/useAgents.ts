@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useCallback } from 'react';
 
 export interface AgentDefinition {
   id: string;
@@ -10,6 +10,21 @@ export interface AgentDefinition {
   icon: string; // emoji
   category: 'built-in' | 'external';
 }
+
+export interface AgentQuickAction {
+  agentId: string;
+  label: string;
+  prompt: string;
+}
+
+const QUICK_ACTIONS: AgentQuickAction[] = [
+  { agentId: 'reviewer', label: '🔍 Review', prompt: 'Review my latest changes for bugs, security issues, and anti-patterns.' },
+  { agentId: 'architect', label: '🏗️ Plan', prompt: 'Analyze this project and recommend the best architecture, patterns, and structure.' },
+  { agentId: 'tester', label: '🧪 Test', prompt: 'Write comprehensive unit and integration tests for the current module.' },
+  { agentId: 'documenter', label: '📝 Docs', prompt: 'Generate documentation for this project: README, API docs, and inline comments.' },
+  { agentId: 'coder', label: '💻 Implement', prompt: 'Implement the feature described in the latest conversation with clean, secure code.' },
+  { agentId: 'deployer', label: '🚀 Deploy', prompt: 'Prepare this project for deployment: check configuration, generate Dockerfile if needed, and verify environment variables.' },
+];
 
 const BUILT_IN_AGENTS: AgentDefinition[] = [
   {
@@ -136,10 +151,78 @@ const EXTERNAL_AGENTS: AgentDefinition[] = [
 export function useAgents() {
   const agents = useMemo(() => [...BUILT_IN_AGENTS, ...EXTERNAL_AGENTS], []);
 
+  const runAgent = useCallback(async (
+    agentId: string,
+    task: string,
+    projectId: string,
+    onChunk: (chunk: string, isReasoning: boolean) => void,
+  ): Promise<string> => {
+    const agent = BUILT_IN_AGENTS.find(a => a.id === agentId);
+    if (!agent) throw new Error(`Agent '${agentId}' not found`);
+
+    const res = await fetch('/api/agents/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_prompt: agent.systemPrompt,
+        task,
+        project_id: projectId,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Agent run failed' }));
+      throw new Error(err.error || 'Agent run failed');
+    }
+
+    // Stream the SSE response
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let fullContent = '';
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const event of events) {
+        const lines = event.split('\n');
+        let eventType = '';
+        const dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+          else if (line.startsWith('event:')) eventType = line.slice(6).trim();
+          else if (line.startsWith('data: ')) {
+            const c = line.slice(6);
+            if (c !== '[DONE]') dataLines.push(c);
+          } else if (line.startsWith('data:')) {
+            const c = line.slice(5);
+            if (c !== '[DONE]') dataLines.push(c.startsWith(' ') ? c.slice(1) : c);
+          }
+        }
+        if (dataLines.length > 0) {
+          const chunkText = dataLines.join('\n');
+          fullContent += chunkText;
+          onChunk(fullContent, eventType === 'reasoning');
+        }
+      }
+    }
+
+    return fullContent;
+  }, []);
+
   return {
     agents,
     builtInAgents: BUILT_IN_AGENTS,
     externalAgents: EXTERNAL_AGENTS,
+    quickActions: QUICK_ACTIONS,
     getAgent: (id: string) => agents.find(a => a.id === id),
+    runAgent,
   };
 }
