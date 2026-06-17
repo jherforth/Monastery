@@ -6,7 +6,7 @@
 
 **The homelab's vibe coding center for creating and deploying your projects on your infrastructure.**
 
-A calm, focused, self-hosted sanctuary for AI-assisted coding. Monastery is a fully self-hosted, browser-based AI coding environment where you prompt local or frontier LLMs to generate, edit, run, debug, and deploy full applications. The harness runs as a standalone service (Docker-first) and connects to LLM backends over the network.
+A self-hosted sanctuary for AI-assisted coding. Monastery is a fully self-hosted, browser-based AI coding environment where you prompt local or frontier LLMs to generate, edit, run, debug, and deploy full applications. The harness runs as a standalone service (Docker-first) and connects to LLM backends over the network.
 
 ### This is an ever changing work in progress. 
 - I'm piecing this together and implementing as I can test.
@@ -161,6 +161,6 @@ Contributions welcome! Please read our contributing guidelines before submitting
 
 ---
 
-**Built with calm intention for the homelab community**
+**Built with intention for the homelab community**
 
-*With a little (lOT) of help from my frields - Qwen, Claude, and DeepSeek - For AI by AI*
+*With a little (LOT/ALL) of help from my frields - Qwen, Claude, and DeepSeek - For AI by AI*
