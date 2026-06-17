@@ -3,7 +3,7 @@
 ## Product Identity
 
 **Name**: Monastery  
-**Tagline**: "Build in silence. Deploy with purpose."
+**Tagline**: "AI's self-hosted sanctuary for coding."
 
 ### Brand Essence
 Monastery represents a calm, focused sanctuary for AI-assisted coding. It's where developers retreat from the noise of modern tooling to enter a state of deep flow. The brand evokes:
@@ -276,5 +276,5 @@ packages/web-ui/
 
 ---
 
-*Last updated: 2024*  
-*"Build in silence. Deploy with purpose."*
+*Last updated: 2026*  
+*"AI's self-hosted sanctuary for coding."*

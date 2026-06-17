@@ -3,7 +3,7 @@
 ## Product Name & Brand
 **Monastery** — A calm, focused, self-hosted sanctuary for AI-assisted coding.
 
-**Tagline**: "Build in silence. Deploy with purpose."
+**Tagline**: "AI's self-hosted sanctuary for coding."
 
 **Visual Identity**
 - Color palette: Deep greens (#0A3D2A, #1E6B4E), warm neutrals (#F5F0E8, #D4C3A3), dark mode dominant with subtle accent lighting (soft gold/amber highlights).

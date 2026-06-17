@@ -3,7 +3,7 @@
 ## Core Purpose
 A calm, focused, self-hosted sanctuary for AI-assisted coding. Monastery is a fully self-hosted, browser-based AI coding environment where users prompt local or frontier LLMs to generate, edit, run, debug, and deploy full applications. The harness runs as a **standalone service** (Docker-first) and connects to LLM backends over the network.
 
-**Tagline**: "Build in silence. Deploy with purpose."
+**Tagline**: "AI's self-hosted sanctuary for coding."
 
 ## Key Differentiators
 - **Decoupled Architecture**: Harness runs independently of LLM servers. Auto-discovery or manual config for local endpoints (e.g., `http://ollama:11434` or IP:port on LAN).

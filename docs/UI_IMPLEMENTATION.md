@@ -10,7 +10,7 @@ This document summarizes the UI/UX implementation for **Monastery** based on the
 
 ### Product Name & Tagline
 - **Name**: Monastery (updated from "HomeLab AI Harness")
-- **Tagline**: "Build in silence. Deploy with purpose."
+- **Tagline**: "AI's self-hosted sanctuary for coding."
 - Updated in: `README.md`, `PROJECT_VISION.md`, all UI components
 
 ### Visual Identity Implemented
@@ -342,4 +342,4 @@ The stage is set for connecting backend services and adding advanced features wh
 
 ---
 
-*"Build in silence. Deploy with purpose."*
+*"AI's self-hosted sanctuary for coding."*
