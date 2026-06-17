@@ -211,10 +211,9 @@ export function ChatPane({
                 Welcome to Monastery
               </h1>
               <p className="text-sm text-monastery-text-secondary mb-2">
-                Build in silence. Deploy with purpose.
+                AI's self-hosted sanctuary for coding.
               </p>
               <p className="text-xs text-monastery-text-muted mb-8 max-w-sm mx-auto leading-relaxed">
-                Your calm, self-hosted sanctuary for AI-assisted coding.
                 Connect an LLM to begin — ask it to create, edit, debug, or deploy applications.
               </p>
 
