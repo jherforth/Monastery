@@ -66,11 +66,7 @@ function IntegrationsStatus() {
           <div className="space-y-0.5">
             {endpoints.map(ep => (
               <div key={ep.id} className="flex items-center gap-1.5 px-3 py-1 text-xs">
-                {ep.is_favorite ? (
-                  <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
-                ) : (
-                  <CheckCircle2 size={12} className="text-monastery-text-muted flex-shrink-0" />
-                )}
+                <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
                 <span className="text-monastery-text-secondary truncate">{ep.name}</span>
                 {ep.is_local && (
                   <span className="text-[10px] text-monastery-text-muted bg-monastery-dark-tertiary px-1 rounded">local</span>

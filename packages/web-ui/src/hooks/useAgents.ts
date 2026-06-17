@@ -156,6 +156,7 @@ export function useAgents() {
     task: string,
     projectId: string,
     onChunk: (chunk: string, isReasoning: boolean) => void,
+    signal?: AbortSignal,
   ): Promise<string> => {
     const agent = BUILT_IN_AGENTS.find(a => a.id === agentId);
     if (!agent) throw new Error(`Agent '${agentId}' not found`);
@@ -168,6 +169,7 @@ export function useAgents() {
         task,
         project_id: projectId,
       }),
+      signal,
     });
 
     if (!res.ok) {

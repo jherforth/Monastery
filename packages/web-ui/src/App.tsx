@@ -1,5 +1,5 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { X } from 'lucide-react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
@@ -30,6 +30,7 @@ export default function App() {
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
@@ -64,6 +65,11 @@ export default function App() {
     setMessages(prev => [...prev, userMsg]);
     setIsGenerating(true);
 
+    // Create abort controller for this agent run
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const agentMsgId = (Date.now() + 1).toString();
     setMessages(prev => [...prev, {
       id: agentMsgId,
@@ -79,12 +85,13 @@ export default function App() {
         setMessages(prev => prev.map(m =>
           m.id === agentMsgId ? { ...m, content } : m
         ));
-      });
+      }, controller.signal);
 
       if (currentSession?.id) {
         addMessage({ role: 'assistant', content: finalContent }).catch(() => {});
       }
     } catch (e: any) {
+      if (e?.name === 'AbortError') return;
       setMessages(prev => prev.map(m =>
         m.id === agentMsgId
           ? { ...m, content: `⚠️ Agent error: ${e.message}` }
@@ -279,6 +286,11 @@ export default function App() {
     setMessages((prev) => [...prev, userMessage]);
     setIsGenerating(true);
 
+    // Create abort controller for this request
+    abortRef.current?.abort(); // abort any previous
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     // Save user message to backend if we have a session
     if (sessionId) {
       addMessage({ role: 'user', content }).catch(console.error);
@@ -341,6 +353,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages: chatMessages }),
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -515,7 +528,12 @@ export default function App() {
       }
       
       setIsGenerating(false);
-    } catch (err) {
+    } catch (err: any) {
+      // Don't show fallback if user intentionally stopped generation
+      if (err?.name === 'AbortError') {
+        setIsGenerating(false);
+        return;
+      }
       console.error('Chat streaming failed, using fallback:', err);
       // Fallback: simulated response
       setTimeout(() => {
@@ -536,6 +554,7 @@ export default function App() {
   }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents]);
 
   const handleStopGeneration = () => {
+    abortRef.current?.abort();
     setIsGenerating(false);
   };
 
