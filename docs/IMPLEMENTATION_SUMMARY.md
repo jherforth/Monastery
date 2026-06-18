@@ -223,3 +223,46 @@ This implementation complements:
 **Status**: ✅ Complete
 **Breaking Changes**: None (fully backward compatible)
 **Migration Required**: No (optional)
+
+---
+
+## Recent Additions (June 2026)
+
+### File Operations (User-Initiated, No LLM Required)
+
+New backend endpoints for direct file management from the sidebar:
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `DELETE` | `/api/projects/:id/files?path=` | Delete a file |
+| `POST` | `/api/projects/:id/files/dir?path=` | Create a directory |
+| `DELETE` | `/api/projects/:id/files/dir?path=` | Delete a directory recursively |
+| `POST` | `/api/projects/:id/files/upload?path=` | Upload raw binary file |
+| `POST` | `/api/projects/:id/files/move` | Move/rename file or directory |
+
+All endpoints include path traversal protection (canonicalize + verify within project directory).
+
+Frontend features in `Sidebar.tsx`:
+- Files tab toolbar with "+" dropdown (New File, New Directory) and upload button
+- Right-click context menu on file tree items
+- Drag-and-drop to move files/directories between folders
+
+### Self-Host Wizard Enhancements
+
+`SelfHostWizard.tsx` rewritten with 4-step stepper interface:
+- **Step 1 (Platform)**: Select Dokploy or Coolify with connection status
+- **Step 2 (Connect)**: Inline credential form (auto-skipped if already configured)
+- **Step 3 (Configure)**: App name, domain, port, Pocketbase DB toggle, generated files preview
+- **Step 4 (Deploy)**: Auto Deploy (API) + Manual tab with copy-paste terminal commands
+
+New backend endpoint: `POST /api/hosting/preview` — returns framework detection and generated Dockerfile/docker-compose.yml without deploying.
+
+### Files Changed
+| File | Change |
+|---|---|
+| `crates/harness-api/src/handlers.rs` | Added `delete_project_file`, `create_project_directory`, `delete_project_directory`, `upload_project_file`, `move_project_file`, `preview_deploy`, `generate_docker_compose` |
+| `crates/harness-api/src/main.rs` | Registered 5 new routes + preview route |
+| `packages/web-ui/src/components/Sidebar.tsx` | Context menu, toolbar, drag-and-drop, upload |
+| `packages/web-ui/src/components/SelfHostWizard.tsx` | Full rewrite with stepper, preview, copy-paste, DB toggle |
+| `packages/web-ui/src/hooks/useHostingServices.ts` | Added `PreviewResult` type, `previewDeploy()` function |
+| `packages/web-ui/src/App.tsx` | Added `handleDeleteFile`, `handleCreateFile`, `handleCreateDirectory`, `handleDeleteDirectory`, `handleUploadFile`, `handleMoveFile`, `refreshFileTree` |

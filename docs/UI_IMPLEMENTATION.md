@@ -59,12 +59,14 @@ Configured in Tailwind and CSS:
 
 ### Left Sidebar (Collapsible) - `components/Sidebar.tsx`
 ✓ Collapsible with chevron toggle
-✓ File explorer with sync indicators
+✓ File explorer with toolbar (create file/directory, upload files)
+✓ File tree with right-click context menu (delete file, create file/dir, delete directory)
+✓ Drag-and-drop to move files between directories (drop target highlighting)
 ✓ Tabbed navigation:
-  - Files
-  - Sessions (placeholder)
-  - Agents (placeholder)
-  - Integrations (placeholder)
+  - **Files** — Full file tree with CRUD operations, upload, drag-and-drop move
+  - **Sessions** — Chat session list with create/delete/select
+  - **Agents** — Built-in agents list (Architect, Coder, Reviewer, Tester, Documenter, Deployer)
+  - **Integrations** — LLM endpoints, Git forges, Hosting services status dashboard
 
 ### Main Area (Resizable Panes) - `App.tsx`
 Three-column layout using `react-resizable-panels`:
@@ -127,9 +129,16 @@ Three-column layout using `react-resizable-panels`:
   - "Deploy this to my homelab"
 ✓ "Connect your LLM" prominent messaging
 
-### 2. Self-Hosting Wizard
+### 2. Self-Hosting Wizard — `components/SelfHostWizard.tsx`
 ✓ Prominent button in top bar
-✓ Placeholder for stepper interface (to be implemented in backend)
+✓ 4-step stepper interface (Platform → Connect → Configure → Deploy)
+✓ Platform selection with connection status (Dokploy, Coolify)
+✓ Inline connect form (auto-skipped if already configured in Settings)
+✓ Configure step: app name, domain, port, platform selector
+✓ "Need database?" toggle for Pocketbase integration
+✓ Collapsible generated files preview (Dockerfile, docker-compose.yml)
+✓ Deploy step: Auto Deploy tab + Manual tab with copy-paste terminal commands
+✓ Copy-to-clipboard for all generated files
 ✓ Keyboard shortcut: `Ctrl/Cmd + Shift + D`
 
 ### 3. Settings / Configuration
@@ -289,6 +298,35 @@ packages/web-ui/
    - Typography
    - Iconography
    - Component styles
+
+---
+
+## Recent Additions (June 2026)
+
+### File Operations in Sidebar (`components/Sidebar.tsx`)
+- **Toolbar** in Files tab header with "+" (New File / New Directory dropdown) and upload button
+- **Right-click context menu** on file tree items (Delete File, New File, New Directory, Delete Directory)
+- **Drag-and-drop** to move files/directories between folders (drop target highlights with green ring)
+- **File upload** via paperclip button — saves files directly to project tree via base64 transport
+- All operations are user-initiated without requiring LLM interaction
+
+### Backend File Operation Endpoints
+| Method | Route | Purpose |
+|---|---|---|
+| `DELETE` | `/api/projects/:id/files?path=` | Delete a file |
+| `POST` | `/api/projects/:id/files/dir?path=` | Create a directory |
+| `DELETE` | `/api/projects/:id/files/dir?path=` | Delete a directory recursively |
+| `POST` | `/api/projects/:id/files/upload?path=` | Upload raw binary file |
+| `POST` | `/api/projects/:id/files/move` | Move/rename file or directory |
+
+### Self-Host Wizard Rewrite (`components/SelfHostWizard.tsx`)
+- 4-step stepper: Platform → Connect → Configure → Deploy
+- Platform cards with connection status badges
+- Inline connect form (auto-skipped if already configured)
+- Domain, port, "Need database?" toggle in Configure step
+- Generated files preview (Dockerfile, docker-compose.yml) with copy buttons
+- Dual deploy tabs: Auto Deploy (API) and Manual (copy-paste terminal commands)
+- Backend `POST /api/hosting/preview` for framework detection + file generation
    - Voice & tone
    - Accessibility requirements
 

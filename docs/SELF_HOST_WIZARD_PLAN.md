@@ -105,6 +105,8 @@ CREATE TABLE hosting_connections (
 | `POST` | `/api/hosting/connections` | Add new connection |
 | `DELETE` | `/api/hosting/connections/:id` | Remove connection |
 | `POST` | `/api/hosting/connections/:id/test` | Test connection validity |
+| `POST` | `/api/hosting/deploy` | Deploy project to hosting platform |
+| `POST` | `/api/hosting/preview` | Preview generated deploy files (Dockerfile, docker-compose.yml) |
 
 ---
 
@@ -126,8 +128,20 @@ CREATE TABLE hosting_connections (
 | `crates/harness-api/src/main.rs` | Register hosting API routes |
 
 ### Deferred to Later Phases
-| File | Purpose |
+| File | Purpose | Status |
+|---|---|---|
+| `packages/web-ui/src/components/SelfHostWizard.tsx` | Wizard modal | ✅ Complete — stepper, preview, copy-paste, DB toggle |
+| `packages/web-ui/src/lib/selfhost/*.ts` | API clients for Dokploy, Coolify, Pocketbase | 🔜 Deferred (inline fetch used) |
+| `crates/harness-api/src/handlers.rs` | Deploy endpoint handlers | ✅ Complete — `deploy_to_hosting`, `preview_deploy` |
+
+### Newly Implemented (June 2026)
+| Feature | Description |
 |---|---|
-| `packages/web-ui/src/components/SelfHostWizard.tsx` | Wizard modal |
-| `packages/web-ui/src/lib/selfhost/*.ts` | API clients for Dokploy, Coolify, Pocketbase |
-| `crates/harness-api/src/handlers/deploy.rs` | Deploy endpoint handlers |
+| **Stepper Interface** | 4-step flow: Platform → Connect → Configure → Deploy with clickable step indicators |
+| **Connect Auto-Skip** | If platform already configured in Settings, skips directly to Configure step |
+| **Inline Connect Form** | If platform not configured, shows URL + API Token fields directly in wizard |
+| **Domain Configuration** | Optional domain field in Configure step, passed to platform API |
+| **Pocketbase Toggle** | "Need database?" toggle generates `docker-compose.yml` with Pocketbase service |
+| **Generated Files Preview** | Collapsible preview of Dockerfile and docker-compose.yml in Configure step |
+| **Copy-Paste Instructions** | Manual deploy tab with terminal commands and copyable file contents |
+| **Backend Preview Endpoint** | `POST /api/hosting/preview` returns framework detection + generated files without deploying |

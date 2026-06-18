@@ -120,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/hosting/connections/:id", delete(handlers::delete_hosting_connection))
         .route("/api/hosting/connections/:id/test", post(handlers::test_hosting_connection))
         .route("/api/hosting/deploy", post(handlers::deploy_to_hosting))
+        .route("/api/hosting/preview", post(handlers::preview_deploy))
         // Agent routes
         .route("/api/agents/run", post(handlers::run_agent))
         .layer(cors)

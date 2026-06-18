@@ -2213,6 +2213,76 @@ pub(crate) struct DeployRequest {
     pub domain: Option<String>,
     #[serde(default)]
     pub port: Option<u16>,
+    #[serde(default)]
+    pub include_pocketbase: bool,
+    #[serde(default)]
+    pub pocketbase_connection_id: Option<uuid::Uuid>,
+}
+
+/// Preview generated deploy files without actually deploying
+#[derive(Debug, Deserialize)]
+pub(crate) struct PreviewDeployRequest {
+    pub project_id: uuid::Uuid,
+    #[serde(default)]
+    pub include_pocketbase: bool,
+    #[serde(default)]
+    pub app_name: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+}
+
+pub async fn preview_deploy(
+    State(state): State<AppState>,
+    Json(req): Json<PreviewDeployRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(req.project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    if !project_path.exists() {
+        return Err(ApiError::NotFound(format!("Project directory not found: {:?}", project_path)));
+    }
+
+    let (framework, build_cmd, output_dir, default_port) = detect_framework(&project_path);
+    let port = req.port.unwrap_or(default_port);
+    let dockerfile = generate_dockerfile(&framework, &build_cmd, &output_dir, port);
+    let app_name = req.app_name.unwrap_or_else(|| project_name.clone());
+
+    let mut files: Vec<serde_json::Value> = vec![
+        serde_json::json!({
+            "name": "Dockerfile",
+            "content": dockerfile,
+            "language": "dockerfile"
+        }),
+    ];
+
+    // Generate docker-compose.yml if Pocketbase is included
+    if req.include_pocketbase {
+        let compose = generate_docker_compose(&app_name, port, &project_name);
+        files.push(serde_json::json!({
+            "name": "docker-compose.yml",
+            "content": compose,
+            "language": "yaml"
+        }));
+    }
+
+    Ok(Json(serde_json::json!({
+        "framework": framework,
+        "build_command": build_cmd,
+        "output_dir": output_dir,
+        "default_port": default_port,
+        "port": port,
+        "app_name": app_name,
+        "files": files,
+    })))
 }
 
 /// Deploy a project to a connected hosting service
@@ -2516,6 +2586,39 @@ CMD ["npx", "serve", "-l", "{}"]
             port, port
         ),
     }
+}
+
+/// Generate a docker-compose.yml that includes Pocketbase
+fn generate_docker_compose(app_name: &str, port: u16, project_name: &str) -> String {
+    format!(
+        r#"version: "3.8"
+
+services:
+  {app}:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "{port}:{port}"
+    environment:
+      - POCKETBASE_URL=http://pocketbase:8090
+    depends_on:
+      - pocketbase
+    restart: unless-stopped
+
+  pocketbase:
+    image: ghcr.io/muchobien/pocketbase:latest
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./pb_data:/pb_data
+    environment:
+      - PB_ENCRYPTION_KEY=change-me-in-production
+    restart: unless-stopped
+"#,
+        app = app_name,
+        port = port,
+    )
 }
 
 // ============================================================

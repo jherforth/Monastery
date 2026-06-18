@@ -17,6 +17,8 @@ export interface DeployRequest {
   app_name: string;
   domain?: string;
   port?: number;
+  include_pocketbase?: boolean;
+  pocketbase_connection_id?: string;
 }
 
 export interface DeployResult {
@@ -29,6 +31,20 @@ export interface DeployResult {
   dashboard_url: string;
   framework: string;
   port: number;
+}
+
+export interface PreviewResult {
+  framework: string;
+  build_command: string;
+  output_dir: string;
+  default_port: number;
+  port: number;
+  app_name: string;
+  files: Array<{
+    name: string;
+    content: string;
+    language: string;
+  }>;
 }
 
 export function useHostingServices() {
@@ -83,6 +99,24 @@ export function useHostingServices() {
     return res.json();
   }, []);
 
+  const previewDeploy = useCallback(async (projectId: string, includePocketbase: boolean, appName?: string, port?: number): Promise<PreviewResult> => {
+    const res = await fetch('/api/hosting/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: projectId,
+        include_pocketbase: includePocketbase,
+        app_name: appName,
+        port,
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Preview failed' }));
+      throw new Error(err.error || 'Preview failed');
+    }
+    return res.json();
+  }, []);
+
   return {
     connections: connections || [],
     isLoading: !error && !connections,
@@ -91,6 +125,7 @@ export function useHostingServices() {
     deleteConnection,
     testConnection,
     deployProject,
+    previewDeploy,
     refreshConnections: mutate,
   };
 }
