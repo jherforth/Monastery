@@ -2160,7 +2160,7 @@ pub async fn test_hosting_connection(
         _ => (format!("{}/api", base_url.trim_end_matches('/')), "Authorization"),
     };
 
-    let req = client.get(&test_url);
+    let mut req = client.get(&test_url);
     if auth_header_name == "Authorization" {
         req = req.header("Authorization", format!("Bearer {}", api_token));
     } else {
