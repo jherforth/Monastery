@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import type { SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../types';
 
-export interface CreateSnapshotRequest {
+interface CreateSnapshotRequest {
   name?: string;
   description?: string;
   created_by?: string;

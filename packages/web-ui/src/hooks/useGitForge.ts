@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import useSWR from 'swr';
-import { fetcher } from '../lib/fetch';
+import { fetcher, apiPost, apiDelete } from '../lib/fetch';
 
 export type GitForgeType = 'github' | 'gitlab' | 'forgejo' | 'gitea';
 
@@ -33,7 +33,7 @@ export interface GitBranchInfo {
   is_default: boolean;
 }
 
-export interface GitStatus {
+interface GitStatus {
   branch: string;
   is_clean: boolean;
   ahead: number;
@@ -51,7 +51,7 @@ export interface ConnectForgeRequest {
   email?: string;
 }
 
-export interface GitPushRequest {
+interface GitPushRequest {
   connection_id: string;
   repo_name: string;
   repo_description?: string;
@@ -82,27 +82,13 @@ export function useGitForge(projectId?: string | null) {
   );
 
   const connectForge = useCallback(async (req: ConnectForgeRequest) => {
-    const res = await fetch('/api/git/connections', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Failed to connect' }));
-      throw new Error(err.error || 'Failed to connect');
-    }
+    const result = await apiPost('/api/git/connections', req, 'Failed to connect');
     await mutate();
-    return res.json();
+    return result;
   }, [mutate]);
 
   const deleteConnection = useCallback(async (id: string) => {
-    const res = await fetch(`/api/git/connections/${id}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Failed to delete' }));
-      throw new Error(err.error || 'Failed to delete');
-    }
+    await apiDelete(`/api/git/connections/${id}`, 'Failed to delete');
     await mutate();
   }, [mutate]);
 

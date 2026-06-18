@@ -8,6 +8,7 @@ import {
   Loader2, Globe, Copy, Check, ChevronRight, ChevronLeft, Eye, EyeOff,
   Terminal, Upload, XCircle,
 } from 'lucide-react';
+import { FilePreviewCard } from './FilePreviewCard';
 
 const STEPS = ['Platform', 'Connect', 'Configure', 'Deploy'] as const;
 
@@ -230,12 +231,9 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
                 {showPreview ? <EyeOff size={14} /> : <Eye size={14} />}{showPreview ? 'Hide' : 'Show'} Generated Files{loadingPreview && <Loader2 size={12} className="animate-spin" />}</button>
               {showPreview && preview && (<div className="mt-2 space-y-2">
                 <div className="flex items-center gap-2 text-xs text-monastery-text-muted"><span>Framework: <span className="text-monastery-text-primary">{preview.framework}</span></span><span>•</span><span>Port: <span className="text-monastery-text-primary">{preview.port}</span></span></div>
-                {preview.files.map((file) => (<div key={file.name} className="rounded-lg border border-monastery-dark-border overflow-hidden">
-                  <div className="flex items-center justify-between px-3 py-1.5 bg-monastery-dark-tertiary border-b border-monastery-dark-border">
-                    <span className="text-xs font-medium text-monastery-text-primary">{file.name}</span>
-                    <button onClick={() => copyToClipboard(file.content, file.name)} className="flex items-center gap-1 text-xs text-monastery-text-muted hover:text-monastery-text-primary transition-colors">
-                      {copiedFile === file.name ? <><Check size={12} className="text-green-400" /> Copied</> : <><Copy size={12} /> Copy</>}</button></div>
-                  <pre className="p-3 text-xs text-monastery-text-secondary font-mono overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">{file.content}</pre></div>))}</div>)}</div></div>)}
+                {preview.files.map((file) => (
+                  <FilePreviewCard key={file.name} file={file} copiedFile={copiedFile} onCopy={copyToClipboard} />
+                ))}</div>)}</div></div>)}
 
           {/* STEP 3: Deploy */}
           {step === 3 && (<div className="space-y-4">
@@ -267,12 +265,9 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
                   <button onClick={() => copyToClipboard(getCombinedManualCommands(), 'commands')} className="flex items-center gap-1 text-xs text-monastery-text-muted hover:text-monastery-text-primary transition-colors">
                     {copiedFile === 'commands' ? <><Check size={12} className="text-green-400" /> Copied</> : <><Copy size={12} /> Copy All</>}</button></div>
                 <pre className="p-3 text-xs text-monastery-text-secondary font-mono overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">{getCombinedManualCommands()}</pre></div>
-              {preview.files.map((file) => (<div key={file.name} className="rounded-lg border border-monastery-dark-border overflow-hidden">
-                <div className="flex items-center justify-between px-3 py-1.5 bg-monastery-dark-tertiary border-b border-monastery-dark-border">
-                  <span className="text-xs font-medium text-monastery-text-primary">{file.name}</span>
-                  <button onClick={() => copyToClipboard(file.content, file.name)} className="flex items-center gap-1 text-xs text-monastery-text-muted hover:text-monastery-text-primary transition-colors">
-                    {copiedFile === file.name ? <><Check size={12} className="text-green-400" /> Copied</> : <><Copy size={12} /> Copy</>}</button></div>
-                <pre className="p-3 text-xs text-monastery-text-secondary font-mono overflow-x-auto max-h-48 overflow-y-auto whitespace-pre">{file.content}</pre></div>))}</div>)}</div>)}
+              {preview.files.map((file) => (
+                <FilePreviewCard key={file.name} file={file} copiedFile={copiedFile} onCopy={copyToClipboard} />
+              ))}</div>)}</div>)}
         </div>
 
         {/* Footer */}

@@ -11,6 +11,7 @@ import { useAppStore } from './store/useAppStore';
 import { useSessions } from './hooks/useSessions';
 import { useEndpoints } from './hooks/useEndpoints';
 import { useAgents } from './hooks/useAgents';
+import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
 
 export default function App() {
@@ -158,7 +159,6 @@ export default function App() {
       .then(r => r.json())
       .then(files => setProjectFiles(files))
       .catch(() => setProjectFiles([]));
-    // Also fetch all file contents for LLM context
     fetch(`/api/projects/${currentProject.id}/files/read-all`)
       .then(r => r.json())
       .then(data => setAllFileContents(data.files || {}))
@@ -216,27 +216,39 @@ export default function App() {
       .catch(() => {});
   }, [currentProject?.id]);
 
-  // Delete a file (user-initiated, no LLM)
-  const handleDeleteFile = useCallback(async (path: string) => {
+  // Shared delete-with-confirmation helper
+  const deleteWithConfirm = useCallback(async (
+    path: string,
+    endpoint: string,
+    confirmMsg: string,
+    onSuccess?: () => void,
+  ) => {
     if (!currentProject?.id) return;
-    const name = path.split('/').pop() || path;
-    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    if (!window.confirm(confirmMsg)) return;
     try {
-      const res = await fetch(`/api/projects/${currentProject.id}/files?path=${encodeURIComponent(path)}`, {
-        method: 'DELETE',
-      });
+      const res = await fetch(endpoint, { method: 'DELETE' });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         console.error('Delete failed:', data.error || res.statusText);
         return;
       }
-      // Close the tab if it was open
-      setOpenTabs(prev => prev.filter(t => t.path !== path));
+      onSuccess?.();
       refreshFileTree();
     } catch (e) {
-      console.error('Delete file error:', e);
+      console.error('Delete error:', e);
     }
   }, [currentProject?.id, refreshFileTree]);
+
+  // Delete a file (user-initiated, no LLM)
+  const handleDeleteFile = useCallback(async (path: string) => {
+    const name = path.split('/').pop() || path;
+    await deleteWithConfirm(
+      path,
+      `/api/projects/${currentProject!.id}/files?path=${encodeURIComponent(path)}`,
+      `Delete "${name}"? This cannot be undone.`,
+      () => setOpenTabs(prev => prev.filter(t => t.path !== path)),
+    );
+  }, [deleteWithConfirm]);
 
   // Create a new directory (user-initiated, no LLM)
   const handleCreateDirectory = useCallback(async (parentPath: string) => {
@@ -261,25 +273,14 @@ export default function App() {
 
   // Delete a directory (user-initiated, no LLM)
   const handleDeleteDirectory = useCallback(async (path: string) => {
-    if (!currentProject?.id) return;
     const name = path.split('/').pop() || path;
-    if (!window.confirm(`Delete directory "${name}" and ALL its contents? This cannot be undone.`)) return;
-    try {
-      const res = await fetch(`/api/projects/${currentProject.id}/files/dir?path=${encodeURIComponent(path)}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        console.error('Delete directory failed:', data.error || res.statusText);
-        return;
-      }
-      // Close any tabs for files inside this directory
-      setOpenTabs(prev => prev.filter(t => !t.path.startsWith(path + '/')));
-      refreshFileTree();
-    } catch (e) {
-      console.error('Delete directory error:', e);
-    }
-  }, [currentProject?.id, refreshFileTree]);
+    await deleteWithConfirm(
+      path,
+      `/api/projects/${currentProject!.id}/files/dir?path=${encodeURIComponent(path)}`,
+      `Delete directory "${name}" and ALL its contents? This cannot be undone.`,
+      () => setOpenTabs(prev => prev.filter(t => !t.path.startsWith(path + '/'))),
+    );
+  }, [deleteWithConfirm]);
 
   // Create a new file (user-initiated, no LLM)
   const handleCreateFile = useCallback(async (parentPath: string) => {
@@ -525,57 +526,18 @@ export default function App() {
       // Read the response as a stream using the SSE protocol
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
-      
-      const decoder = new TextDecoder();
+
       let fullContent = '';
       let reasoningContent = '';
-      let buffer = '';
-      
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        
-        buffer += decoder.decode(value, { stream: true });
-        
-        // Process complete SSE events (terminated by double newline)
-        const events = buffer.split('\n\n');
-        // The last element may be incomplete — keep it in the buffer
-        buffer = events.pop() || '';
-        
-        for (const event of events) {
-          const lines = event.split('\n');
-          let eventType = '';
-          const dataLines: string[] = [];
-          for (const line of lines) {
-            // Handle "event: ..." lines — determine SSE event type
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith('event:')) {
-              eventType = line.slice(6).trim();
-            }
-            // Handle "data: ..." lines — per SSE spec, strip at most one space after colon
-            if (line.startsWith('data: ')) {
-              const chunkContent = line.slice(6);
-              if (chunkContent === '[DONE]') continue;
-              dataLines.push(chunkContent);
-            } else if (line.startsWith('data:')) {
-              const chunkContent = line.slice(5);
-              if (chunkContent === '[DONE]') continue;
-              dataLines.push(chunkContent.startsWith(' ') ? chunkContent.slice(1) : chunkContent);
-            }
-          }
-          // Join multi-line data with \n per SSE spec
-          if (dataLines.length > 0) {
-            const chunkText = dataLines.join('\n');
-            if (eventType === 'reasoning') {
-              reasoningContent += chunkText;
-            } else {
-              fullContent += chunkText;
-            }
-          }
+
+      for await (const { eventType, data } of parseSSEStream(reader)) {
+        if (eventType === 'reasoning') {
+          reasoningContent += data;
+        } else {
+          fullContent += data;
         }
       }
-      
+
       if (fullContent || reasoningContent) {
         const aiMessage: Message = {
           id: (Date.now() + 1).toString(),

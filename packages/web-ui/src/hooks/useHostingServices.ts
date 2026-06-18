@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import useSWR from 'swr';
-import { fetcher } from '../lib/fetch';
+import { fetcher, apiPost, apiDelete } from '../lib/fetch';
 import type { HostingServiceConnection, HostingServiceType } from '../types';
 
 export interface ConnectHostingRequest {
@@ -11,7 +11,7 @@ export interface ConnectHostingRequest {
   email?: string;
 }
 
-export interface DeployRequest {
+interface DeployRequest {
   connection_id: string;
   project_id: string;
   app_name: string;
@@ -55,27 +55,13 @@ export function useHostingServices() {
   );
 
   const connectService = useCallback(async (req: ConnectHostingRequest) => {
-    const res = await fetch('/api/hosting/connections', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(req),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Failed to connect' }));
-      throw new Error(err.error || 'Failed to connect');
-    }
+    const result = await apiPost('/api/hosting/connections', req, 'Failed to connect');
     await mutate();
-    return res.json();
+    return result;
   }, [mutate]);
 
   const deleteConnection = useCallback(async (id: string) => {
-    const res = await fetch(`/api/hosting/connections/${id}`, {
-      method: 'DELETE',
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Failed to delete' }));
-      throw new Error(err.error || 'Failed to delete');
-    }
+    await apiDelete(`/api/hosting/connections/${id}`, 'Failed to delete');
     await mutate();
   }, [mutate]);
 

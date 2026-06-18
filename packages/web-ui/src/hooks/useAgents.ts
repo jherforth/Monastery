@@ -1,6 +1,7 @@
 import { useMemo, useCallback } from 'react';
+import { parseSSEStream } from '../lib/sse';
 
-export interface AgentDefinition {
+interface AgentDefinition {
   id: string;
   name: string;
   role: string;
@@ -11,7 +12,7 @@ export interface AgentDefinition {
   category: 'built-in' | 'external';
 }
 
-export interface AgentQuickAction {
+interface AgentQuickAction {
   agentId: string;
   label: string;
   prompt: string;
@@ -181,39 +182,10 @@ export function useAgents() {
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body');
 
-    const decoder = new TextDecoder();
     let fullContent = '';
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split('\n\n');
-      buffer = events.pop() || '';
-
-      for (const event of events) {
-        const lines = event.split('\n');
-        let eventType = '';
-        const dataLines: string[] = [];
-        for (const line of lines) {
-          if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-          else if (line.startsWith('event:')) eventType = line.slice(6).trim();
-          else if (line.startsWith('data: ')) {
-            const c = line.slice(6);
-            if (c !== '[DONE]') dataLines.push(c);
-          } else if (line.startsWith('data:')) {
-            const c = line.slice(5);
-            if (c !== '[DONE]') dataLines.push(c.startsWith(' ') ? c.slice(1) : c);
-          }
-        }
-        if (dataLines.length > 0) {
-          const chunkText = dataLines.join('\n');
-          fullContent += chunkText;
-          onChunk(fullContent, eventType === 'reasoning');
-        }
-      }
+    for await (const { eventType, data } of parseSSEStream(reader)) {
+      fullContent += data;
+      onChunk(fullContent, eventType === 'reasoning');
     }
 
     return fullContent;
