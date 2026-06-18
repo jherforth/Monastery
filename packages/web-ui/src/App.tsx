@@ -336,6 +336,33 @@ export default function App() {
     }
   }, [currentProject?.id, refreshFileTree]);
 
+  // Move a file/directory to a new parent directory (drag-and-drop)
+  const handleMoveFile = useCallback(async (sourcePath: string, targetDirPath: string) => {
+    if (!currentProject?.id) return;
+    const sourceName = sourcePath.split('/').pop() || sourcePath;
+    const destPath = `${targetDirPath}/${sourceName}`;
+
+    try {
+      const res = await fetch(`/api/projects/${currentProject.id}/files/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: sourcePath, destination: destPath }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error('Move failed:', data.error || res.statusText);
+        return;
+      }
+      // Update open tabs if the moved file had one
+      setOpenTabs(prev => prev.map(t =>
+        t.path === sourcePath ? { ...t, path: destPath } : t
+      ));
+      refreshFileTree();
+    } catch (e) {
+      console.error('Move error:', e);
+    }
+  }, [currentProject?.id, refreshFileTree]);
+
   // --- Multi-tab editor helpers ---
   const openFileInTab = useCallback(async (path: string) => {
     // Check if already open
@@ -737,6 +764,7 @@ export default function App() {
               onCreateDirectory={handleCreateDirectory}
               onDeleteDirectory={handleDeleteDirectory}
               onUploadFile={handleUploadFile}
+              onMoveFile={handleMoveFile}
               sessions={sessions}
               currentSessionId={currentSession?.id ?? null}
               isLoadingSessions={isLoadingSessions}

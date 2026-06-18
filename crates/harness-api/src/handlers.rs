@@ -2874,3 +2874,68 @@ pub async fn upload_project_file(
     tracing::info!("Uploaded file: {} ({} bytes)", query.path, body.len());
     Ok(Json(serde_json::json!({ "success": true, "path": query.path, "size": body.len() })))
 }
+
+/// Move/rename a file or directory within a project
+#[derive(Debug, Deserialize)]
+pub struct MoveFileRequest {
+    pub source: String,
+    pub destination: String,
+}
+
+pub async fn move_project_file(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<MoveFileRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    let canonical_base = project_path.canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+
+    let source_path = project_path.join(&req.source);
+    let dest_path = project_path.join(&req.destination);
+
+    // Verify source exists and is within project
+    let canonical_source = source_path.canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("Source not found: {}", req.source)))?;
+    if !canonical_source.starts_with(&canonical_base) {
+        return Err(ApiError::Config("Source path traversal not allowed".into()));
+    }
+
+    // Verify destination parent is within project
+    if let Some(parent) = dest_path.parent() {
+        // Create parent dirs if needed
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| ApiError::Internal(format!("Failed to create target directories: {}", e)))?;
+        let canonical_parent = parent.canonicalize()
+            .map_err(|_| ApiError::Internal("Failed to resolve target parent path".into()))?;
+        if !canonical_parent.starts_with(&canonical_base) {
+            return Err(ApiError::Config("Destination path traversal not allowed".into()));
+        }
+    }
+
+    // Prevent moving into self (source is a prefix of destination = moving into own subtree)
+    if dest_path.starts_with(&canonical_source) {
+        return Err(ApiError::Config("Cannot move a directory into itself".into()));
+    }
+
+    if dest_path.exists() {
+        return Err(ApiError::Config(format!("Destination already exists: {}", req.destination)));
+    }
+
+    std::fs::rename(&canonical_source, &dest_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to move: {}", e)))?;
+
+    tracing::info!("Moved {} -> {}", req.source, req.destination);
+    Ok(Json(serde_json::json!({ "success": true, "source": req.source, "destination": req.destination })))
+}

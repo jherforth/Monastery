@@ -150,11 +150,13 @@ interface FileTreeItemProps {
   onCreateFile?: (parentPath: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
   onDeleteDirectory?: (path: string) => void;
+  onMoveFile?: (sourcePath: string, targetDirPath: string) => void;
 }
 
-function FileTreeItem({ node, depth, onSelectFile, onDeleteFile, onCreateFile, onCreateDirectory, onDeleteDirectory }: FileTreeItemProps) {
+function FileTreeItem({ node, depth, onSelectFile, onDeleteFile, onCreateFile, onCreateDirectory, onDeleteDirectory, onMoveFile }: FileTreeItemProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, node: node });
+  const [isDragOver, setIsDragOver] = useState(false);
   const isDirectory = node.type === 'directory';
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -175,12 +177,50 @@ function FileTreeItem({ node, depth, onSelectFile, onDeleteFile, onCreateFile, o
     return () => window.removeEventListener('click', handler);
   }, [contextMenu.visible, closeContextMenu]);
 
+  // --- Drag and Drop handlers ---
+  const handleDragStart = useCallback((e: React.DragEvent) => {
+    e.dataTransfer.setData('text/plain', node.path);
+    e.dataTransfer.effectAllowed = 'move';
+  }, [node.path]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!isDirectory) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setIsDragOver(true);
+  }, [isDirectory]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    if (!isDirectory) return;
+
+    const sourcePath = e.dataTransfer.getData('text/plain');
+    if (!sourcePath || sourcePath === node.path) return; // Can't drop on self
+
+    // Prevent dropping a directory into one of its own descendants
+    if (node.path.startsWith(sourcePath + '/')) return;
+
+    onMoveFile?.(sourcePath, node.path);
+  }, [isDirectory, node.path, onMoveFile]);
+
   return (
     <div>
       <button
+        draggable
         onClick={() => isDirectory ? setIsExpanded(!isExpanded) : onSelectFile(node.path)}
         onContextMenu={handleContextMenu}
-        className="w-full flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm"
+        onDragStart={handleDragStart}
+        onDragOver={isDirectory ? handleDragOver : undefined}
+        onDragLeave={isDirectory ? handleDragLeave : undefined}
+        onDrop={isDirectory ? handleDrop : undefined}
+        className={`w-full flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm ${
+          isDragOver ? 'bg-monastery-pine/20 ring-1 ring-monastery-pine' : ''
+        }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
         {isDirectory && (
@@ -267,6 +307,7 @@ function FileTreeItem({ node, depth, onSelectFile, onDeleteFile, onCreateFile, o
               onCreateFile={onCreateFile}
               onCreateDirectory={onCreateDirectory}
               onDeleteDirectory={onDeleteDirectory}
+              onMoveFile={onMoveFile}
             />
           ))}
         </div>
@@ -284,6 +325,7 @@ interface SidebarProps {
   onCreateDirectory?: (parentPath: string) => void;
   onDeleteDirectory?: (path: string) => void;
   onUploadFile?: (parentPath: string, file: File) => void;
+  onMoveFile?: (sourcePath: string, targetDirPath: string) => void;
   // Session props
   sessions?: SessionInfo[];
   currentSessionId?: string | null;
@@ -301,6 +343,7 @@ export function Sidebar({
   onCreateDirectory,
   onDeleteDirectory,
   onUploadFile,
+  onMoveFile,
   sessions = [],
   currentSessionId = null,
   isLoadingSessions = false,
@@ -445,6 +488,7 @@ export function Sidebar({
                   onCreateFile={onCreateFile}
                   onCreateDirectory={onCreateDirectory}
                   onDeleteDirectory={onDeleteDirectory}
+                  onMoveFile={onMoveFile}
                 />
               ))
             ) : (
