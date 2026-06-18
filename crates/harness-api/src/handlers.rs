@@ -2153,18 +2153,21 @@ pub async fn test_hosting_connection(
         .build()
         .map_err(|e| ApiError::Internal(format!("Failed to build HTTP client: {}", e)))?;
 
-    let test_url = match service_type.as_str() {
-        "dokploy" => format!("{}/api/user", base_url.trim_end_matches('/')),
-        "coolify" => format!("{}/api/v1/health", base_url.trim_end_matches('/')),
-        "pocketbase" => format!("{}/api/health", base_url.trim_end_matches('/')),
-        _ => format!("{}/api", base_url.trim_end_matches('/')),
+    let (test_url, auth_header_name) = match service_type.as_str() {
+        "dokploy" => (format!("{}/api/application", base_url.trim_end_matches('/')), "x-api-key"),
+        "coolify" => (format!("{}/api/v1/health", base_url.trim_end_matches('/')), "Authorization"),
+        "pocketbase" => (format!("{}/api/health", base_url.trim_end_matches('/')), "Authorization"),
+        _ => (format!("{}/api", base_url.trim_end_matches('/')), "Authorization"),
     };
 
-    match client
-        .get(&test_url)
-        .header("x-api-key", &api_token)
-        .send()
-        .await
+    let req = client.get(&test_url);
+    if auth_header_name == "Authorization" {
+        req = req.header("Authorization", format!("Bearer {}", api_token));
+    } else {
+        req = req.header(auth_header_name, &api_token);
+    }
+
+    match req.send().await
     {
         Ok(resp) => {
             let status = resp.status();
