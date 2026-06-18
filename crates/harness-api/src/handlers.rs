@@ -2154,7 +2154,7 @@ pub async fn test_hosting_connection(
         .map_err(|e| ApiError::Internal(format!("Failed to build HTTP client: {}", e)))?;
 
     let test_url = match service_type.as_str() {
-        "dokploy" => format!("{}/api/health", base_url.trim_end_matches('/')),
+        "dokploy" => format!("{}/api/user", base_url.trim_end_matches('/')),
         "coolify" => format!("{}/api/v1/health", base_url.trim_end_matches('/')),
         "pocketbase" => format!("{}/api/health", base_url.trim_end_matches('/')),
         _ => format!("{}/api", base_url.trim_end_matches('/')),
@@ -2162,7 +2162,7 @@ pub async fn test_hosting_connection(
 
     match client
         .get(&test_url)
-        .header("Authorization", format!("Bearer {}", api_token))
+        .header("x-api-key", &api_token)
         .send()
         .await
     {
@@ -2429,7 +2429,7 @@ pub async fn deploy_to_hosting(
 
             let resp = client
                 .post(&create_url)
-                .header("Authorization", format!("Bearer {}", api_token))
+                .header("x-api-key", &api_token)
                 .header("Content-Type", "application/json")
                 .json(&payload)
                 .send()
@@ -2457,7 +2457,7 @@ pub async fn deploy_to_hosting(
             let deploy_url = format!("{}/api/application/{}/deploy", base, app_id);
             let deploy_resp = client
                 .post(&deploy_url)
-                .header("Authorization", format!("Bearer {}", api_token))
+                .header("x-api-key", &api_token)
                 .send()
                 .await
                 .map_err(|e| ApiError::Internal(format!("Deploy trigger failed: {}", e)))?;
