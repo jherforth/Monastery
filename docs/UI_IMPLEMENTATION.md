@@ -323,41 +323,27 @@ packages/web-ui/
 - 4-step stepper: Platform → Connect → Configure → Deploy
 - Platform cards with connection status badges
 - Inline connect form (auto-skipped if already configured)
-- Domain, port, "Need database?" toggle in Configure step
-- Generated files preview (Dockerfile, docker-compose.yml) with copy buttons
+- Domain, port, "Need database?" toggle, and **Cloudflare Tunnel toggle** in Configure step
+- Generated files preview (Dockerfile, docker-compose.yml with optional cloudflared service) with copy buttons
 - Dual deploy tabs: Auto Deploy (API) and Manual (copy-paste terminal commands)
 - Backend `POST /api/hosting/preview` for framework detection + file generation
-   - Voice & tone
-   - Accessibility requirements
+- Manual deploy tab includes Cloudflare Zero Trust dashboard instructions
 
-2. **packages/web-ui/README.md** - Frontend documentation:
-   - Getting started guide
-   - Project structure
-   - Component documentation
-   - API integration examples
-   - Customization guide
+### Cloudflare Tunnel Integration
+- Toggle in Configure step adds `cloudflared` container to docker-compose.yml
+- Uses `network_mode: "service:app"` — cloudflared shares the app's network stack, no port mapping needed
+- User provides tunnel token (from Cloudflare Zero Trust → Networks → Tunnels)
+- Token passed via `CF_TUNNEL_TOKEN` env var; never stored in the compose file
+- Backend `generate_docker_compose()` dynamically assembles compose with optional Pocketbase + cloudflared
+- Manual deploy tab shows setup instructions for both new tunnels and adding ingress rules to existing tunnels
 
 ---
 
-## Next Steps for Full Implementation
+## Next Steps
 
-### Backend Integration Required
-1. Connect chat to real LLM endpoints
-2. Implement file system sync
-3. Add WebSocket for real-time updates
-4. Connect resource monitoring
-5. Build self-host wizard stepper
-
-### Additional Features to Implement
-1. Command palette (`Ctrl/Cmd + K`)
-2. Git integration display
-3. Session history management
-4. Homelab integration connections (Proxmox, Coolify, MQTT)
-5. Deployment workflow
-6. Settings panel UI
-7. Mobile responsiveness enhancements
-
-### Polish Items
+- Build log streaming for deploy progress
+- Mobile responsive improvements
+- External agent framework integrations (Hermes, Open Claw)
 1. Custom Monastery logo SVG
 2. Favicon
 3. More sophisticated loading states

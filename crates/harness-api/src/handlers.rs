@@ -2217,6 +2217,10 @@ pub(crate) struct DeployRequest {
     pub include_pocketbase: bool,
     #[serde(default)]
     pub pocketbase_connection_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub include_cloudflare_tunnel: bool,
+    #[serde(default)]
+    pub cloudflare_tunnel_token: Option<String>,
 }
 
 /// Preview generated deploy files without actually deploying
@@ -2229,6 +2233,10 @@ pub(crate) struct PreviewDeployRequest {
     pub app_name: Option<String>,
     #[serde(default)]
     pub port: Option<u16>,
+    #[serde(default)]
+    pub include_cloudflare_tunnel: bool,
+    #[serde(default)]
+    pub cloudflare_tunnel_token: Option<String>,
 }
 
 pub async fn preview_deploy(
@@ -2264,9 +2272,14 @@ pub async fn preview_deploy(
         }),
     ];
 
-    // Generate docker-compose.yml if Pocketbase is included
-    if req.include_pocketbase {
-        let compose = generate_docker_compose(&app_name, port, &project_name);
+    // Generate docker-compose.yml if Pocketbase or Cloudflare Tunnel is included
+    let needs_compose = req.include_pocketbase || req.include_cloudflare_tunnel;
+    if needs_compose {
+        let compose = generate_docker_compose(
+            &app_name, port,
+            req.include_pocketbase,
+            req.include_cloudflare_tunnel,
+        );
         files.push(serde_json::json!({
             "name": "docker-compose.yml",
             "content": compose,
@@ -2589,8 +2602,8 @@ CMD ["npx", "serve", "-l", "{}"]
 }
 
 /// Generate a docker-compose.yml that includes Pocketbase
-fn generate_docker_compose(app_name: &str, port: u16, project_name: &str) -> String {
-    format!(
+fn generate_docker_compose(app_name: &str, port: u16, include_pocketbase: bool, include_tunnel: bool) -> String {
+    let mut services = format!(
         r#"version: "3.8"
 
 services:
@@ -2600,7 +2613,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "{port}:{port}"
-    environment:
+"#,
+        app = app_name,
+        port = port,
+    );
+
+    if include_pocketbase {
+        services.push_str(&format!(
+            r#"    environment:
       - POCKETBASE_URL=http://pocketbase:8090
     depends_on:
       - pocketbase
@@ -2615,10 +2635,30 @@ services:
     environment:
       - PB_ENCRYPTION_KEY=change-me-in-production
     restart: unless-stopped
+"#
+        ));
+    } else {
+        services.push_str("    restart: unless-stopped\n");
+    }
+
+    if include_tunnel {
+        services.push_str(&format!(
+            r#"
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${{CF_TUNNEL_TOKEN}}
+    environment:
+      - CF_TUNNEL_TOKEN=${{CF_TUNNEL_TOKEN}}
+    restart: unless-stopped
+    network_mode: "service:{app}"
+    depends_on:
+      - {app}
 "#,
-        app = app_name,
-        port = port,
-    )
+            app = app_name,
+        ));
+    }
+
+    services
 }
 
 // ============================================================

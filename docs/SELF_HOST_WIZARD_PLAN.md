@@ -73,8 +73,8 @@ Configure URL + API keys upfront. Three service cards:
 
 1. **Select Platform** — Dokploy or Coolify (with connection status indicators)
 2. **Connect** — URL + API key (SKIPPED if already configured in Settings)
-3. **Configure** — App name, domain, env vars, "Need database?" toggle
-4. **Deploy** — Build log stream, progress, live URL result
+3. **Configure** — App name, domain, env vars, "Need database?" toggle, Cloudflare Tunnel toggle
+4. **Deploy** — Auto Deploy (API) or Manual (copy-paste), build log stream, progress, live URL result
 
 ---
 
@@ -145,3 +145,4 @@ CREATE TABLE hosting_connections (
 | **Generated Files Preview** | Collapsible preview of Dockerfile and docker-compose.yml in Configure step |
 | **Copy-Paste Instructions** | Manual deploy tab with terminal commands and copyable file contents |
 | **Backend Preview Endpoint** | `POST /api/hosting/preview` returns framework detection + generated files without deploying |
+| **Cloudflare Tunnel Support** | Toggle in Configure step adds `cloudflared` service to docker-compose.yml. Uses `network_mode: "service:app"` so cloudflared shares the app's network stack. Users paste their tunnel token; manual deploy tab shows Cloudflare Zero Trust dashboard instructions. Backend `generate_docker_compose()` dynamically builds compose with optional Pocketbase + cloudflared services. |

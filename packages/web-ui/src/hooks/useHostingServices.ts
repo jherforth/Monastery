@@ -19,6 +19,8 @@ interface DeployRequest {
   port?: number;
   include_pocketbase?: boolean;
   pocketbase_connection_id?: string;
+  include_cloudflare_tunnel?: boolean;
+  cloudflare_tunnel_token?: string;
 }
 
 export interface DeployResult {
@@ -85,13 +87,20 @@ export function useHostingServices() {
     return res.json();
   }, []);
 
-  const previewDeploy = useCallback(async (projectId: string, includePocketbase: boolean, appName?: string, port?: number): Promise<PreviewResult> => {
+  const previewDeploy = useCallback(async (
+    projectId: string,
+    includePocketbase: boolean,
+    includeTunnel: boolean,
+    appName?: string,
+    port?: number,
+  ): Promise<PreviewResult> => {
     const res = await fetch('/api/hosting/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         project_id: projectId,
         include_pocketbase: includePocketbase,
+        include_cloudflare_tunnel: includeTunnel,
         app_name: appName,
         port,
       }),
