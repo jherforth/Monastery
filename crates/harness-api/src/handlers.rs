@@ -2359,10 +2359,52 @@ pub async fn deploy_to_hosting(
 
     match service_type.as_str() {
         "coolify" => {
+            // Fetch available project and server from Coolify
+            let projects_url = format!("{}/api/v1/projects", base);
+            let projects_resp = client
+                .get(&projects_url)
+                .header("Authorization", format!("Bearer {}", api_token))
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch Coolify projects: {}", e)))?;
+            
+            if !projects_resp.status().is_success() {
+                let body = projects_resp.text().await.unwrap_or_default();
+                return Err(ApiError::Internal(format!("Failed to list Coolify projects: HTTP {}: {}", projects_resp.status().as_u16(), body)));
+            }
+            
+            let projects: Vec<serde_json::Value> = projects_resp.json().await
+                .map_err(|e| ApiError::Internal(format!("Failed to parse Coolify projects: {}", e)))?;
+            let project_uuid = projects.first()
+                .and_then(|p| p["uuid"].as_str())
+                .ok_or_else(|| ApiError::Config("No projects found in Coolify. Create a project in the Coolify dashboard first.".into()))?;
+
+            // Fetch first available server
+            let servers_url = format!("{}/api/v1/servers", base);
+            let servers_resp = client
+                .get(&servers_url)
+                .header("Authorization", format!("Bearer {}", api_token))
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch Coolify servers: {}", e)))?;
+            
+            if !servers_resp.status().is_success() {
+                let body = servers_resp.text().await.unwrap_or_default();
+                return Err(ApiError::Internal(format!("Failed to list Coolify servers: HTTP {}: {}", servers_resp.status().as_u16(), body)));
+            }
+            
+            let servers: Vec<serde_json::Value> = servers_resp.json().await
+                .map_err(|e| ApiError::Internal(format!("Failed to parse Coolify servers: {}", e)))?;
+            let server_uuid = servers.first()
+                .and_then(|s| s["uuid"].as_str())
+                .ok_or_else(|| ApiError::Config("No servers found in Coolify. Add a server in the Coolify dashboard first.".into()))?;
+
             // Create a Dockerfile-based application on Coolify
             let create_url = format!("{}/api/v1/applications/dockerfile", base);
             
             let payload = serde_json::json!({
+                "project_uuid": project_uuid,
+                "server_uuid": server_uuid,
                 "name": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
                 "ports_exposes": port.to_string(),
@@ -2418,12 +2460,13 @@ pub async fn deploy_to_hosting(
             })))
         }
         "dokploy" => {
-            // Dokploy: create an application
-            let create_url = format!("{}/api/application", base);
+            // Dokploy: create an application (newer REST API uses plural /applications)
+            let create_url = format!("{}/api/applications", base);
             
             let payload = serde_json::json!({
                 "name": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
+                "appName": req.app_name,
                 "type": "dockerfile",
                 "port": port,
                 "dockerfile": std::fs::read_to_string(&dockerfile_path)
@@ -2457,7 +2500,7 @@ pub async fn deploy_to_hosting(
                 .unwrap_or("unknown");
 
             // Trigger deploy
-            let deploy_url = format!("{}/api/application/{}/deploy", base, app_id);
+            let deploy_url = format!("{}/api/applications/{}/deploy", base, app_id);
             let deploy_resp = client
                 .post(&deploy_url)
                 .header("x-api-key", &api_token)
