@@ -2369,8 +2369,9 @@ pub async fn deploy_to_hosting(
                 .map_err(|e| ApiError::Internal(format!("Failed to fetch Coolify projects: {}", e)))?;
             
             if !projects_resp.status().is_success() {
+                let status = projects_resp.status().as_u16();
                 let body = projects_resp.text().await.unwrap_or_default();
-                return Err(ApiError::Internal(format!("Failed to list Coolify projects: HTTP {}: {}", projects_resp.status().as_u16(), body)));
+                return Err(ApiError::Internal(format!("Failed to list Coolify projects: HTTP {}: {}", status, body)));
             }
             
             let projects: Vec<serde_json::Value> = projects_resp.json().await
@@ -2392,10 +2393,11 @@ pub async fn deploy_to_hosting(
                     .await
                     .map_err(|e| ApiError::Internal(format!("Failed to create Coolify project: {}", e)))?;
                 if !proj_resp.status().is_success() {
-                    let body = proj_resp.text().await.unwrap_or_default();
+                    let status = proj_resp.status().as_u16();
+                    let _body = proj_resp.text().await.unwrap_or_default();
                     return Err(ApiError::Config(format!(
                         "No projects found and auto-creation failed (HTTP {}). Create a project in the Coolify dashboard first.", 
-                        proj_resp.status().as_u16()
+                        status
                     )));
                 }
                 let proj: serde_json::Value = proj_resp.json().await
@@ -2415,8 +2417,9 @@ pub async fn deploy_to_hosting(
                 .map_err(|e| ApiError::Internal(format!("Failed to fetch Coolify servers: {}", e)))?;
             
             if !servers_resp.status().is_success() {
+                let status = servers_resp.status().as_u16();
                 let body = servers_resp.text().await.unwrap_or_default();
-                return Err(ApiError::Internal(format!("Failed to list Coolify servers: HTTP {}: {}", servers_resp.status().as_u16(), body)));
+                return Err(ApiError::Internal(format!("Failed to list Coolify servers: HTTP {}: {}", status, body)));
             }
             
             let servers: Vec<serde_json::Value> = servers_resp.json().await
