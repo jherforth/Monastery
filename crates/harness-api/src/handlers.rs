@@ -2375,9 +2375,35 @@ pub async fn deploy_to_hosting(
             
             let projects: Vec<serde_json::Value> = projects_resp.json().await
                 .map_err(|e| ApiError::Internal(format!("Failed to parse Coolify projects: {}", e)))?;
-            let project_uuid = projects.first()
-                .and_then(|p| p["uuid"].as_str())
-                .ok_or_else(|| ApiError::Config("No projects found in Coolify. Create a project in the Coolify dashboard first.".into()))?;
+            let project_uuid = if let Some(proj) = projects.first().and_then(|p| p["uuid"].as_str()) {
+                proj.to_string()
+            } else {
+                // No projects exist — auto-create a "Monastery" project
+                let create_proj_url = format!("{}/api/v1/projects", base);
+                let proj_resp = client
+                    .post(&create_proj_url)
+                    .header("Authorization", format!("Bearer {}", api_token))
+                    .header("Content-Type", "application/json")
+                    .json(&serde_json::json!({
+                        "name": "Monastery",
+                        "description": "Auto-created by Monastery for deployments"
+                    }))
+                    .send()
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("Failed to create Coolify project: {}", e)))?;
+                if !proj_resp.status().is_success() {
+                    let body = proj_resp.text().await.unwrap_or_default();
+                    return Err(ApiError::Config(format!(
+                        "No projects found and auto-creation failed (HTTP {}). Create a project in the Coolify dashboard first.", 
+                        proj_resp.status().as_u16()
+                    )));
+                }
+                let proj: serde_json::Value = proj_resp.json().await
+                    .map_err(|e| ApiError::Internal(format!("Failed to parse created project: {}", e)))?;
+                proj["uuid"].as_str()
+                    .ok_or_else(|| ApiError::Config("Auto-created project but could not read its UUID. Check Coolify dashboard.".into()))?
+                    .to_string()
+            };
 
             // Fetch first available server
             let servers_url = format!("{}/api/v1/servers", base);
@@ -2397,7 +2423,9 @@ pub async fn deploy_to_hosting(
                 .map_err(|e| ApiError::Internal(format!("Failed to parse Coolify servers: {}", e)))?;
             let server_uuid = servers.first()
                 .and_then(|s| s["uuid"].as_str())
-                .ok_or_else(|| ApiError::Config("No servers found in Coolify. Add a server in the Coolify dashboard first.".into()))?;
+                .ok_or_else(|| ApiError::Config(
+                    "No servers found in Coolify. You must add a server in the Coolify dashboard first. Go to Servers → Add Server, then retry the deployment.".into()
+                ))?;
 
             // Create a Dockerfile-based application on Coolify
             let create_url = format!("{}/api/v1/applications/dockerfile", base);
