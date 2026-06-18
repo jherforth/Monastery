@@ -42,8 +42,6 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
   const [deployTab, setDeployTab] = useState<'auto' | 'manual'>('auto');
   const [copiedFile, setCopiedFile] = useState<string | null>(null);
 
-  if (!isOpen) return null;
-
   const dokploy = hostingConns.find(c => c.service_type === 'dokploy');
   const coolify = hostingConns.find(c => c.service_type === 'coolify');
   const pocketbase = hostingConns.find(c => c.service_type === 'pocketbase');
@@ -123,6 +121,9 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
     lines.push(`docker run -d -p ${preview.port}:${preview.port} --name ${appName} ${appName}`);
     return lines.join('\n');
   };
+
+  // Early return AFTER all hooks — must be last before JSX
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
