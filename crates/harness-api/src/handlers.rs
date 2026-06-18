@@ -2826,3 +2826,51 @@ pub async fn delete_project_directory(
     tracing::info!("Deleted directory: {}", query.path);
     Ok(Json(serde_json::json!({ "success": true, "path": query.path })))
 }
+
+/// Upload a file to a project (accepts raw binary bytes)
+pub async fn upload_project_file(
+    Path(project_id): Path<uuid::Uuid>,
+    Query(query): Query<FilePathQuery>,
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    let canonical_base = project_path.canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+
+    let full_path = project_path.join(&query.path);
+
+    // Create parent directories if needed
+    if let Some(parent) = full_path.parent() {
+        tokio::fs::create_dir_all(parent).await
+            .map_err(|e| ApiError::Internal(format!("Failed to create directories: {}", e)))?;
+    }
+
+    // Security: check parent is within project
+    if let Some(parent) = full_path.parent() {
+        if parent.exists() {
+            let canonical_parent = parent.canonicalize()
+                .map_err(|_| ApiError::Internal("Failed to resolve parent path".into()))?;
+            if !canonical_parent.starts_with(&canonical_base) {
+                return Err(ApiError::Config("Path traversal not allowed".into()));
+            }
+        }
+    }
+
+    std::fs::write(&full_path, &body)
+        .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
+
+    tracing::info!("Uploaded file: {} ({} bytes)", query.path, body.len());
+    Ok(Json(serde_json::json!({ "success": true, "path": query.path, "size": body.len() })))
+}

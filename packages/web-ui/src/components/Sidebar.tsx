@@ -1,4 +1,4 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot, FilePlus, FolderPlus } from 'lucide-react';
+import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot, FilePlus, FolderPlus, Upload } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileNode, SessionInfo, SessionDetail } from '../types';
 import { useEndpoints } from '../hooks/useEndpoints';
@@ -283,6 +283,7 @@ interface SidebarProps {
   onCreateFile?: (parentPath: string) => void;
   onCreateDirectory?: (parentPath: string) => void;
   onDeleteDirectory?: (path: string) => void;
+  onUploadFile?: (parentPath: string, file: File) => void;
   // Session props
   sessions?: SessionInfo[];
   currentSessionId?: string | null;
@@ -299,6 +300,7 @@ export function Sidebar({
   onCreateFile,
   onCreateDirectory,
   onDeleteDirectory,
+  onUploadFile,
   sessions = [],
   currentSessionId = null,
   isLoadingSessions = false,
@@ -307,6 +309,21 @@ export function Sidebar({
   onDeleteSession,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<'files' | 'sessions' | 'agents' | 'integrations'>('files');
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const createMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close the create dropdown when clicking outside
+  useEffect(() => {
+    if (!showCreateMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (createMenuRef.current && !createMenuRef.current.contains(e.target as Node)) {
+        setShowCreateMenu(false);
+      }
+    };
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [showCreateMenu]);
 
   const tabs = [
     { id: 'files', label: 'Files', icon: Folder },
@@ -360,6 +377,63 @@ export function Sidebar({
       <div className="flex-1 overflow-y-auto py-2">
         {activeTab === 'files' && (
           <div>
+            {/* Files Toolbar */}
+            <div className="flex items-center gap-1 px-3 py-1.5 border-b border-monastery-dark-border mb-1">
+              <span className="text-xs text-monastery-text-muted flex-1">Files</span>
+              
+              {/* Upload button */}
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="p-1 hover:bg-monastery-dark-surface rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
+                title="Upload file to project"
+              >
+                <Upload size={14} />
+              </button>
+
+              {/* Create dropdown */}
+              <div className="relative" ref={createMenuRef}>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
+                  className="p-1 hover:bg-monastery-dark-surface rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
+                  title="Create file or directory"
+                >
+                  <Plus size={14} />
+                </button>
+                {showCreateMenu && (
+                  <div className="absolute right-0 top-full mt-1 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl py-1 min-w-[140px] z-50">
+                    <button
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-colors"
+                      onClick={() => { onCreateFile?.(''); setShowCreateMenu(false); }}
+                    >
+                      <FilePlus size={14} className="text-monastery-lantern" />
+                      New File
+                    </button>
+                    <button
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-colors"
+                      onClick={() => { onCreateDirectory?.(''); setShowCreateMenu(false); }}
+                    >
+                      <FolderPlus size={14} className="text-monastery-pine" />
+                      New Directory
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Hidden file input for uploads */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file && onUploadFile) {
+                    onUploadFile('', file);
+                  }
+                  // Reset so the same file can be re-uploaded
+                  e.target.value = '';
+                }}
+              />
+            </div>
             {files.length > 0 ? (
               files.map((node) => (
                 <FileTreeItem

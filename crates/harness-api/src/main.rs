@@ -84,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:id/files", delete(handlers::delete_project_file))
         .route("/api/projects/:id/files/dir", post(handlers::create_project_directory))
         .route("/api/projects/:id/files/dir", delete(handlers::delete_project_directory))
+        .route("/api/projects/:id/files/upload", post(handlers::upload_project_file))
         .route("/api/projects/:id/shell", post(handlers::project_shell))
         .route("/api/projects/:id/preview/*path", get(handlers::project_preview))
         // Session routes

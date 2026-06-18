@@ -304,6 +304,38 @@ export default function App() {
     }
   }, [currentProject?.id, refreshFileTree]);
 
+  // Upload a file to the project (user-initiated, no LLM)
+  const handleUploadFile = useCallback(async (parentPath: string, file: File) => {
+    if (!currentProject?.id) return;
+    const filePath = parentPath ? `${parentPath}/${file.name}` : file.name;
+    try {
+      // Read file as base64 data URL, then save via write endpoint
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        const content = event.target?.result as string;
+        if (!content) return;
+        try {
+          const res = await fetch(`/api/projects/${currentProject.id}/files/write`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, content }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            console.error('Upload failed:', data.error || res.statusText);
+            return;
+          }
+          refreshFileTree();
+        } catch (e) {
+          console.error('Upload write error:', e);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (e) {
+      console.error('Upload read error:', e);
+    }
+  }, [currentProject?.id, refreshFileTree]);
+
   // --- Multi-tab editor helpers ---
   const openFileInTab = useCallback(async (path: string) => {
     // Check if already open
@@ -704,6 +736,7 @@ export default function App() {
               onCreateFile={handleCreateFile}
               onCreateDirectory={handleCreateDirectory}
               onDeleteDirectory={handleDeleteDirectory}
+              onUploadFile={handleUploadFile}
               sessions={sessions}
               currentSessionId={currentSession?.id ?? null}
               isLoadingSessions={isLoadingSessions}
