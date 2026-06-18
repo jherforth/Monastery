@@ -4,6 +4,7 @@ import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
 import { useAgents } from '../hooks/useAgents';
+import { ThuribleSpinner } from './ThuribleSpinner';
 
 // Reasoning window — collapsible, scrollable, max ~12 rows
 function ReasoningWindow({ reasoning }: { reasoning: string }) {
@@ -316,10 +317,8 @@ export function ChatPane({
           <div className="flex justify-start">
             <div className="max-w-[85%] rounded-2xl px-4 py-3 bg-monastery-dark-surface border border-monastery-dark-border">
               <div className="flex items-center gap-2">
-                <div className="lantern-loading w-2 h-2 bg-monastery-lantern rounded-full" />
-                <div className="lantern-loading w-2 h-2 bg-monastery-lantern rounded-full" style={{ animationDelay: '0.2s' }} />
-                <div className="lantern-loading w-2 h-2 bg-monastery-lantern rounded-full" style={{ animationDelay: '0.4s' }} />
-                <span className="text-monastery-text-muted text-sm ml-2">Generating...</span>
+                <ThuribleSpinner size={28} />
+                <span className="text-monastery-text-muted text-sm">Contemplating...</span>
               </div>
             </div>
           </div>

@@ -103,20 +103,39 @@ code, pre, .monaco-editor {
   transition-duration: 150ms;
 }
 
-/* Loading lantern animation */
-.lantern-loading {
-  animation: lanternPulse 2s ease-in-out infinite;
+/* Thurible (censer) loading spinner */
+.thurible-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-@keyframes lanternPulse {
-  0%, 100% {
-    opacity: 1;
-    filter: brightness(1);
-  }
-  50% {
-    opacity: 0.6;
-    filter: brightness(0.7);
-  }
+.thurible-swing {
+  animation: thuribleSwing 2.8s ease-in-out infinite;
+  transform-origin: top center;
+}
+
+.thurible-smoke {
+  animation: smokeRise 2s ease-out infinite;
+}
+
+.thurible-smoke-delayed {
+  animation: smokeRise 2s ease-out 0.6s infinite;
+}
+
+.thurible-smoke-delayed2 {
+  animation: smokeRise 2s ease-out 1.2s infinite;
+}
+
+@keyframes thuribleSwing {
+  0%, 100% { transform: rotate(-7deg); }
+  50%      { transform: rotate(7deg); }
+}
+
+@keyframes smokeRise {
+  0%   { opacity: 0.4; transform: translateY(0) scale(0.8); }
+  40%  { opacity: 0.25; transform: translateY(-8px) scale(1.2); }
+  100% { opacity: 0;    transform: translateY(-18px) scale(1.6); }
 }
 
 /* Utility classes */
