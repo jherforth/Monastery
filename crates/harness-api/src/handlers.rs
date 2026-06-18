@@ -2686,3 +2686,143 @@ fn collect_files_for_context(
         }
     }
 }
+
+// ============================================================
+// File Operations Handlers (user-initiated, no LLM needed)
+// ============================================================
+
+/// Query param for file/directory path operations
+#[derive(Debug, Deserialize)]
+pub struct FilePathQuery {
+    pub path: String,
+}
+
+/// Delete a file from a project
+pub async fn delete_project_file(
+    Path(project_id): Path<uuid::Uuid>,
+    Query(query): Query<FilePathQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    let canonical_base = project_path.canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+
+    let full_path = project_path.join(&query.path);
+
+    // Security: canonicalize and verify within project
+    let resolved = full_path.canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("File not found: {}", query.path)))?;
+    if !resolved.starts_with(&canonical_base) {
+        return Err(ApiError::Config("Path traversal not allowed".into()));
+    }
+    if !resolved.is_file() {
+        return Err(ApiError::Config("Path is not a file".into()));
+    }
+
+    std::fs::remove_file(&resolved)
+        .map_err(|e| ApiError::Internal(format!("Failed to delete file: {}", e)))?;
+
+    tracing::info!("Deleted file: {}", query.path);
+    Ok(Json(serde_json::json!({ "success": true, "path": query.path })))
+}
+
+/// Create a new directory in a project
+pub async fn create_project_directory(
+    Path(project_id): Path<uuid::Uuid>,
+    Query(query): Query<FilePathQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    let canonical_base = project_path.canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+
+    let full_path = project_path.join(&query.path);
+
+    // Security: check the parent directory is within the project
+    // The directory itself may not exist yet, so check its parent
+    if let Some(parent) = full_path.parent() {
+        if parent.exists() {
+            let canonical_parent = parent.canonicalize()
+                .map_err(|_| ApiError::Internal("Failed to resolve parent path".into()))?;
+            if !canonical_parent.starts_with(&canonical_base) {
+                return Err(ApiError::Config("Path traversal not allowed".into()));
+            }
+        }
+    }
+
+    if full_path.exists() {
+        return Err(ApiError::Config(format!("Directory already exists: {}", query.path)));
+    }
+
+    std::fs::create_dir_all(&full_path)
+        .map_err(|e| ApiError::Internal(format!("Failed to create directory: {}", e)))?;
+
+    tracing::info!("Created directory: {}", query.path);
+    Ok(Json(serde_json::json!({ "success": true, "path": query.path })))
+}
+
+/// Delete a directory and all its contents from a project
+pub async fn delete_project_directory(
+    Path(project_id): Path<uuid::Uuid>,
+    Query(query): Query<FilePathQuery>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    let canonical_base = project_path.canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+
+    let full_path = project_path.join(&query.path);
+
+    // Security: canonicalize and verify within project
+    let resolved = full_path.canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("Directory not found: {}", query.path)))?;
+    if !resolved.starts_with(&canonical_base) {
+        return Err(ApiError::Config("Path traversal not allowed".into()));
+    }
+    if !resolved.is_dir() {
+        return Err(ApiError::Config("Path is not a directory".into()));
+    }
+    // Prevent deleting the project root itself
+    if resolved == canonical_base {
+        return Err(ApiError::Config("Cannot delete project root directory".into()));
+    }
+
+    std::fs::remove_dir_all(&resolved)
+        .map_err(|e| ApiError::Internal(format!("Failed to delete directory: {}", e)))?;
+
+    tracing::info!("Deleted directory: {}", query.path);
+    Ok(Json(serde_json::json!({ "success": true, "path": query.path })))
+}

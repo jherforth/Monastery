@@ -203,6 +203,107 @@ export default function App() {
     }
   }, [deleteSession, currentSession]);
 
+  // Refresh the file tree after file operations
+  const refreshFileTree = useCallback(() => {
+    if (!currentProject?.id) return;
+    fetch(`/api/projects/${currentProject.id}/files`)
+      .then(r => r.json())
+      .then(files => setProjectFiles(files))
+      .catch(() => {});
+    fetch(`/api/projects/${currentProject.id}/files/read-all`)
+      .then(r => r.json())
+      .then(data => setAllFileContents(data.files || {}))
+      .catch(() => {});
+  }, [currentProject?.id]);
+
+  // Delete a file (user-initiated, no LLM)
+  const handleDeleteFile = useCallback(async (path: string) => {
+    if (!currentProject?.id) return;
+    const name = path.split('/').pop() || path;
+    if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/projects/${currentProject.id}/files?path=${encodeURIComponent(path)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error('Delete failed:', data.error || res.statusText);
+        return;
+      }
+      // Close the tab if it was open
+      setOpenTabs(prev => prev.filter(t => t.path !== path));
+      refreshFileTree();
+    } catch (e) {
+      console.error('Delete file error:', e);
+    }
+  }, [currentProject?.id, refreshFileTree]);
+
+  // Create a new directory (user-initiated, no LLM)
+  const handleCreateDirectory = useCallback(async (parentPath: string) => {
+    if (!currentProject?.id) return;
+    const name = window.prompt('Directory name:');
+    if (!name || !name.trim()) return;
+    const dirPath = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
+    try {
+      const res = await fetch(`/api/projects/${currentProject.id}/files/dir?path=${encodeURIComponent(dirPath)}`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error('Create directory failed:', data.error || res.statusText);
+        return;
+      }
+      refreshFileTree();
+    } catch (e) {
+      console.error('Create directory error:', e);
+    }
+  }, [currentProject?.id, refreshFileTree]);
+
+  // Delete a directory (user-initiated, no LLM)
+  const handleDeleteDirectory = useCallback(async (path: string) => {
+    if (!currentProject?.id) return;
+    const name = path.split('/').pop() || path;
+    if (!window.confirm(`Delete directory "${name}" and ALL its contents? This cannot be undone.`)) return;
+    try {
+      const res = await fetch(`/api/projects/${currentProject.id}/files/dir?path=${encodeURIComponent(path)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error('Delete directory failed:', data.error || res.statusText);
+        return;
+      }
+      // Close any tabs for files inside this directory
+      setOpenTabs(prev => prev.filter(t => !t.path.startsWith(path + '/')));
+      refreshFileTree();
+    } catch (e) {
+      console.error('Delete directory error:', e);
+    }
+  }, [currentProject?.id, refreshFileTree]);
+
+  // Create a new file (user-initiated, no LLM)
+  const handleCreateFile = useCallback(async (parentPath: string) => {
+    if (!currentProject?.id) return;
+    const name = window.prompt('File name (e.g., index.ts):');
+    if (!name || !name.trim()) return;
+    const filePath = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
+    try {
+      const res = await fetch(`/api/projects/${currentProject.id}/files/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: filePath, content: '' }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error('Create file failed:', data.error || res.statusText);
+        return;
+      }
+      refreshFileTree();
+    } catch (e) {
+      console.error('Create file error:', e);
+    }
+  }, [currentProject?.id, refreshFileTree]);
+
   // --- Multi-tab editor helpers ---
   const openFileInTab = useCallback(async (path: string) => {
     // Check if already open
@@ -599,6 +700,10 @@ export default function App() {
             <Sidebar
               files={projectFiles}
               onSelectFile={openFileInTab}
+              onDeleteFile={handleDeleteFile}
+              onCreateFile={handleCreateFile}
+              onCreateDirectory={handleCreateDirectory}
+              onDeleteDirectory={handleDeleteDirectory}
               sessions={sessions}
               currentSessionId={currentSession?.id ?? null}
               isLoadingSessions={isLoadingSessions}

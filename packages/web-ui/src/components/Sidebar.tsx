@@ -1,5 +1,5 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot } from 'lucide-react';
-import { useState } from 'react';
+import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot, FilePlus, FolderPlus } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileNode, SessionInfo, SessionDetail } from '../types';
 import { useEndpoints } from '../hooks/useEndpoints';
 import { useGitForge } from '../hooks/useGitForge';
@@ -135,20 +135,51 @@ function IntegrationsStatus() {
   );
 }
 
+interface ContextMenuState {
+  visible: boolean;
+  x: number;
+  y: number;
+  node: FileNode;
+}
+
 interface FileTreeItemProps {
   node: FileNode;
   depth: number;
   onSelectFile: (path: string) => void;
+  onDeleteFile?: (path: string) => void;
+  onCreateFile?: (parentPath: string) => void;
+  onCreateDirectory?: (parentPath: string) => void;
+  onDeleteDirectory?: (path: string) => void;
 }
 
-function FileTreeItem({ node, depth, onSelectFile }: FileTreeItemProps) {
+function FileTreeItem({ node, depth, onSelectFile, onDeleteFile, onCreateFile, onCreateDirectory, onDeleteDirectory }: FileTreeItemProps) {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState>({ visible: false, x: 0, y: 0, node: node });
   const isDirectory = node.type === 'directory';
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setContextMenu({ visible: true, x: e.clientX, y: e.clientY, node });
+  }, [node]);
+
+  const closeContextMenu = useCallback(() => {
+    setContextMenu(prev => ({ ...prev, visible: false }));
+  }, []);
+
+  // Close context menu on any click outside
+  useEffect(() => {
+    if (!contextMenu.visible) return;
+    const handler = () => closeContextMenu();
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, [contextMenu.visible, closeContextMenu]);
 
   return (
     <div>
       <button
         onClick={() => isDirectory ? setIsExpanded(!isExpanded) : onSelectFile(node.path)}
+        onContextMenu={handleContextMenu}
         className="w-full flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
@@ -180,6 +211,50 @@ function FileTreeItem({ node, depth, onSelectFile }: FileTreeItemProps) {
         )}
       </button>
       
+      {/* Context Menu */}
+      {contextMenu.visible && contextMenu.node.path === node.path && (
+        <div
+          className="fixed z-50 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl py-1 min-w-[160px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {isDirectory ? (
+            <>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-colors"
+                onClick={() => { onCreateDirectory?.(node.path); closeContextMenu(); }}
+              >
+                <FolderPlus size={14} className="text-monastery-pine" />
+                New Directory
+              </button>
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-colors"
+                onClick={() => { onCreateFile?.(node.path); closeContextMenu(); }}
+              >
+                <FilePlus size={14} className="text-monastery-lantern" />
+                New File
+              </button>
+              <div className="border-t border-monastery-dark-border my-0.5" />
+              <button
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+                onClick={() => { onDeleteDirectory?.(node.path); closeContextMenu(); }}
+              >
+                <Trash2 size={14} />
+                Delete Directory
+              </button>
+            </>
+          ) : (
+            <button
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors"
+              onClick={() => { onDeleteFile?.(node.path); closeContextMenu(); }}
+            >
+              <Trash2 size={14} />
+              Delete File
+            </button>
+          )}
+        </div>
+      )}
+      
       {isDirectory && isExpanded && node.children && (
         <div>
           {node.children.map((child) => (
@@ -188,6 +263,10 @@ function FileTreeItem({ node, depth, onSelectFile }: FileTreeItemProps) {
               node={child}
               depth={depth + 1}
               onSelectFile={onSelectFile}
+              onDeleteFile={onDeleteFile}
+              onCreateFile={onCreateFile}
+              onCreateDirectory={onCreateDirectory}
+              onDeleteDirectory={onDeleteDirectory}
             />
           ))}
         </div>
@@ -199,6 +278,11 @@ function FileTreeItem({ node, depth, onSelectFile }: FileTreeItemProps) {
 interface SidebarProps {
   files?: FileNode[];
   onSelectFile: (path: string) => void;
+  // File operations (user-initiated, no LLM)
+  onDeleteFile?: (path: string) => void;
+  onCreateFile?: (parentPath: string) => void;
+  onCreateDirectory?: (parentPath: string) => void;
+  onDeleteDirectory?: (path: string) => void;
   // Session props
   sessions?: SessionInfo[];
   currentSessionId?: string | null;
@@ -211,6 +295,10 @@ interface SidebarProps {
 export function Sidebar({ 
   files = [], 
   onSelectFile,
+  onDeleteFile,
+  onCreateFile,
+  onCreateDirectory,
+  onDeleteDirectory,
   sessions = [],
   currentSessionId = null,
   isLoadingSessions = false,
@@ -279,6 +367,10 @@ export function Sidebar({
                   node={node}
                   depth={0}
                   onSelectFile={onSelectFile}
+                  onDeleteFile={onDeleteFile}
+                  onCreateFile={onCreateFile}
+                  onCreateDirectory={onCreateDirectory}
+                  onDeleteDirectory={onDeleteDirectory}
                 />
               ))
             ) : (
