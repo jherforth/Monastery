@@ -309,31 +309,37 @@ export default function App() {
   const handleUploadFile = useCallback(async (parentPath: string, file: File) => {
     if (!currentProject?.id) return;
     const filePath = parentPath ? `${parentPath}/${file.name}` : file.name;
-    try {
-      // Read file as base64 data URL, then save via write endpoint
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        const content = event.target?.result as string;
-        if (!content) return;
-        try {
-          const res = await fetch(`/api/projects/${currentProject.id}/files/write`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: filePath, content }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            console.error('Upload failed:', data.error || res.statusText);
-            return;
-          }
-          refreshFileTree();
-        } catch (e) {
-          console.error('Upload write error:', e);
+
+    // Determine if this is a text-based file (should NOT be base64-encoded)
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const textExtensions = ['svg', 'html', 'htm', 'css', 'js', 'ts', 'tsx', 'jsx', 'json', 'xml', 'md', 'txt', 'yaml', 'yml', 'toml', 'env', 'gitignore', 'dockerfile', 'editorconfig', 'sh', 'bash', 'zsh', 'py', 'rb', 'rs', 'go', 'java', 'c', 'cpp', 'h', 'hpp', 'vue', 'svelte', 'astro', 'graphql', 'sql', 'prisma', 'proto'];
+    const isText = textExtensions.includes(ext) || file.type.startsWith('text/') || file.type === 'image/svg+xml';
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const content = event.target?.result as string;
+      if (!content) return;
+      try {
+        const res = await fetch(`/api/projects/${currentProject.id}/files/write`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, content }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          console.error('Upload failed:', data.error || res.statusText);
+          return;
         }
-      };
+        refreshFileTree();
+      } catch (e) {
+        console.error('Upload write error:', e);
+      }
+    };
+
+    if (isText) {
+      reader.readAsText(file);
+    } else {
       reader.readAsDataURL(file);
-    } catch (e) {
-      console.error('Upload read error:', e);
     }
   }, [currentProject?.id, refreshFileTree]);
 
