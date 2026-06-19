@@ -474,20 +474,36 @@ pub struct CreateProjectRequest {
 
 /// Create a new project
 pub async fn create_project(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<ProjectInfo>, ApiError> {
-    let project = ProjectInfo {
-        id: Uuid::new_v4(),
+    let project_id = Uuid::new_v4();
+    let now = chrono::Utc::now();
+    let now_str = now.to_rfc3339();
+
+    sqlx::query(
+        "INSERT INTO projects (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    )
+    .bind(project_id.to_string())
+    .bind(&req.name)
+    .bind(req.description.as_deref())
+    .bind(&now_str)
+    .bind(&now_str)
+    .execute(&*state.db)
+    .await?;
+
+    // Create the project directory on disk so file writes work immediately
+    let project_dir = state.config.data_dir.join(&req.name);
+    tokio::fs::create_dir_all(&project_dir).await
+        .map_err(|e| ApiError::Internal(format!("Failed to create project directory: {}", e)))?;
+
+    Ok(Json(ProjectInfo {
+        id: project_id,
         name: req.name,
         description: req.description,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-    };
-    
-    // In a real implementation, save to database
-    
-    Ok(Json(project))
+        created_at: now,
+        updated_at: now,
+    }))
 }
 
 /// Get a specific project

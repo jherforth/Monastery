@@ -31,10 +31,20 @@ export default function App() {
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string }>>([]);
   const abortRef = useRef<AbortController | null>(null);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
+
+  // Fetch available models whenever endpoints change so we always send the right model ID
+  useEffect(() => {
+    if (endpoints.length === 0) return;
+    fetch('/api/models')
+      .then(r => r.ok ? r.json() : [])
+      .then((m: Array<{ id: string }>) => { if (m.length > 0) setAvailableModels(m); })
+      .catch(() => {});
+  }, [endpoints]);
 
   // Session management
   const {
@@ -515,7 +525,7 @@ export default function App() {
         { role: userMessage.role, content: userMessage.content },
       ];
       
-      const modelId = 'deepseek-chat';
+      const modelId = availableModels[0]?.id || 'deepseek-chat';
       const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -533,6 +543,15 @@ export default function App() {
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
 
+      // Create placeholder immediately so the user sees streaming output in real-time
+      const aiMsgId = (Date.now() + 1).toString();
+      setMessages(prev => [...prev, {
+        id: aiMsgId,
+        role: 'assistant' as const,
+        content: '',
+        timestamp: Date.now(),
+      }]);
+
       let fullContent = '';
       let reasoningContent = '';
 
@@ -542,18 +561,14 @@ export default function App() {
         } else {
           fullContent += data;
         }
+        setMessages(prev => prev.map(m =>
+          m.id === aiMsgId
+            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
+            : m
+        ));
       }
 
       if (fullContent || reasoningContent) {
-        const aiMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: fullContent,
-          reasoning: reasoningContent || undefined,
-          timestamp: Date.now(),
-        };
-        setMessages((prev) => [...prev, aiMessage]);
-        
         if (sessionId) {
           addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
         }
@@ -733,7 +748,7 @@ export default function App() {
         setIsGenerating(false);
       }, 1500);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels]);
 
   const handleStopGeneration = () => {
     abortRef.current?.abort();
