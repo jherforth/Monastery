@@ -65,8 +65,9 @@ impl EndpointConfig {
             return (Some(8192), Some(0.3));
         }
 
-        // Unknown remote — safe universal default
-        (Some(8192), Some(0.3))
+        // Unknown remote — let the provider use its own defaults rather than
+        // imposing a low cap that would cut off long code generation responses.
+        (None, None)
     }
 }
 

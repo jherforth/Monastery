@@ -101,12 +101,20 @@ impl LLMClient {
                 "stream": true,
             });
 
-            // Only include max_tokens if explicitly set (>0).
-            // None or 0 = omit from body, letting the provider decide.
-            if let Some(mt) = self.config.max_tokens {
-                if mt > 0 {
-                    body["max_tokens"] = serde_json::json!(mt);
-                }
+            // Determine effective max_tokens:
+            // - If explicitly configured on the endpoint, use that.
+            // - For local endpoints (Ollama, etc.) with no explicit limit, use a high default
+            //   because Ollama's built-in default (num_predict) is often only 2048, which
+            //   cuts off long code generation responses far too early.
+            // - For remote endpoints with no explicit limit, omit the field and let the
+            //   provider use its own defaults.
+            let effective_max_tokens = match self.config.max_tokens {
+                Some(mt) if mt > 0 => Some(mt),
+                None if self.config.is_local => Some(32768),
+                _ => None,
+            };
+            if let Some(mt) = effective_max_tokens {
+                body["max_tokens"] = serde_json::json!(mt);
             }
             // Only include temperature if explicitly set.
             if let Some(temp) = self.config.temperature {

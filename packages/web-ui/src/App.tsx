@@ -508,9 +508,11 @@ export default function App() {
             return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
           })
           .join('\n\n');
-        // Cap total context at ~400KB (fits DeepSeek's 128K token window with room for conversation)
-        const capped = fileContents.length > 400_000 
-          ? fileContents.slice(0, 400_000) + '\n\n... [additional files truncated — open specific files to include them]'
+        // Cap at ~60KB (~15K tokens). Sending the entire codebase (up to 400KB previously)
+        // consumed most of the model's context window before generating a single output token,
+        // causing responses to be cut off mid-way through large files.
+        const capped = fileContents.length > 60_000
+          ? fileContents.slice(0, 60_000) + '\n\n... [additional files truncated — ask to read a specific file for its full contents]'
           : fileContents;
         contextParts.push(`PROJECT FILE CONTENTS:\n${capped}`);
       }
