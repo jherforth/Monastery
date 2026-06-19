@@ -1,37 +1,26 @@
 import { useAppStore } from '../store/useAppStore';
 
-interface ThuribleSpinnerProps {
+interface SpinnerProps {
   size?: number;
 }
 
-export function ThuribleSpinner({ size = 28 }: ThuribleSpinnerProps) {
+export function Spinner({ size = 28 }: SpinnerProps) {
   const theme = useAppStore(s => s.theme);
   const logoSrc = theme === 'monastery-dark' ? '/images/logoDark.svg' : '/images/logoLight.svg';
 
-  // Sound wave rings — each ring is a circle that radiates outward
   const waveRings = [0, 1, 2, 3];
 
   return (
     <span className="bell-spinner" style={{ width: size * 2.2, height: size * 2.2 }} aria-label="AI is contemplating...">
-      {/* Sound waves */}
       {waveRings.map((i) => (
         <span
           key={i}
           className="bell-wave"
-          style={{
-            width: size * 1.8,
-            height: size * 1.8,
-          }}
+          style={{ width: size * 1.8, height: size * 1.8 }}
         />
       ))}
-
-      {/* Cathedral logo — tolling bell */}
       <span className="bell-logo">
-        <img
-          src={logoSrc}
-          alt="Monastery"
-          style={{ width: size, height: size }}
-        />
+        <img src={logoSrc} alt="Monastery" style={{ width: size, height: size }} />
       </span>
     </span>
   );
