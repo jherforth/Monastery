@@ -2667,7 +2667,7 @@ fn generate_dockerfile(framework: &str, _build_cmd: &str, output_dir: &str, port
             r#"FROM node:18-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY . .
 RUN npm run build
 
@@ -2686,7 +2686,7 @@ CMD ["npm", "start"]
             r#"FROM node:18-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY . .
 RUN npm run build
 
@@ -2701,7 +2701,7 @@ CMD ["nginx", "-g", "daemon off;"]
             r#"FROM node:18-alpine
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --production
+RUN npm install --production
 COPY . .
 EXPOSE {}
 CMD ["node", "index.js"]

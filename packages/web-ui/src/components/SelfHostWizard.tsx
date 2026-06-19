@@ -233,6 +233,11 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
             <h3 className="text-sm font-medium text-monastery-text-primary flex items-center gap-2"><Rocket size={16} className="text-monastery-lantern" /> Configure Your Deployment</h3>
             <div className={`p-2 rounded-lg border text-xs flex items-center gap-2 ${activePlatformConn ? 'border-green-400/30 bg-green-400/5 text-green-400' : 'border-monastery-dark-border bg-monastery-dark-bg text-monastery-text-muted'}`}>
               <CheckCircle2 size={12} />{activePlatformConn ? `Deploying to ${activePlatformConn.service_type} (${activePlatformConn.base_url})` : 'No platform connected'}</div>
+            {/* Server selection reminder */}
+            <div className="p-2 rounded-lg border border-amber-400/20 bg-amber-400/5 text-xs text-amber-300 flex items-start gap-2">
+              <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+              <span>After deploying, log in to your {activePlatformConn?.service_type || 'platform'} dashboard and verify the <strong>deployment server</strong> is correctly selected. The wizard auto-selects the first available server, but you should confirm it's the right one for your app.</span>
+            </div>
             <div><label className="block text-xs font-medium text-monastery-text-secondary mb-1">App Name</label>
               <input type="text" value={appName} onChange={e => setAppName(e.target.value)} placeholder="my-monastery-app"
                 className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" /></div>
