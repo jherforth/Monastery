@@ -337,13 +337,24 @@ packages/web-ui/
 - Backend `generate_docker_compose()` dynamically assembles compose with optional Pocketbase + cloudflared
 - Manual deploy tab shows setup instructions for both new tunnels and adding ingress rules to existing tunnels
 
+### Hermes Agent Integration (`components/SettingsModal.tsx` + `hooks/useHermesAgent.ts`)
+- **Settings → Hermes Agent tab** for connecting Monastery to a Hermes instance
+- Add-connection form: name, base URL, API key
+- Connection list with status badges (default indicator), last-used timestamps
+- **Test button** — calls `/api/hermes/connections/:id/test` and shows green/red result
+- **★ Set default** — one connection is always default; unused by agent dispatch
+- **Delete with confirmation** — removes connection from SQLite
+- `useHermesAgent.ts` hook provides full CRUD via SWR (list/create/delete/test/set-default)
+- **Agent execution** now flows through `POST /api/hermes/run` → Hermes `POST /v1/chat/completions` with SSE passthrough
+- Built-in agent system prompts stripped from frontend; agent roles kept as UI labels only
+
 ---
 
 ## Next Steps
 
 - Build log streaming for deploy progress
 - Mobile responsive improvements
-- External agent framework integrations (Hermes, Open Claw)
+- Open Claw integration (WebSocket JSON-RPC)
 1. Custom Monastery logo SVG
 2. Favicon
 3. More sophisticated loading states

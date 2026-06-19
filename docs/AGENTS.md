@@ -2,44 +2,54 @@
 
 ## Overview
 
-Monastery's agent system enables the main chat LLM to dispatch specialized work to sub-agents, each with its own system prompt, tool access, and execution context. Think of agents as **specialized workers** the orchestrator can delegate tasks to.
+Monastery's agent system dispatches specialized work (review, refactor, test, deploy) to an external **Hermes** agent framework. Hermes runs the agent loop, manages tools, sub-agents, and model calls. Monastery provides the project context and file surface — the UI is a thin dispatch layer with role labels for UX, but **all execution happens in Hermes**.
 
-**Status: Phases 1–3 complete.** Agents are fully functional — you can invoke them from chat quick-actions, the editor toolbar, or by typing `@agent:name task` in the chat input. Each agent streams its response live into the conversation.
+**Status: Phase 4 complete.** Built-in agent prompts have been stripped. All agent runs now proxy through Hermes's REST API (`POST /v1/chat/completions`). Connect your Hermes instance in **Settings → Hermes Agent**.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              Main Chat (Orchestrator)        │
-│  "Build a full-stack app with auth"         │
-└──────────┬──────────┬──────────┬────────────┘
-           │          │          │
-     ┌─────▼──┐  ┌────▼───┐  ┌─▼──────────┐
-     │ Code   │  │ Test   │  │ Deploy      │
-     │ Agent  │  │ Agent  │  │ Agent       │
-     │ writes │  │ writes │  │ pushes to   │
-     │ routes │  │ unit   │  │ Dokploy/    │
-     │ + APIs │  │ tests  │  │ Coolify     │
-     └────────┘  └────────┘  └─────────────┘
+┌───────────────────────────────────────────────────────────┐
+│                    Monastery UI                           │
+│  Chat quick-actions / Editor toolbar / @-mentions        │
+└──────────────────────┬────────────────────────────────────┘
+                       │ POST /api/hermes/run
+                       ▼
+┌──────────────────────────────────────────────────────────┐
+│                  Monastery Backend (Rust)                 │
+│  Looks up default Hermes connection from SQLite          │
+│  Proxies task → Hermes REST API with Bearer auth         │
+│  Passes SSE stream through to frontend                   │
+└──────────────────────┬────────────────────────────────────┘
+                       │ POST /v1/chat/completions
+                       ▼
+┌──────────────────────────────────────────────────────────┐
+│                     Hermes Agent                         │
+│  • Agent loop (tools, sub-agents, memory)                │
+│  • File I/O via Monastery project mounts                 │
+│  • Model/provider routing                                │
+│  • Streaming response (SSE)                              │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **How it works under the hood:**
 
 ```
 User clicks "🔍 Review"
-  → POST /api/agents/run { system_prompt, task, project_id }
-  → Backend loads project files as context (capped at 200KB)
-  → LLM streams response via SSE (with reasoning support)
+  → POST /api/hermes/run { task, project_id, agent_role }
+  → Backend loads default Hermes connection from hermes_connections table
+  → Proxies to Hermes POST /v1/chat/completions with Bearer auth
+  → Hermes SSE stream is passed transparently to Monastery UI
   → Frontend renders live-streamed agent message in chat
 ```
 
 ---
 
-## Built-in Agents
+## Agent Roles (UI Labels)
 
-Each agent has a tuned system prompt and receives full project context when invoked:
+Monastery keeps agent role profiles for UI display only. System prompts live in Hermes, not Monastery:
 
-| Agent | Role | System Prompt Focus |
+| Agent | Role | Typical Task |
 |---|---|---|
 | 🏗️ **Architect** | System Designer | Architecture design, trade-off analysis, project structure |
 | 💻 **Coder** | Implementation | Write/edit code following project patterns |
@@ -47,6 +57,19 @@ Each agent has a tuned system prompt and receives full project context when invo
 | 🧪 **Tester** | Quality Assurance | Unit/integration/edge case tests |
 | 📝 **Documenter** | Technical Writer | README, API docs, JSDoc, troubleshooting guides |
 | 🚀 **Deployer** | DevOps / Deployment | Dockerfile generation, hosting platform configuration |
+
+---
+
+## Setup: Connecting Hermes
+
+1. Ensure Hermes is running with its REST API enabled (default port 8642).
+2. Open **Settings → Hermes Agent**.
+3. Enter a name, Hermes base URL (`http://localhost:8642`), and API key.
+4. Click **Connect Hermes**.
+5. Click the **connection test** icon to verify the link.
+6. The first connection is automatically set as default. Use the ★ button to change defaults.
+
+In Docker, use `http://host.docker.internal:8642` to reach a host-running Hermes from the Monastery container.
 
 ---
 
@@ -77,11 +100,11 @@ In the code editor toolbar, beside the file path:
 | **Refactor** | Coder | Current file content + "Refactor for better patterns, readability, and performance" |
 | **Add Tests** | Tester | Current file content + "Write comprehensive unit and integration tests" |
 
-Buttons are disabled when no file is open in the editor.
+Buttons are disabled when no file is open in the editor. Prompt templates live in `useAgents.ts`'s `editorPrompts` map — easy to customize without touching UI components.
 
 ### 3. Chat Input
 
-Type a message like *"Review my latest changes"* — the main LLM handles it, but you can also explicitly reference agents in natural language.
+Type a message like *"Review my latest changes"* — the task is dispatched to Hermes with the selected agent role as context.
 
 ---
 
@@ -90,21 +113,21 @@ Type a message like *"Review my latest changes"* — the main LLM handles it, bu
 When an agent is invoked:
 
 1. A **user message** appears in chat showing which agent was called (e.g., `🔍 **Reviewer**: Review my latest changes...`)
-2. A **placeholder assistant message** is created and updated in real-time as the agent streams
-3. The agent's **system prompt** is combined with the **full project context** (files capped at 200KB)
-4. The LLM response streams via **SSE** with reasoning support
+2. A **placeholder assistant message** is created and updated in real-time as Hermes streams
+3. Monastery backend proxies the request to Hermes `POST /v1/chat/completions` with Bearer auth
+4. Hermes SSE response is streamed transparently through Monastery to the frontend
 5. The final response is saved to the session if one is active
 
 ---
 
-## External Agent Frameworks (Future)
+## External Agent Frameworks
 
 | Framework | Description | Status |
 |---|---|---|
-| 🤖 **Hermes** | Local AI agent runner — REST API for task dispatch | Coming soon |
-| 🦞 **Open Claw** | Multi-agent orchestration — task delegation protocol | Coming soon |
+| 🤖 **Hermes** | Local AI agent runner — REST API for task dispatch | ✅ Integrated |
+| 🦞 **Open Claw** | Multi-agent orchestration — WebSocket JSON-RPC protocol | 🔜 Planned |
 
-External agents will follow the same **Connect → Validate → Dispatch** pattern as Hosting Services.
+External agents follow the same **Connect → Validate → Dispatch** pattern as Hosting Services. Each framework gets a tab in Settings with connection CRUD, a test button, and a default-selector.
 
 ---
 
@@ -112,10 +135,11 @@ External agents will follow the same **Connect → Validate → Dispatch** patte
 
 | Phase | What | Status |
 |---|---|---|
-| **Phase 1** | Agents tab with 6 built-in definitions + external placeholders | ✅ Complete |
-| **Phase 2** | Backend `POST /api/agents/run` — spawns sub-LLM call with agent system prompt + project context | ✅ Complete |
+| **Phase 1** | Agents tab with 6 role definitions + external placeholders | ✅ Complete |
+| **Phase 2** | Backend `POST /api/agents/run` — spawns sub-LLM call with agent system prompt + project context | ✅ Complete (legacy — kept for backward compat) |
 | **Phase 3** | Chat UI: quick-action buttons, live-streamed agent responses, editor toolbar integration | ✅ Complete |
-| **Phase 4** | External agents: connect Hermes / Open Claw via APIs, dispatch tasks | 🔜 Planned |
+| **Phase 4** | Hermes integration: `POST /api/hermes/run` proxies to Hermes REST API, Settings tab for connections, stripped built-in agent prompts | ✅ Complete |
+| **Phase 5** | Open Claw integration via WebSocket JSON-RPC | 🔜 Planned |
 
 ---
 
@@ -124,21 +148,16 @@ External agents will follow the same **Connect → Validate → Dispatch** patte
 ### Frontend
 | File | Purpose |
 |---|---|
-| `packages/web-ui/src/hooks/useAgents.ts` | Agent definitions, `runAgent()` with SSE streaming, quick action config |
-| `packages/web-ui/src/components/AgentsTab.tsx` | Sidebar tab — agent list with descriptions and tool badges |
+| `packages/web-ui/src/hooks/useAgents.ts` | Agent role profiles, `runAgent()` → `POST /api/hermes/run` via SSE, quick action config, `editorPrompts` map |
+| `packages/web-ui/src/hooks/useHermesAgent.ts` | SWR-based hook for Hermes connection CRUD (list/create/delete/test/set-default) |
 | `packages/web-ui/src/components/ChatPane.tsx` | Toggleable quick-action buttons above chat input |
-| `packages/web-ui/src/components/Sidebar.tsx` | Agents tab integration |
-| `packages/web-ui/src/App.tsx` | `triggerAgent()` callback — shared by chat quick-actions and editor toolbar |
+| `packages/web-ui/src/components/SettingsModal.tsx` | Hermes tab — add/test/delete connections, set default, connection status |
+| `packages/web-ui/src/App.tsx` | `triggerAgent()` callback — shared by chat quick-actions and editor toolbar, uses `editorPrompts` |
 
 ### Backend
 | File | Purpose |
 |---|---|
-| `crates/harness-api/src/handlers.rs` | `run_agent` handler — loads project context, builds agent prompt, streams via LLM |
-| `crates/harness-api/src/main.rs` | Route: `POST /api/agents/run` |
-
-### Future
-| File | Purpose |
-|---|---|
-| `crates/harness-api/src/db.rs` | `agent_connections` table for external agents |
-| `packages/web-ui/src/components/AgentRunPanel.tsx` | Chat sub-panel for live agent output (if separate from main chat) |
+| `crates/harness-api/src/handlers.rs` | Hermes handlers: `list_hermes_connections`, `create_hermes_connection`, `delete_hermes_connection`, `test_hermes_connection`, `set_default_hermes_connection`, `hermes_agent_run` (SSE proxy to Hermes `/v1/chat/completions`). Legacy `run_agent` still present for backward compat. |
+| `crates/harness-api/src/main.rs` | Routes: `GET/POST /api/hermes/connections`, `DELETE /api/hermes/connections/:id`, `POST /api/hermes/connections/:id/test`, `POST /api/hermes/connections/:id/default`, `POST /api/hermes/run` |
+| `crates/harness-api/src/db.rs` | `hermes_connections` table (id, name, base_url, api_key, is_default, created_at, last_used_at) |
 

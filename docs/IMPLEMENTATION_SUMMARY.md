@@ -266,3 +266,30 @@ New backend endpoint: `POST /api/hosting/preview` — returns framework detectio
 | `packages/web-ui/src/components/SelfHostWizard.tsx` | Full rewrite with stepper, preview, copy-paste, DB toggle |
 | `packages/web-ui/src/hooks/useHostingServices.ts` | Added `PreviewResult` type, `previewDeploy()` function |
 | `packages/web-ui/src/App.tsx` | Added `handleDeleteFile`, `handleCreateFile`, `handleCreateDirectory`, `handleDeleteDirectory`, `handleUploadFile`, `handleMoveFile`, `refreshFileTree` |
+
+### Hermes Agent Integration (June 2026)
+
+Stripped the 6 built-in agent system prompts (~200 lines of hardcoded prompt engineering) and replaced them with a passthrough to Hermes's REST API. All agent runs now proxy through `POST /api/hermes/run` → Hermes `POST /v1/chat/completions`. The frontend keeps agent role profiles (icon, name, description) for UX but delegates execution to Hermes.
+
+New backend surface:
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/api/hermes/connections` | List Hermes connections |
+| `POST` | `/api/hermes/connections` | Add a Hermes connection |
+| `DELETE` | `/api/hermes/connections/:id` | Remove a connection |
+| `POST` | `/api/hermes/connections/:id/test` | Test connectivity (calls `/v1/models`) |
+| `POST` | `/api/hermes/connections/:id/default` | Set as default connection |
+| `POST` | `/api/hermes/run` | Proxy task to Hermes `/v1/chat/completions` with SSE passthrough |
+
+New DB table: `hermes_connections` (id, name, base_url, api_key, is_default, created_at, last_used_at).
+
+| File | Change |
+|---|---|
+| `crates/harness-api/src/db.rs` | Added `hermes_connections` table |
+| `crates/harness-api/src/handlers.rs` | Added 6 Hermes handlers (connections CRUD + run proxy) |
+| `crates/harness-api/src/main.rs` | Registered 6 `/api/hermes/*` routes |
+| `Cargo.toml` | Added `async-stream = "0.3"` workspace dependency |
+| `packages/web-ui/src/hooks/useAgents.ts` | Rewritten: stripped BUILT_IN_AGENTS/EXTERNAL_AGENTS, `runAgent()` now calls `/api/hermes/run`, added `editorPrompts` map |
+| `packages/web-ui/src/hooks/useHermesAgent.ts` | New: SWR hook for Hermes connection CRUD |
+| `packages/web-ui/src/components/SettingsModal.tsx` | Added Hermes tab with connection form, list, test/set-default/delete |
+| `packages/web-ui/src/App.tsx` | Uses `editorPrompts` from `useAgents()`; dispatch flows through `/api/hermes/run` |
