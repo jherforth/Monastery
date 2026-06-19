@@ -2436,6 +2436,7 @@ pub async fn deploy_to_hosting(
             let payload = serde_json::json!({
                 "project_uuid": project_uuid,
                 "server_uuid": server_uuid,
+                "environment_name": "production",
                 "name": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
                 "ports_exposes": port.to_string(),
@@ -2491,24 +2492,26 @@ pub async fn deploy_to_hosting(
             })))
         }
         "dokploy" => {
-            // Dokploy: create an application (newer REST API uses plural /applications)
-            let create_url = format!("{}/api/applications", base);
+            // Dokploy: use tRPC endpoint for application creation
+            let create_url = format!("{}/api/trpc/application.create", base);
             
-            let payload = serde_json::json!({
+            let app_input = serde_json::json!({
                 "name": req.app_name,
-                "description": format!("Deployed from Monastery — project: {}", project_name),
                 "appName": req.app_name,
-                "type": "dockerfile",
+                "description": format!("Deployed from Monastery — project: {}", project_name),
                 "port": port,
                 "dockerfile": std::fs::read_to_string(&dockerfile_path)
                     .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port)),
             });
 
+            // tRPC v10 format: wrap input in { "json": ... }
+            let trpc_payload = serde_json::json!({ "json": app_input });
+
             let resp = client
                 .post(&create_url)
                 .header("x-api-key", &api_token)
                 .header("Content-Type", "application/json")
-                .json(&payload)
+                .json(&trpc_payload)
                 .send()
                 .await
                 .map_err(|e| ApiError::Internal(format!("Dokploy API request failed: {}", e)))?;
@@ -2523,18 +2526,27 @@ pub async fn deploy_to_hosting(
                 )));
             }
 
-            let app: serde_json::Value = resp.json().await
+            let result: serde_json::Value = resp.json().await
                 .map_err(|e| ApiError::Internal(format!("Failed to parse Dokploy response: {}", e)))?;
 
+            // tRPC response wraps data in { result: { data: { json: ... } } }
+            let app = result["result"]["data"]["json"].as_object()
+                .map(|o| serde_json::Value::Object(o.clone()))
+                .unwrap_or(result);
+
             let app_id = app["applicationId"].as_str()
+                .or_else(|| app["appId"].as_str())
                 .or_else(|| app["id"].as_str())
                 .unwrap_or("unknown");
 
-            // Trigger deploy
-            let deploy_url = format!("{}/api/applications/{}/deploy", base, app_id);
+            // Trigger deploy via tRPC
+            let deploy_url = format!("{}/api/trpc/application.deploy", base);
+            let deploy_payload = serde_json::json!({ "json": { "applicationId": app_id } });
             let deploy_resp = client
                 .post(&deploy_url)
                 .header("x-api-key", &api_token)
+                .header("Content-Type", "application/json")
+                .json(&deploy_payload)
                 .send()
                 .await
                 .map_err(|e| ApiError::Internal(format!("Deploy trigger failed: {}", e)))?;
@@ -2547,7 +2559,7 @@ pub async fn deploy_to_hosting(
                 "app_id": app_id,
                 "app_name": req.app_name,
                 "deploy_triggered": deploy_success,
-                "dashboard_url": format!("{}/dashboard/applications/{}", base.trim_end_matches("/api"), app_id),
+                "dashboard_url": format!("{}/dashboard/project/{}", base.trim_end_matches("/api"), app_id),
                 "framework": framework,
                 "port": port,
             })))
