@@ -31,7 +31,7 @@ pub async fn list_models(
     let mut all_models = Vec::new();
     
     // Fetch all endpoints from database
-    let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints")
+    let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints")
         .fetch_all(&*state.db)
         .await
         .unwrap_or_default();
@@ -49,7 +49,9 @@ pub async fn list_models(
                 let api_key: Option<String> = row.get(3);
                 let is_favorite: i64 = row.get(4);
                 let is_local: i64 = row.get(5);
-                let created_at: String = row.get(6);
+                let max_tokens: Option<i64> = row.get(6);
+                let temperature: Option<f64> = row.get(7);
+                let created_at: String = row.get(8);
                 
                 Some(harness_core::models::EndpointConfig {
                     id: uuid::Uuid::parse_str(&id).ok()?,
@@ -58,6 +60,8 @@ pub async fn list_models(
                     api_key,
                     is_favorite: is_favorite != 0,
                     is_local: is_local != 0,
+                    max_tokens: max_tokens.map(|v| v as u32),
+                    temperature: temperature.map(|v| v as f32),
                     created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                         .ok()?
                         .into(),
@@ -88,10 +92,10 @@ pub async fn chat_stream(
     use futures::StreamExt;
     
     // Get endpoint from query param or use default
-    let endpoint_config = if let Some(endpoint_id) = params.endpoint_id {
-        // Try database first (manual row parsing to handle TEXT UUID columns)
+    let mut endpoint_config = if let Some(endpoint_id) = params.endpoint_id {
+        // Try database first
         let db_endpoint = sqlx::query(
-            "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints WHERE id = ?"
+            "SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints WHERE id = ?"
         )
         .bind(endpoint_id.to_string())
         .fetch_optional(&*state.db)
@@ -105,7 +109,9 @@ pub async fn chat_stream(
             let api_key: Option<String> = row.get(3);
             let is_favorite: i64 = row.get(4);
             let is_local: i64 = row.get(5);
-            let created_at: String = row.get(6);
+            let max_tokens: Option<i64> = row.get(6);
+            let temperature: Option<f64> = row.get(7);
+            let created_at: String = row.get(8);
             harness_core::models::EndpointConfig {
                 id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
                 name,
@@ -113,6 +119,8 @@ pub async fn chat_stream(
                 api_key,
                 is_favorite: is_favorite != 0,
                 is_local: is_local != 0,
+                max_tokens: max_tokens.map(|v| v as u32),
+                temperature: temperature.map(|v| v as f32),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                     .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
                     .into(),
@@ -129,7 +137,7 @@ pub async fn chat_stream(
         }
     } else {
         // Use first available endpoint
-        let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints")
+        let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints")
             .fetch_all(&*state.db)
             .await
             .unwrap_or_default();
@@ -142,7 +150,9 @@ pub async fn chat_stream(
             let api_key: Option<String> = row.get(3);
             let is_favorite: i64 = row.get(4);
             let is_local: i64 = row.get(5);
-            let created_at: String = row.get(6);
+            let max_tokens: Option<i64> = row.get(6);
+            let temperature: Option<f64> = row.get(7);
+            let created_at: String = row.get(8);
             
             harness_core::models::EndpointConfig {
                 id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
@@ -151,6 +161,8 @@ pub async fn chat_stream(
                 api_key,
                 is_favorite: is_favorite != 0,
                 is_local: is_local != 0,
+                max_tokens: max_tokens.map(|v| v as u32),
+                temperature: temperature.map(|v| v as f32),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                     .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
                     .into(),
@@ -159,6 +171,14 @@ pub async fn chat_stream(
             return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No LLM endpoint configured. Please add an endpoint in Settings."}))).into_response();
         }
     };
+
+    // Apply per-request overrides from query params (takes priority over endpoint defaults)
+    if let Some(mt) = params.max_tokens {
+        endpoint_config.max_tokens = Some(mt);
+    }
+    if let Some(temp) = params.temperature {
+        endpoint_config.temperature = Some(temp);
+    }
     
     let base_url = endpoint_config.base_url.clone();
     let client = harness_core::LLMClient::new(endpoint_config);
@@ -239,7 +259,7 @@ pub async fn list_endpoints(
 ) -> Result<Json<Vec<harness_core::models::EndpointConfig>>, ApiError> {
     use sqlx::Row;
     
-    let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints")
+    let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints")
         .fetch_all(&*state.db)
         .await
         .unwrap_or_default();
@@ -253,7 +273,9 @@ pub async fn list_endpoints(
             let api_key: Option<String> = row.get(3);
             let is_favorite: i64 = row.get(4);
             let is_local: i64 = row.get(5);
-            let created_at: String = row.get(6);
+            let max_tokens: Option<i64> = row.get(6);
+            let temperature: Option<f64> = row.get(7);
+            let created_at: String = row.get(8);
             
             harness_core::models::EndpointConfig {
                 id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
@@ -262,6 +284,8 @@ pub async fn list_endpoints(
                 api_key,
                 is_favorite: is_favorite != 0,
                 is_local: is_local != 0,
+                max_tokens: max_tokens.map(|v| v as u32),
+                temperature: temperature.map(|v| v as f32),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                     .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
                     .into(),
@@ -289,13 +313,16 @@ pub async fn add_endpoint(
         || req.base_url.contains("127.0.0.1")
         || req.base_url.contains("192.168.")
         || req.base_url.contains("10.");
+
+    // Auto-detect sensible defaults for this provider
+    let (max_tokens, temperature) = harness_core::models::EndpointConfig::detect_defaults(&req.base_url);
     
     let endpoint_id = Uuid::new_v4();
     let now = chrono::Utc::now().to_rfc3339();
     
     // Save to database
     sqlx::query(
-        "INSERT INTO endpoints (id, name, base_url, api_key, is_favorite, is_local, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO endpoints (id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(endpoint_id.to_string())
     .bind(&req.name)
@@ -303,6 +330,8 @@ pub async fn add_endpoint(
     .bind(req.api_key.as_deref())
     .bind(0i64) // is_favorite = false
     .bind(if is_local { 1i64 } else { 0i64 })
+    .bind(max_tokens.map(|v| v as i64))
+    .bind(temperature)
     .bind(&now)
     .execute(&*state.db)
     .await?;
@@ -315,6 +344,8 @@ pub async fn add_endpoint(
         is_favorite: false,
         is_local,
         created_at: chrono::Utc::now(),
+        max_tokens,
+        temperature,
     };
     
     Ok(Json(endpoint))
@@ -340,7 +371,7 @@ pub async fn test_endpoint(
 ) -> Result<Json<TestEndpointResponse>, ApiError> {
     // Try to find in database first (manual row parsing to handle TEXT UUID columns)
     let endpoint_config = sqlx::query(
-        "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints WHERE id = ?"
+        "SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints WHERE id = ?"
     )
     .bind(id.to_string())
     .fetch_optional(&*state.db)
@@ -352,7 +383,9 @@ pub async fn test_endpoint(
         let api_key: Option<String> = row.get(3);
         let is_favorite: i64 = row.get(4);
         let is_local: i64 = row.get(5);
-        let created_at: String = row.get(6);
+        let max_tokens: Option<i64> = row.get(6);
+        let temperature: Option<f64> = row.get(7);
+        let created_at: String = row.get(8);
         harness_core::models::EndpointConfig {
             id: uuid::Uuid::parse_str(&id_str).unwrap_or_else(|_| uuid::Uuid::new_v4()),
             name,
@@ -360,6 +393,8 @@ pub async fn test_endpoint(
             api_key,
             is_favorite: is_favorite != 0,
             is_local: is_local != 0,
+            max_tokens: max_tokens.map(|v| v as u32),
+            temperature: temperature.map(|v| v as f32),
             created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                 .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
                 .into(),
@@ -991,6 +1026,12 @@ pub struct ChatRequest {
 #[derive(Debug, Deserialize)]
 pub struct ChatQueryParams {
     pub endpoint_id: Option<uuid::Uuid>,
+    /// Per-request override for max output tokens.
+    /// Overrides the endpoint's auto-detected default.
+    pub max_tokens: Option<u32>,
+    /// Per-request override for sampling temperature.
+    /// Overrides the endpoint's auto-detected default.
+    pub temperature: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2984,7 +3025,7 @@ pub async fn run_agent(
 
     // Get the first available endpoint
     let endpoint_row = sqlx::query(
-        "SELECT id, name, base_url, api_key, is_favorite, is_local, created_at FROM endpoints LIMIT 1"
+        "SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints LIMIT 1"
     )
     .fetch_optional(&*state.db)
     .await
@@ -2999,7 +3040,9 @@ pub async fn run_agent(
             let api_key: Option<String> = row.get(3);
             let is_favorite: i64 = row.get(4);
             let is_local: i64 = row.get(5);
-            let created_at: String = row.get(6);
+            let max_tokens: Option<i64> = row.get(6);
+            let temperature: Option<f64> = row.get(7);
+            let created_at: String = row.get(8);
             harness_core::models::EndpointConfig {
                 id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
                 name,
@@ -3007,6 +3050,8 @@ pub async fn run_agent(
                 api_key,
                 is_favorite: is_favorite != 0,
                 is_local: is_local != 0,
+                max_tokens: max_tokens.map(|v| v as u32),
+                temperature: temperature.map(|v| v as f32),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                     .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
                     .into(),

@@ -14,6 +14,60 @@ pub struct EndpointConfig {
     pub is_favorite: bool,
     pub is_local: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Max output tokens. None = omit from API request (provider default).
+    /// Auto-detected on endpoint creation; override via ?max_tokens=N query param.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// Sampling temperature 0.0–2.0. None = omit from API request.
+    /// Auto-detected on endpoint creation; override via ?temperature=T query param.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+}
+
+impl EndpointConfig {
+    /// Detect sensible defaults for an endpoint based on its URL.
+    /// Local endpoints get no limits (None). Known cloud providers get
+    /// provider-specific values. Unknown remotes get a safe universal default.
+    pub fn detect_defaults(base_url: &str) -> (Option<u32>, Option<f32>) {
+        let url_lower = base_url.to_lowercase();
+
+        // Local — no limits needed, let the provider decide
+        if url_lower.contains("localhost")
+            || url_lower.contains("127.0.0.1")
+            || url_lower.contains("host.docker.internal")
+            || url_lower.contains("192.168.")
+            || url_lower.contains("10.")
+            || url_lower.ends_with(".local")
+        {
+            return (None, None);
+        }
+
+        // Known cloud providers
+        if url_lower.contains("api.deepseek.com") {
+            return (Some(8192), Some(0.3));
+        }
+        if url_lower.contains("api.openai.com") {
+            return (Some(16384), Some(0.3));
+        }
+        if url_lower.contains("api.anthropic.com") {
+            return (Some(8192), Some(0.3));
+        }
+        if url_lower.contains("openrouter.ai") {
+            return (Some(8192), Some(0.3));
+        }
+        if url_lower.contains("api.groq.com") {
+            return (Some(8192), Some(0.3));
+        }
+        if url_lower.contains("generativelanguage.googleapis.com") {
+            return (Some(8192), Some(0.3));
+        }
+        if url_lower.contains("api.mistral.ai") {
+            return (Some(8192), Some(0.3));
+        }
+
+        // Unknown remote — safe universal default
+        (Some(8192), Some(0.3))
+    }
 }
 
 impl Default for EndpointConfig {
@@ -26,6 +80,8 @@ impl Default for EndpointConfig {
             is_favorite: false,
             is_local: true,
             created_at: chrono::Utc::now(),
+            max_tokens: None,
+            temperature: None,
         }
     }
 }

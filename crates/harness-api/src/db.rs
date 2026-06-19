@@ -29,13 +29,23 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
             api_key TEXT,
             is_favorite INTEGER DEFAULT 0,
             is_local INTEGER DEFAULT 1,
+            max_tokens INTEGER,
+            temperature REAL,
             created_at TEXT NOT NULL
         )
         "#,
     )
     .execute(&pool)
     .await?;
-    
+
+    // Migration: add max_tokens/temperature columns for DBs upgraded from older schema
+    let _ = sqlx::query("ALTER TABLE endpoints ADD COLUMN max_tokens INTEGER")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE endpoints ADD COLUMN temperature REAL")
+        .execute(&pool)
+        .await;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS projects (

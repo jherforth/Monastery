@@ -63,42 +63,58 @@ impl LLMClient {
         
         let api_key = self.config.api_key.clone().unwrap_or_default();
         
-        let body = serde_json::json!({
-            "model": model,
-            "messages": messages.iter().map(|m| {
-                match m {
-                    ChatCompletionRequestMessage::User(msg) => {
-                        serde_json::json!({
-                            "role": "user",
-                            "content": match &msg.content {
-                                async_openai::types::ChatCompletionRequestUserMessageContent::Text(t) => t,
-                                _ => "",
-                            }
-                        })
+        let body = {
+            let mut body = serde_json::json!({
+                "model": model,
+                "messages": messages.iter().map(|m| {
+                    match m {
+                        ChatCompletionRequestMessage::User(msg) => {
+                            serde_json::json!({
+                                "role": "user",
+                                "content": match &msg.content {
+                                    async_openai::types::ChatCompletionRequestUserMessageContent::Text(t) => t,
+                                    _ => "",
+                                }
+                            })
+                        }
+                        ChatCompletionRequestMessage::Assistant(msg) => {
+                            serde_json::json!({
+                                "role": "assistant",
+                                "content": match &msg.content {
+                                    Some(async_openai::types::ChatCompletionRequestAssistantMessageContent::Text(t)) => t,
+                                    _ => "",
+                                }
+                            })
+                        }
+                        ChatCompletionRequestMessage::System(msg) => {
+                            serde_json::json!({
+                                "role": "system",
+                                "content": match &msg.content {
+                                    async_openai::types::ChatCompletionRequestSystemMessageContent::Text(t) => t,
+                                    _ => "",
+                                }
+                            })
+                        }
+                        _ => serde_json::json!({"role": "user", "content": ""})
                     }
-                    ChatCompletionRequestMessage::Assistant(msg) => {
-                        serde_json::json!({
-                            "role": "assistant",
-                            "content": match &msg.content {
-                                Some(async_openai::types::ChatCompletionRequestAssistantMessageContent::Text(t)) => t,
-                                _ => "",
-                            }
-                        })
-                    }
-                    ChatCompletionRequestMessage::System(msg) => {
-                        serde_json::json!({
-                            "role": "system",
-                            "content": match &msg.content {
-                                async_openai::types::ChatCompletionRequestSystemMessageContent::Text(t) => t,
-                                _ => "",
-                            }
-                        })
-                    }
-                    _ => serde_json::json!({"role": "user", "content": ""})
+                }).collect::<Vec<_>>(),
+                "stream": true,
+            });
+
+            // Only include max_tokens if explicitly set (>0).
+            // None or 0 = omit from body, letting the provider decide.
+            if let Some(mt) = self.config.max_tokens {
+                if mt > 0 {
+                    body["max_tokens"] = serde_json::json!(mt);
                 }
-            }).collect::<Vec<_>>(),
-            "stream": true,
-        });
+            }
+            // Only include temperature if explicitly set.
+            if let Some(temp) = self.config.temperature {
+                body["temperature"] = serde_json::json!(temp);
+            }
+
+            body
+        };
         
         let http_client = reqwest::Client::new();
         let resp = http_client
