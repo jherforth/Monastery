@@ -2513,21 +2513,63 @@ pub async fn deploy_to_hosting(
                 .header("Content-Type", "application/json")
                 .json(&serde_json::json!({ "json": {} }))
                 .send()
-                .await
-                .map_err(|e| ApiError::Internal(format!("Failed to fetch Dokploy environments: {}", e)))?;
+                .await;
 
-            let env_id = if env_resp.status().is_success() {
-                let env_data: serde_json::Value = env_resp.json().await.unwrap_or_default();
-                env_data["result"]["data"]["json"]
-                    .as_array()
-                    .and_then(|arr| arr.first())
-                    .and_then(|env| env["environmentId"].as_str().or_else(|| env["id"].as_str()))
-                    .map(|s| s.to_string())
-            } else {
-                None
+            let env_id = match env_resp {
+                Ok(resp) if resp.status().is_success() => {
+                    let env_data: serde_json::Value = resp.json().await.unwrap_or_default();
+                    // tRPC response: try result.data.json (array), then result.data (array)
+                    let list = env_data["result"]["data"]["json"].as_array()
+                        .or_else(|| env_data["result"]["data"].as_array())
+                        .or_else(|| env_data["result"].as_array());
+                    list.and_then(|arr| arr.first())
+                        .and_then(|env| env["environmentId"].as_str().or_else(|| env["id"].as_str()))
+                        .map(|s| s.to_string())
+                }
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let body = resp.text().await.unwrap_or_default();
+                    tracing::warn!("Dokploy environment fetch failed (HTTP {}): {}", status, body);
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!("Dokploy environment fetch error: {}", e);
+                    None
+                }
             };
 
-            // Dokploy: use tRPC endpoint for application creation
+            // If no environment found, try to create a default one
+            let env_id = if env_id.is_none() {
+                let create_env_url = format!("{}/api/trpc/environment.create", base);
+                match client
+                    .post(&create_env_url)
+                    .header("x-api-key", &api_token)
+                    .header("Content-Type", "application/json")
+                    .json(&serde_json::json!({ "json": { "name": "production" } }))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        let data: serde_json::Value = resp.json().await.unwrap_or_default();
+                        data["result"]["data"]["json"]["environmentId"].as_str()
+                            .or_else(|| data["result"]["data"]["json"]["id"].as_str())
+                            .or_else(|| data["result"]["data"]["id"].as_str())
+                            .map(|s| s.to_string())
+                    }
+                    Ok(resp) => {
+                        tracing::warn!("Dokploy environment create failed (HTTP {})", resp.status().as_u16());
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!("Dokploy environment create error: {}", e);
+                        None
+                    }
+                }
+            } else {
+                env_id
+            };
+
+            // Build the application creation payload
             let create_url = format!("{}/api/trpc/application.create", base);
             
             let mut app_input = serde_json::json!({
