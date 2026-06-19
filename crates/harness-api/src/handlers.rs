@@ -2435,10 +2435,11 @@ pub async fn deploy_to_hosting(
             // Create a Dockerfile-based application on Coolify
             let create_url = format!("{}/api/v1/applications/dockerfile", base);
             
-            // Read and base64-encode the Dockerfile (required by Coolify API)
+            // Read the Dockerfile — Coolify expects plain text (NOT base64).
+            // Verified: custom_nginx_configuration is base64-checked+decoded but
+            // dockerfile passes through $application->fill() with no decode step.
             let dockerfile_content = std::fs::read_to_string(&dockerfile_path)
                 .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port));
-            let dockerfile_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, dockerfile_content.as_bytes());
 
             let mut payload = serde_json::json!({
                 "project_uuid": project_uuid,
@@ -2446,15 +2447,17 @@ pub async fn deploy_to_hosting(
                 "environment_name": "production",
                 "name": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
+                "build_pack": "dockerfile",
+                "dockerfile": dockerfile_content,
                 "ports_exposes": port.to_string(),
                 "base_directory": "/",
-                "dockerfile": dockerfile_b64,
+                "instant_deploy": true,
             });
 
-            // Attach custom domain if provided
+            // Attach custom domain (Coolify API uses "domains", not "fqdn")
             if let Some(ref domain) = req.domain {
                 if !domain.is_empty() {
-                    payload["fqdn"] = serde_json::Value::String(domain.clone());
+                    payload["domains"] = serde_json::Value::String(domain.clone());
                 }
             }
 
@@ -2482,16 +2485,9 @@ pub async fn deploy_to_hosting(
 
             let app_uuid = app["uuid"].as_str().unwrap_or("unknown");
 
-            // Trigger deployment
-            let deploy_url = format!("{}/api/v1/applications/{}/deploy", base, app_uuid);
-            let deploy_resp = client
-                .post(&deploy_url)
-                .header("Authorization", format!("Bearer {}", api_token))
-                .send()
-                .await
-                .map_err(|e| ApiError::Internal(format!("Deploy trigger failed: {}", e)))?;
-
-            let deploy_success = deploy_resp.status().is_success();
+            // With instant_deploy=true, Coolify queues deployment automatically.
+            // No separate deploy call needed.
+            let deploy_success = coolify_status.is_success();
 
             Ok(Json(serde_json::json!({
                 "success": true,
@@ -2505,7 +2501,39 @@ pub async fn deploy_to_hosting(
             })))
         }
         "dokploy" => {
-            // Fetch environments first (required for app creation)
+            // Step 1: Fetch servers (required for app creation)
+            let server_url = format!("{}/api/trpc/server.list", base);
+            let server_resp = client
+                .post(&server_url)
+                .header("x-api-key", &api_token)
+                .header("Content-Type", "application/json")
+                .json(&serde_json::json!({ "json": {} }))
+                .send()
+                .await;
+
+            let server_id = match server_resp {
+                Ok(resp) if resp.status().is_success() => {
+                    let data: serde_json::Value = resp.json().await.unwrap_or_default();
+                    let list = data["result"]["data"]["json"].as_array()
+                        .or_else(|| data["result"]["data"].as_array())
+                        .or_else(|| data["result"].as_array());
+                    list.and_then(|arr| arr.first())
+                        .and_then(|srv| srv["serverId"].as_str().or_else(|| srv["id"].as_str()))
+                        .map(|s| s.to_string())
+                }
+                Ok(resp) => {
+                    let status = resp.status().as_u16();
+                    let body = resp.text().await.unwrap_or_default();
+                    tracing::warn!("Dokploy server fetch failed (HTTP {}): {}", status, body);
+                    None
+                }
+                Err(e) => {
+                    tracing::warn!("Dokploy server fetch error: {}", e);
+                    None
+                }
+            };
+
+            // Step 2: Fetch environments — get environmentId + projectId
             let env_url = format!("{}/api/trpc/environment.list", base);
             let env_resp = client
                 .post(&env_url)
@@ -2515,49 +2543,103 @@ pub async fn deploy_to_hosting(
                 .send()
                 .await;
 
-            let env_id = match env_resp {
+            let (env_id, project_id) = match env_resp {
                 Ok(resp) if resp.status().is_success() => {
                     let env_data: serde_json::Value = resp.json().await.unwrap_or_default();
-                    // tRPC response: try result.data.json (array), then result.data (array)
                     let list = env_data["result"]["data"]["json"].as_array()
                         .or_else(|| env_data["result"]["data"].as_array())
                         .or_else(|| env_data["result"].as_array());
-                    list.and_then(|arr| arr.first())
-                        .and_then(|env| env["environmentId"].as_str().or_else(|| env["id"].as_str()))
-                        .map(|s| s.to_string())
+                    match list.and_then(|arr| arr.first()) {
+                        Some(env) => {
+                            let eid = env["environmentId"].as_str()
+                                .or_else(|| env["id"].as_str())
+                                .map(|s| s.to_string());
+                            let pid = env["projectId"].as_str()
+                                .or_else(|| env["project_id"].as_str())
+                                .map(|s| s.to_string());
+                            (eid, pid)
+                        }
+                        None => (None, None),
+                    }
                 }
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let body = resp.text().await.unwrap_or_default();
                     tracing::warn!("Dokploy environment fetch failed (HTTP {}): {}", status, body);
-                    None
+                    (None, None)
                 }
                 Err(e) => {
                     tracing::warn!("Dokploy environment fetch error: {}", e);
-                    None
+                    (None, None)
                 }
             };
 
-            // If no environment found, try to create a default one
-            let env_id = if env_id.is_none() {
-                let create_env_url = format!("{}/api/trpc/environment.create", base);
+            // Step 3: Get a projectId — from env list, or fetch projects, or create a default
+            let project_id = if let Some(ref pid) = project_id {
+                Some(pid.clone())
+            } else {
+                // Fetch projects
+                let proj_url = format!("{}/api/trpc/project.list", base);
                 match client
-                    .post(&create_env_url)
+                    .post(&proj_url)
                     .header("x-api-key", &api_token)
                     .header("Content-Type", "application/json")
-                    .json(&serde_json::json!({ "json": { "name": "production" } }))
+                    .json(&serde_json::json!({ "json": {} }))
                     .send()
                     .await
                 {
                     Ok(resp) if resp.status().is_success() => {
                         let data: serde_json::Value = resp.json().await.unwrap_or_default();
-                        data["result"]["data"]["json"]["environmentId"].as_str()
-                            .or_else(|| data["result"]["data"]["json"]["id"].as_str())
-                            .or_else(|| data["result"]["data"]["id"].as_str())
+                        let list = data["result"]["data"]["json"].as_array()
+                            .or_else(|| data["result"]["data"].as_array())
+                            .or_else(|| data["result"].as_array());
+                        list.and_then(|arr| arr.first())
+                            .and_then(|p| p["projectId"].as_str().or_else(|| p["id"].as_str()))
                             .map(|s| s.to_string())
                     }
                     Ok(resp) => {
-                        tracing::warn!("Dokploy environment create failed (HTTP {})", resp.status().as_u16());
+                        tracing::warn!("Dokploy project fetch failed (HTTP {})", resp.status().as_u16());
+                        None
+                    }
+                    Err(e) => {
+                        tracing::warn!("Dokploy project fetch error: {}", e);
+                        None
+                    }
+                }
+            };
+
+            // Step 4: If no environment found, create one with the projectId
+            let env_id = if env_id.is_none() {
+                let pid = match project_id {
+                    Some(ref p) => p.clone(),
+                    None => {
+                        return Err(ApiError::Config(
+                            "Dokploy deployment requires at least one project and one environment. Create a project in Dokploy first.".into(),
+                        ));
+                    }
+                };
+                let create_env_url = format!("{}/api/trpc/environment.create", base);
+                match client
+                    .post(&create_env_url)
+                    .header("x-api-key", &api_token)
+                    .header("Content-Type", "application/json")
+                    .json(&serde_json::json!({ "json": { "name": "production", "projectId": pid } }))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        let data: serde_json::Value = resp.json().await.unwrap_or_default();
+                        let created = data["result"]["data"]["json"]["environmentId"].as_str()
+                            .or_else(|| data["result"]["data"]["json"]["id"].as_str())
+                            .or_else(|| data["result"]["data"]["id"].as_str())
+                            .map(|s| s.to_string());
+                        tracing::info!("Auto-created Dokploy 'production' environment");
+                        created
+                    }
+                    Ok(resp) => {
+                        let status = resp.status().as_u16();
+                        let body = resp.text().await.unwrap_or_default();
+                        tracing::warn!("Dokploy environment create failed (HTTP {}): {}", status, body);
                         None
                     }
                     Err(e) => {
@@ -2569,21 +2651,37 @@ pub async fn deploy_to_hosting(
                 env_id
             };
 
-            // Build the application creation payload
+            // Step 5: Ensure we have all required IDs before building the payload
+            let env_id = match env_id {
+                Some(id) => id,
+                None => {
+                    return Err(ApiError::Config(
+                        "Could not determine a Dokploy environmentId. Verify your Dokploy instance has at least one environment.".into(),
+                    ));
+                }
+            };
+            let server_id = match server_id {
+                Some(id) => id,
+                None => {
+                    return Err(ApiError::Config(
+                        "Could not determine a Dokploy serverId. Verify your Dokploy instance has at least one server connected.".into(),
+                    ));
+                }
+            };
+
+            // Step 6: Build the application creation payload with ALL required fields
             let create_url = format!("{}/api/trpc/application.create", base);
-            
-            let mut app_input = serde_json::json!({
+
+            let app_input = serde_json::json!({
                 "name": req.app_name,
                 "appName": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
+                "environmentId": env_id,
+                "serverId": server_id,
                 "port": port,
                 "dockerfile": std::fs::read_to_string(&dockerfile_path)
                     .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port)),
             });
-
-            if let Some(ref id) = env_id {
-                app_input["environmentId"] = serde_json::Value::String(id.clone());
-            }
 
             // tRPC v10 format: wrap input in { "json": ... }
             let trpc_payload = serde_json::json!({ "json": app_input });
