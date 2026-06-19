@@ -21,4 +21,6 @@ build/
 
 # Reference examples (not part of Monastery)
 boltdiyexample/
+hermes-agent/
+openclaw/
 ```
