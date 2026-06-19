@@ -235,6 +235,9 @@ pub async fn chat_stream(
                     harness_core::ChunkType::Content => {
                         Ok(event)
                     }
+                    harness_core::ChunkType::FinishReason => {
+                        Ok(event.event("finish_reason"))
+                    }
                 }
             }
             Err(e) => {
@@ -243,7 +246,7 @@ pub async fn chat_stream(
             }
         }
     });
-    
+
     Sse::new(event_stream)
         .keep_alive(
             axum::response::sse::KeepAlive::new()
@@ -3116,6 +3119,7 @@ pub async fn run_agent(
                 match chunk.chunk_type {
                     harness_core::ChunkType::Reasoning => Ok(event.event("reasoning")),
                     harness_core::ChunkType::Content => Ok(event),
+                    harness_core::ChunkType::FinishReason => Ok(event.event("finish_reason")),
                 }
             }
             Err(e) => {

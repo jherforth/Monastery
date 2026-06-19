@@ -22,6 +22,9 @@ pub struct StreamChunk {
 pub enum ChunkType {
     Reasoning,
     Content,
+    /// Carries the finish_reason string ("stop", "length", etc.)
+    /// Emitted once at the end of a streaming response.
+    FinishReason,
 }
 
 /// Unified LLM client supporting multiple endpoints
@@ -200,6 +203,16 @@ impl LLMClient {
                                         chunks.push(StreamChunk {
                                             chunk_type: ChunkType::Content,
                                             content: text.to_string(),
+                                        });
+                                    }
+                                }
+                                // finish_reason is present on the final chunk ("stop", "length", etc.)
+                                // We emit it so the frontend can detect truncation and auto-continue.
+                                if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
+                                    if !reason.is_empty() {
+                                        chunks.push(StreamChunk {
+                                            chunk_type: ChunkType::FinishReason,
+                                            content: reason.to_string(),
                                         });
                                     }
                                 }

@@ -528,22 +528,6 @@ export default function App() {
       ];
       
       const modelId = availableModels[0]?.id || 'deepseek-chat';
-      const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: chatMessages }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => 'Unknown error');
-        console.error('Chat API returned', res.status, errText);
-        throw new Error(`Backend returned ${res.status}`);
-      }
-
-      // Read the response as a stream using the SSE protocol
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
 
       // Create placeholder immediately so the user sees streaming output in real-time
       const aiMsgId = (Date.now() + 1).toString();
@@ -556,18 +540,52 @@ export default function App() {
 
       let fullContent = '';
       let reasoningContent = '';
+      // Track what we send on each iteration; updated on auto-continuation
+      let pendingMessages = [...chatMessages];
+      const MAX_CONTINUATIONS = 4;
 
-      for await (const { eventType, data } of parseSSEStream(reader)) {
-        if (eventType === 'reasoning') {
-          reasoningContent += data;
-        } else {
-          fullContent += data;
+      for (let iter = 0; iter <= MAX_CONTINUATIONS; iter++) {
+        const iterRes = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages: pendingMessages }),
+          signal: controller.signal,
+        });
+
+        if (!iterRes.ok) {
+          const errText = await iterRes.text().catch(() => 'Unknown error');
+          console.error('Chat API returned', iterRes.status, errText);
+          throw new Error(`Backend returned ${iterRes.status}`);
         }
-        setMessages(prev => prev.map(m =>
-          m.id === aiMsgId
-            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
-            : m
-        ));
+
+        const iterReader = iterRes.body?.getReader();
+        if (!iterReader) throw new Error('No response body');
+
+        let finishReason = '';
+        for await (const { eventType, data } of parseSSEStream(iterReader)) {
+          if (eventType === 'finish_reason') {
+            finishReason = data;
+          } else if (eventType === 'reasoning') {
+            reasoningContent += data;
+          } else {
+            fullContent += data;
+          }
+          setMessages(prev => prev.map(m =>
+            m.id === aiMsgId
+              ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
+              : m
+          ));
+        }
+
+        // "stop" = finished naturally; "length" = hit max_tokens, auto-continue
+        if (finishReason !== 'length') break;
+
+        // Append the partial response + a "Continue" prompt so the LLM picks up mid-stream
+        pendingMessages = [
+          ...pendingMessages,
+          { role: 'assistant' as const, content: fullContent },
+          { role: 'user' as const, content: 'Continue' },
+        ];
       }
 
       if (fullContent || reasoningContent) {
