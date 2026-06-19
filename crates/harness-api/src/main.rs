@@ -123,6 +123,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/hosting/preview", post(handlers::preview_deploy))
         // Agent routes
         .route("/api/agents/run", post(handlers::run_agent))
+        // Hermes agent routes
+        .route("/api/hermes/connections", get(handlers::list_hermes_connections))
+        .route("/api/hermes/connections", post(handlers::create_hermes_connection))
+        .route("/api/hermes/connections/:id", delete(handlers::delete_hermes_connection))
+        .route("/api/hermes/connections/:id/test", post(handlers::test_hermes_connection))
+        .route("/api/hermes/connections/:id/default", post(handlers::set_default_hermes_connection))
+        .route("/api/hermes/run", post(handlers::hermes_agent_run))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 

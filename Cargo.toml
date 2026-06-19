@@ -60,6 +60,7 @@ base64 = "0.22"
 
 # Futures
 futures = "0.3"
+async-stream = "0.3"
 
 # mDNS discovery
 mdns-sd = "0.13"

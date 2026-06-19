@@ -57,3 +57,4 @@ chrono.workspace = true
 
 # Futures
 futures.workspace = true
+async-stream.workspace = true

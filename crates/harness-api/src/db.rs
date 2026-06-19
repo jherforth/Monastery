@@ -218,6 +218,23 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
-    
+
+    // Hermes agent connections table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS hermes_connections (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            is_default INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     Ok(pool)
 }

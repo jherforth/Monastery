@@ -3252,3 +3252,300 @@ pub async fn move_project_file(
     tracing::info!("Moved {} -> {}", req.source, req.destination);
     Ok(Json(serde_json::json!({ "success": true, "source": req.source, "destination": req.destination })))
 }
+
+// ============================================================
+// Hermes Agent Integration
+// ============================================================
+
+/// Request to create or update a Hermes connection
+#[derive(Debug, Deserialize)]
+pub struct HermesConnectionRequest {
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+
+/// List all Hermes agent connections
+pub async fn list_hermes_connections(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let rows = sqlx::query(
+        "SELECT id, name, base_url, api_key, is_default, created_at, last_used_at FROM hermes_connections ORDER BY created_at DESC"
+    )
+    .fetch_all(&*state.db)
+    .await?;
+
+    let connections: Vec<serde_json::Value> = rows.iter().map(|r| {
+        let is_default: i64 = r.get(4);
+        let last_used: Option<String> = r.get(6);
+        serde_json::json!({
+            "id": r.get::<String, _>(0),
+            "name": r.get::<String, _>(1),
+            "base_url": r.get::<String, _>(2),
+            "api_key": r.get::<String, _>(3),
+            "is_default": is_default != 0,
+            "created_at": r.get::<String, _>(5),
+            "last_used_at": last_used,
+        })
+    }).collect();
+
+    Ok(Json(serde_json::json!({ "connections": connections })))
+}
+
+/// Create a new Hermes agent connection
+pub async fn create_hermes_connection(
+    State(state): State<AppState>,
+    Json(req): Json<HermesConnectionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // If this is the first connection, make it default
+    let existing_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM hermes_connections")
+        .fetch_one(&*state.db)
+        .await?;
+    let is_default = if existing_count.0 == 0 { 1 } else { 0 };
+
+    sqlx::query(
+        "INSERT INTO hermes_connections (id, name, base_url, api_key, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .bind(&id)
+    .bind(&req.name)
+    .bind(&req.base_url)
+    .bind(&req.api_key)
+    .bind(is_default)
+    .bind(&now)
+    .execute(&*state.db)
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "name": req.name,
+        "base_url": req.base_url,
+        "is_default": is_default != 0,
+        "created_at": now,
+    })))
+}
+
+/// Delete a Hermes connection
+pub async fn delete_hermes_connection(
+    Path(connection_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = sqlx::query("DELETE FROM hermes_connections WHERE id = ?")
+        .bind(&connection_id)
+        .execute(&*state.db)
+        .await?;
+
+    if result.rows_affected() == 0 {
+        return Err(ApiError::NotFound("Connection not found".into()));
+    }
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Test a Hermes connection by calling its /v1/health or /v1/models endpoint
+pub async fn test_hermes_connection(
+    Path(connection_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let row = sqlx::query("SELECT base_url, api_key FROM hermes_connections WHERE id = ?")
+        .bind(&connection_id)
+        .fetch_optional(&*state.db)
+        .await?;
+
+    let (base_url, api_key) = match row {
+        Some(r) => (
+            r.get::<String, _>(0),
+            r.get::<String, _>(1),
+        ),
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+
+    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await;
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            // Update last_used_at
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = sqlx::query("UPDATE hermes_connections SET last_used_at = ? WHERE id = ?")
+                .bind(&now)
+                .bind(&connection_id)
+                .execute(&*state.db)
+                .await;
+
+            Ok(Json(serde_json::json!({ "success": true, "status": r.status().as_u16() })))
+        }
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let body = r.text().await.unwrap_or_default();
+            Ok(Json(serde_json::json!({ "success": false, "status": status, "error": body })))
+        }
+        Err(e) => {
+            Ok(Json(serde_json::json!({ "success": false, "status": 0, "error": e.to_string() })))
+        }
+    }
+}
+
+/// Set a Hermes connection as the default
+pub async fn set_default_hermes_connection(
+    Path(connection_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // Verify connection exists
+    let exists = sqlx::query("SELECT 1 FROM hermes_connections WHERE id = ?")
+        .bind(&connection_id)
+        .fetch_optional(&*state.db)
+        .await?;
+    if exists.is_none() {
+        return Err(ApiError::NotFound("Connection not found".into()));
+    }
+
+    // Clear existing default
+    sqlx::query("UPDATE hermes_connections SET is_default = 0")
+        .execute(&*state.db)
+        .await?;
+
+    // Set new default
+    sqlx::query("UPDATE hermes_connections SET is_default = 1 WHERE id = ?")
+        .bind(&connection_id)
+        .execute(&*state.db)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "success": true })))
+}
+
+/// Request body for Hermes agent run
+#[derive(Debug, Deserialize)]
+pub struct HermesRunRequest {
+    pub task: String,
+    pub project_path: Option<String>,
+    pub model: Option<String>,
+}
+
+/// Proxy a task to Hermes agent via SSE streaming
+/// Uses the default Hermes connection to POST /v1/chat/completions
+pub async fn hermes_agent_run(
+    State(state): State<AppState>,
+    Json(req): Json<HermesRunRequest>,
+) -> Result<Response, ApiError> {
+    use axum::response::sse::{Event, Sse};
+    use futures::stream::Stream;
+
+    let row = sqlx::query(
+        "SELECT base_url, api_key FROM hermes_connections WHERE is_default = 1 LIMIT 1"
+    )
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let (base_url, api_key) = match row {
+        Some(r) => (r.get::<String, _>(0), r.get::<String, _>(1)),
+        None => {
+            return Err(ApiError::Config(
+                "No default Hermes connection configured. Add one in Settings → Hermes.".into(),
+            ));
+        }
+    };
+
+    // Build the chat completion request for Hermes /v1/chat/completions
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    messages.push(serde_json::json!({
+        "role": "system",
+        "content": "You are a coding assistant. Write clean, working code. When creating files, output them as code blocks with the filename as a heading."
+    }));
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": req.task,
+    }));
+
+    let mut body = serde_json::json!({
+        "messages": messages,
+        "stream": true,
+    });
+
+    if let Some(ref model) = req.model {
+        body["model"] = serde_json::json!(model);
+    }
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
+
+    let resp = client
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Hermes API request failed: {}", e)))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ApiError::Internal(format!("Hermes API error {}: {}", status, text)));
+    }
+
+    // Update last_used_at on the default connection
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE hermes_connections SET last_used_at = ? WHERE is_default = 1")
+        .bind(&now)
+        .execute(&*state.db)
+        .await;
+
+    // Stream the response back as SSE
+    let stream = resp.bytes_stream();
+    let sse_stream = async_stream::stream! {
+        use futures::StreamExt;
+
+        let mut buffer = Vec::new();
+        tokio::pin!(stream);
+
+        while let Some(chunk) = stream.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    buffer.extend_from_slice(&bytes);
+                    // Emit complete lines
+                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                        let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
+                        // strip trailing newline
+                        let line = String::from_utf8_lossy(&line_bytes[..line_bytes.len() - 1]);
+                        if line.starts_with("data: ") {
+                            yield Ok(Event::default().data(line[6..].to_string()));
+                        } else if line.starts_with("data:") {
+                            yield Ok(Event::default().data(line[5..].to_string()));
+                        } else if !line.is_empty() {
+                            yield Ok(Event::default().comment(line.to_string()));
+                        }
+                    }
+                }
+                Err(e) => {
+                    yield Ok(Event::default().data(format!("{{\"error\": \"Stream error: {}\"}}", e)));
+                    break;
+                }
+            }
+        }
+        // Flush remaining buffer
+        if !buffer.is_empty() {
+            let line = String::from_utf8_lossy(&buffer);
+            if line.starts_with("data: ") {
+                yield Ok(Event::default().data(line[6..].to_string()));
+            } else if line.starts_with("data:") {
+                yield Ok(Event::default().data(line[5..].to_string()));
+            }
+        }
+        // Signal done
+        yield Ok(Event::default().data("[DONE]"));
+    };
+
+    Ok(Sse::new(sse_stream).into_response())
+}

@@ -49,7 +49,7 @@ export default function App() {
   } = useSessions(currentProject?.id ?? null);
 
   // Agent system
-  const { runAgent, getAgent } = useAgents();
+  const { runAgent, getAgent, editorPrompts } = useAgents();
 
   // Shared agent trigger — used by both ChatPane quick-actions and editor toolbar
   const triggerAgent = useCallback(async (agentId: string, task: string) => {
@@ -819,7 +819,9 @@ export default function App() {
                       <button
                         onClick={() => {
                           if (!currentFile) return;
-                          triggerAgent('reviewer', `Explain this code in detail:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``);
+                          const prompt = editorPrompts.reviewer?.(currentFile, editorContent)
+                            ?? `Explain this code in detail:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
+                          triggerAgent('reviewer', prompt);
                         }}
                         disabled={!currentFile}
                         className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
@@ -829,7 +831,9 @@ export default function App() {
                       <button
                         onClick={() => {
                           if (!currentFile) return;
-                          triggerAgent('coder', `Refactor this code for better patterns, readability, and performance:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``);
+                          const prompt = editorPrompts.coder?.(currentFile, editorContent)
+                            ?? `Refactor this code for better patterns, readability, and performance:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
+                          triggerAgent('coder', prompt);
                         }}
                         disabled={!currentFile}
                         className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
@@ -839,7 +843,9 @@ export default function App() {
                       <button
                         onClick={() => {
                           if (!currentFile) return;
-                          triggerAgent('tester', `Write comprehensive unit and integration tests for this code:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``);
+                          const prompt = editorPrompts.tester?.(currentFile, editorContent)
+                            ?? `Write comprehensive unit and integration tests for this code:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
+                          triggerAgent('tester', prompt);
                         }}
                         disabled={!currentFile}
                         className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"

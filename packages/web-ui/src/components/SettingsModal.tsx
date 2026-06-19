@@ -2,15 +2,16 @@ import { useState } from 'react';
 import { useEndpoints, EndpointConfig } from '../hooks/useEndpoints';
 import { GitForgeSetup } from './GitForgeSetup';
 import { HostingServicesTab } from './HostingServicesTab';
+import { useHermesAgent } from '../hooks/useHermesAgent';
 import { useAppStore } from '../store/useAppStore';
-import { Cpu, GitBranch, Server } from 'lucide-react';
+import { Cpu, GitBranch, Server, Bot, Trash2, Wifi, Star } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-type SettingsTab = 'llm' | 'git' | 'hosting';
+type SettingsTab = 'llm' | 'git' | 'hosting' | 'hermes';
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const { endpoints, isLoading, addEndpoint, deleteEndpoint, testEndpoint, mutate } = useEndpoints();
@@ -23,6 +24,21 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { is_healthy: boolean; message: string }>>({});
   const [activeTab, setActiveTab] = useState<SettingsTab>('llm');
+
+  // Hermes connection state
+  const {
+    connections: hermesConnections,
+    defaultConnection: hermesDefault,
+    isLoading: hermesLoading,
+    createConnection: createHermes,
+    deleteConnection: deleteHermes,
+    testConnection: testHermes,
+    setDefault: setHermesDefault,
+  } = useHermesAgent();
+  const [newHermes, setNewHermes] = useState({ name: '', base_url: '', api_key: '' });
+  const [hermesTestingId, setHermesTestingId] = useState<string | null>(null);
+  const [hermesTestResults, setHermesTestResults] = useState<Record<string, { success: boolean; status: number; error?: string }>>({});
+  const [hermesError, setHermesError] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
@@ -119,6 +135,17 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             >
               <Server className="w-4 h-4" />
               Hosting Services
+            </button>
+            <button
+              onClick={() => setActiveTab('hermes')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                activeTab === 'hermes'
+                  ? 'bg-monastery-dark-surface text-monastery-text-primary'
+                  : 'text-monastery-text-secondary hover:text-monastery-text-primary'
+              }`}
+            >
+              <Bot className="w-4 h-4" />
+              Hermes Agent
             </button>
           </div>
         </div>
@@ -250,6 +277,183 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
             </>
           ) : activeTab === 'hosting' ? (
             <HostingServicesTab />
+          ) : activeTab === 'hermes' ? (
+            <>
+              {/* Add New Hermes Connection */}
+              <form onSubmit={async (e) => {
+                e.preventDefault();
+                setHermesError(null);
+                try {
+                  await createHermes(newHermes.name, newHermes.base_url, newHermes.api_key);
+                  setNewHermes({ name: '', base_url: '', api_key: '' });
+                } catch (err: any) {
+                  setHermesError(err.message || 'Failed to add connection');
+                }
+              }} className="mb-8">
+                <h3 className="text-lg font-medium text-monastery-text-primary mb-4">Connect Hermes Agent</h3>
+                <p className="text-sm text-monastery-text-secondary mb-4">
+                  Point Monastery at your Hermes agent's REST API. Hermes handles the agent loop, tools,
+                  and sub-agents — Monastery provides the project context and file surface.
+                </p>
+
+                {hermesError && (
+                  <div className="mb-4 p-3 bg-red-400/10 border border-red-400/20 rounded text-sm text-red-400">
+                    {hermesError}
+                  </div>
+                )}
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-monastery-text-secondary mb-1">
+                      Name
+                    </label>
+                    <input
+                      type="text"
+                      value={newHermes.name}
+                      onChange={e => setNewHermes(prev => ({ ...prev, name: e.target.value }))}
+                      placeholder="e.g., Home Lab Hermes"
+                      className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-md text-monastery-text-primary focus:outline-none focus:border-monastery-lantern"
+                      required
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-monastery-text-secondary mb-1">
+                      Base URL
+                    </label>
+                    <input
+                      type="url"
+                      value={newHermes.base_url}
+                      onChange={e => setNewHermes(prev => ({ ...prev, base_url: e.target.value }))}
+                      placeholder="http://localhost:8642"
+                      className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-md text-monastery-text-primary focus:outline-none focus:border-monastery-lantern"
+                      required
+                    />
+                    <p className="text-xs text-monastery-text-secondary mt-1">
+                      Hermes REST API runs on port 8642 by default. Use host.docker.internal for Docker.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-monastery-text-secondary mb-1">
+                      API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={newHermes.api_key}
+                      onChange={e => setNewHermes(prev => ({ ...prev, api_key: e.target.value }))}
+                      placeholder="hermes-api-key-..."
+                      className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-md text-monastery-text-primary focus:outline-none focus:border-monastery-lantern"
+                      required
+                    />
+                    <p className="text-xs text-monastery-text-secondary mt-1">
+                      Your Hermes API key from <code className="text-monastery-lantern">~/.hermes/.env</code> or config.
+                    </p>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-monastery-lantern text-monastery-dark-bg rounded-md font-medium hover:opacity-90 transition-opacity"
+                  >
+                    Connect Hermes
+                  </button>
+                </div>
+              </form>
+
+              {/* Existing Hermes Connections */}
+              <div>
+                <h3 className="text-lg font-medium text-monastery-text-primary mb-4">Connected Agents</h3>
+
+                {hermesLoading ? (
+                  <div className="text-center py-8 text-monastery-text-secondary">Loading...</div>
+                ) : hermesConnections.length === 0 ? (
+                  <div className="text-center py-8 text-monastery-text-secondary">
+                    No Hermes connections yet. Add one above.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {hermesConnections.map((conn) => (
+                      <div
+                        key={conn.id}
+                        className="p-4 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-medium text-monastery-text-primary">{conn.name}</h4>
+                              {conn.is_default && (
+                                <span className="px-2 py-0.5 text-xs bg-monastery-lantern/20 text-monastery-lantern rounded">
+                                  Default
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-sm text-monastery-text-secondary mt-1">{conn.base_url}</p>
+                            {conn.last_used_at && (
+                              <p className="text-xs text-monastery-text-muted mt-1">
+                                Last used: {new Date(conn.last_used_at).toLocaleString()}
+                              </p>
+                            )}
+
+                            {hermesTestResults[conn.id] !== undefined && (
+                              <div className={`mt-2 p-2 rounded text-xs ${
+                                hermesTestResults[conn.id].success
+                                  ? 'bg-green-400/10 text-green-400'
+                                  : 'bg-red-400/10 text-red-400'
+                              }`}>
+                                {hermesTestResults[conn.id].success
+                                  ? '✓ Connection successful'
+                                  : `✗ ${hermesTestResults[conn.id].error || `HTTP ${hermesTestResults[conn.id].status}`}`}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {!conn.is_default && (
+                              <button
+                                onClick={() => setHermesDefault(conn.id)}
+                                className="px-2 py-1.5 text-xs bg-monastery-dark-tertiary text-monastery-text-secondary rounded hover:text-monastery-lantern transition-colors"
+                                title="Set as default"
+                              >
+                                <Star className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            <button
+                              onClick={async () => {
+                                setHermesTestingId(conn.id);
+                                try {
+                                  const result = await testHermes(conn.id);
+                                  setHermesTestResults(prev => ({ ...prev, [conn.id]: result }));
+                                } catch (err: any) {
+                                  setHermesTestResults(prev => ({
+                                    ...prev,
+                                    [conn.id]: { success: false, status: 0, error: err.message },
+                                  }));
+                                } finally {
+                                  setHermesTestingId(null);
+                                }
+                              }}
+                              disabled={hermesTestingId === conn.id}
+                              className="px-3 py-1.5 text-sm bg-monastery-dark-tertiary text-monastery-text-primary rounded hover:bg-monastery-lantern hover:text-monastery-dark-bg transition-colors disabled:opacity-50"
+                            >
+                              <Wifi className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={async () => {
+                                if (!confirm(`Delete Hermes connection "${conn.name}"?`)) return;
+                                await deleteHermes(conn.id);
+                              }}
+                              className="px-2 py-1.5 text-xs text-red-500 hover:bg-red-500/10 rounded transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
           ) : (
             <GitForgeSetup />
           )}
