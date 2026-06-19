@@ -2208,6 +2208,7 @@ pub async fn test_hosting_connection(
 // ============================================================
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct DeployRequest {
     pub connection_id: uuid::Uuid,
     pub project_id: uuid::Uuid,
@@ -2228,6 +2229,7 @@ pub(crate) struct DeployRequest {
 
 /// Preview generated deploy files without actually deploying
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub(crate) struct PreviewDeployRequest {
     pub project_id: uuid::Uuid,
     #[serde(default)]
@@ -2438,7 +2440,7 @@ pub async fn deploy_to_hosting(
                 .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port));
             let dockerfile_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, dockerfile_content.as_bytes());
 
-            let payload = serde_json::json!({
+            let mut payload = serde_json::json!({
                 "project_uuid": project_uuid,
                 "server_uuid": server_uuid,
                 "environment_name": "production",
@@ -2448,6 +2450,13 @@ pub async fn deploy_to_hosting(
                 "base_directory": "/",
                 "dockerfile": dockerfile_b64,
             });
+
+            // Attach custom domain if provided
+            if let Some(ref domain) = req.domain {
+                if !domain.is_empty() {
+                    payload["fqdn"] = serde_json::Value::String(domain.clone());
+                }
+            }
 
             let resp = client
                 .post(&create_url)
