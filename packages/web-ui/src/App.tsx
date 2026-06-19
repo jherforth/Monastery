@@ -560,25 +560,31 @@ export default function App() {
 
       // Auto-apply code blocks and shell commands to files
       if (currentProject?.id) {
-          const writes: Promise<void>[] = [];
+          const writes: Promise<{ path: string; ok: boolean; error?: string }>[] = [];
           const modifiedFiles: string[] = [];
           
-          // --- Enhanced code block parser (patterns from bolt.diy) ---
+          // --- Code block parser ---
+          // Matches code fences where the opening line specifies a file:
+          //   ```language:path/to/file
+          //   ```language : path/to/file   (spaces around colon)
+          //
+          // Closing ``` must be on its own line (standard Markdown).
+          // Uses greedy match to the LAST closing fence on its own line.
+
+          // Pattern 1: language:path/to/file on the opening fence line
+          const pattern1 = /```(\w*)\s*:\s*(\S+)\s*\n([\s\S]*?)\n```/gm;
           
-          // Pattern 1: language:path/to/file (original + with optional spaces)
-          const pattern1 = /```(\w+)?\s*:\s*(\S+)\s*\n([\s\S]*?)```/g;
+          // Pattern 2: file path on line immediately before code block
+          const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)\n```/gm;
           
-          // Pattern 2: file path on line before code block
-          const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)```/gm;
+          // Pattern 3: natural language "create/update file X" followed by code block
+          const pattern3 = /(?:create|update|modify|edit|write|add|generate)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:called\s+)?[`'"]*([\/\w\-\.]+\.\w+)[`'"]*:?\s*\n+```(\w*)\n([\s\S]*?)\n```/gi;
           
-          // Pattern 3: create/update/modify/write file language
-          const pattern3 = /(?:create|update|modify|edit|write|add|generate)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:called\s+)?[`'"]*([\/\w\-\.]+\.\w+)[`'"]*:?\s*\n+```(\w*)\n([\s\S]*?)```/gi;
+          // Pattern 4: file comment on first line inside code block
+          const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)\n```/gi;
           
-          // Pattern 4: file comment inside code block
-          const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)```/gi;
-          
-          // Pattern 5: filename heading (### or **) followed by code block
-          const pattern5 = /(?:^|\n)(?:#{1,3}\s*|(?:\*\*)(.+?)(?:\*\*)\s*\n)(?:File:?\s*)?([\/\w\-\.]+\.\w+)\s*\n+```(\w*)\n([\s\S]*?)```/gmi;
+          // Pattern 5: ### filename heading or **filename** followed by code block
+          const pattern5 = /(?:^|\n)(?:#{1,3}\s*|(?:\*\*)(.+?)(?:\*\*)\s*\n)(?:File:?\s*)?([\/\w\-\.]+\.\w+)\s*\n+```(\w*)\n([\s\S]*?)\n```/gmi;
           
           const allPatterns = [pattern1, pattern2, pattern3, pattern4, pattern5];
           const seenPaths = new Set<string>();
@@ -614,6 +620,8 @@ export default function App() {
               if (lang === 'diff') continue;
               
               const cleanCode = code.trimEnd() + '\n';
+              if (!cleanCode.trim()) continue; // skip empty blocks
+              
               modifiedFiles.push(filePath);
               
               writes.push(
@@ -621,15 +629,26 @@ export default function App() {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ path: filePath, content: cleanCode }),
-                }).then(r => {
-                  if (!r.ok) console.error(`Failed to write ${filePath}`);
-                }).catch(e => console.error(`Write error for ${filePath}:`, e))
+                }).then(async r => {
+                  if (!r.ok) {
+                    const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+                    const msg = typeof err === 'object' && err !== null && 'error' in err
+                      ? String(err.error) : `HTTP ${r.status}`;
+                    console.error(`Failed to write ${filePath}: ${msg}`);
+                    return { path: filePath, ok: false, error: msg };
+                  }
+                  console.log(`Wrote ${filePath} (${cleanCode.length} bytes)`);
+                  return { path: filePath, ok: true };
+                }).catch(e => {
+                  console.error(`Write error for ${filePath}:`, e);
+                  return { path: filePath, ok: false, error: String(e) };
+                })
               );
             }
           }
           
           // --- Shell command detection ---
-          const shellRegex = /```(?:shell|bash|sh|zsh)\s*\n([\s\S]*?)```/gi;
+          const shellRegex = /```(?:shell|bash|sh|zsh)\s*\n([\s\S]*?)\n```/gi;
           let shellMatch;
           const shellCommands: string[] = [];
           while ((shellMatch = shellRegex.exec(fullContent)) !== null) {
@@ -653,15 +672,38 @@ export default function App() {
           }
           
           if (writes.length > 0) {
-            Promise.all(writes).then(() => {
+            Promise.all(writes).then((results) => {
+              // Refresh open file if it was modified
               if (currentFile) {
                 fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`)
                   .then(r => r.ok ? r.json() : null)
                   .then(data => { if (data?.content) updateTabContentByPath(currentFile, data.content); })
                   .catch(() => {});
               }
+              // Refresh file tree
               fetch(`/api/projects/${currentProject.id}/files`)
                 .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
+
+              // Feedback: add a system note showing which files were written
+              const okFiles = results.filter(r => r.ok).map(r => r.path);
+              const failFiles = results.filter(r => !r.ok);
+              if (okFiles.length > 0 || failFiles.length > 0) {
+                let note = '';
+                if (okFiles.length > 0) {
+                  note += `✅ Wrote **${okFiles.length}** file${okFiles.length > 1 ? 's' : ''}: ${okFiles.map(f => `\`${f}\``).join(', ')}`;
+                }
+                if (failFiles.length > 0) {
+                  note += (note ? '\n\n' : '') + `❌ Failed **${failFiles.length}** file${failFiles.length > 1 ? 's' : ''}: ${failFiles.map(f => `\`${f.path}\` (${f.error})`).join(', ')}`;
+                }
+                if (note) {
+                  setMessages(prev => [...prev, {
+                    id: `write-feedback-${Date.now()}`,
+                    role: 'system' as const,
+                    content: note,
+                    timestamp: Date.now(),
+                  }]);
+                }
+              }
             });
           }
         }

@@ -149,61 +149,70 @@ export function ChatPane({
 
   // Render message content with markdown and code blocks
   const renderContent = (content: string) => {
-    const parts = content.split(/(```[\s\S]*?```)/g);
+    // Split on complete code blocks (opening + closing fence).
+    // Also match unclosed blocks (streaming in progress or truncated).
+    const parts = content.split(/(```[\s\S]*?```|```[^\n]*\n[\s\S]*$)/g);
     let codeBlockIndex = -1;
     
     return parts.map((part, i) => {
-      if (part.startsWith('```') && part.endsWith('```')) {
-        codeBlockIndex++;
-        const ci = codeBlockIndex;
-        const lines = part.split('\n');
-        const lang = lines[0].replace('```', '').trim();
-        const code = lines.slice(1, -1).join('\n');
-
-        // Color-code diff blocks
-        const isDiff = lang === 'diff';
-        const diffLines = isDiff ? code.split('\n') : null;
-        
+      if (!part?.startsWith('```')) {
+        // Plain text / markdown
         return (
-          <div key={i} className="mt-2 mb-2 rounded-lg overflow-hidden border border-monastery-dark-border">
-            <div className="flex items-center justify-between px-3 py-1.5 bg-monastery-dark-tertiary">
-              <span className="text-xs text-monastery-text-muted">{lang || 'code'}</span>
-              <button
-                onClick={() => copyToClipboard(code, ci)}
-                className="flex items-center gap-1 px-2 py-0.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-bg rounded transition-colors"
-              >
-                {copiedIndex === ci ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-                {copiedIndex === ci ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-            <pre className="p-3 bg-monastery-dark-bg overflow-x-auto overflow-y-auto max-h-80">
-              {isDiff ? (
-                <code className="text-xs font-mono block">
-                  {diffLines!.map((line, li) => (
-                    <span
-                      key={li}
-                      className={
-                        line.startsWith('+') && !line.startsWith('+++') ? 'text-green-400 block' :
-                        line.startsWith('-') && !line.startsWith('---') ? 'text-red-400 block' :
-                        line.startsWith('@@') ? 'text-monastery-lantern block' :
-                        'text-monastery-text-secondary block'
-                      }
-                    >
-                      {line}
-                    </span>
-                  ))}
-                </code>
-              ) : (
-                <code className="text-xs font-mono text-monastery-text-primary">{code}</code>
-              )}
-            </pre>
+          <div key={i} className="whitespace-pre-wrap text-sm leading-relaxed">
+            {renderInline(part || '')}
           </div>
         );
       }
-      // Render markdown-like paragraphs
+      
+      codeBlockIndex++;
+      const ci = codeBlockIndex;
+      const lines = part.split('\n');
+      const lang = lines[0].replace('```', '').trim();
+      // If the block is unclosed, the last line won't be ```
+      const isUnclosed = !lines[lines.length - 1].trim().startsWith('```');
+      const codeLines = isUnclosed ? lines.slice(1) : lines.slice(1, -1);
+      const code = codeLines.join('\n');
+
+      // Color-code diff blocks
+      const isDiff = lang === 'diff';
+      const diffLines = isDiff ? code.split('\n') : null;
+      
       return (
-        <div key={i} className="whitespace-pre-wrap text-sm leading-relaxed">
-          {renderInline(part)}
+        <div key={i} className="mt-2 mb-2 rounded-lg overflow-hidden border border-monastery-dark-border">
+          <div className="flex items-center justify-between px-3 py-1.5 bg-monastery-dark-tertiary">
+            <span className="text-xs text-monastery-text-muted">{lang || 'code'}</span>
+            <button
+              onClick={() => copyToClipboard(code, ci)}
+              className="flex items-center gap-1 px-2 py-0.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-bg rounded transition-colors"
+            >
+              {copiedIndex === ci ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+              {copiedIndex === ci ? 'Copied' : 'Copy'}
+            </button>
+          </div>
+          <pre className="p-3 bg-monastery-dark-bg overflow-x-auto overflow-y-auto max-h-80">
+            {isDiff ? (
+              <code className="text-xs font-mono block">
+                {diffLines!.map((line, li) => (
+                  <span
+                    key={li}
+                    className={
+                      line.startsWith('+') && !line.startsWith('+++') ? 'text-green-400 block' :
+                      line.startsWith('-') && !line.startsWith('---') ? 'text-red-400 block' :
+                      line.startsWith('@@') ? 'text-monastery-lantern block' :
+                      'text-monastery-text-secondary block'
+                    }
+                  >
+                    {line}
+                  </span>
+                ))}
+              </code>
+            ) : (
+              <code className="text-xs font-mono text-monastery-text-primary">
+                {code}
+                {isUnclosed && <span className="text-monastery-text-muted animate-pulse">▊</span>}
+              </code>
+            )}
+          </pre>
         </div>
       );
     });
