@@ -172,7 +172,7 @@ export function ChatPane({
                 {copiedIndex === ci ? 'Copied' : 'Copy'}
               </button>
             </div>
-            <pre className="p-3 bg-monastery-dark-bg overflow-x-auto overflow-y-auto max-h-64">
+            <pre className="p-3 bg-monastery-dark-bg overflow-x-auto overflow-y-auto max-h-80">
               <code className="text-xs font-mono text-monastery-text-primary">{code}</code>
             </pre>
           </div>

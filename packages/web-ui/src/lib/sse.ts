@@ -19,9 +19,10 @@ export async function* parseSSEStream(
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
+    
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+    }
 
     // SSE events are separated by double newlines
     const events = buffer.split('\n\n');
@@ -29,19 +30,18 @@ export async function* parseSSEStream(
     buffer = events.pop() || '';
 
     for (const event of events) {
+      if (!event.trim()) continue;
+      
       const lines = event.split('\n');
       let eventType = '';
       const dataLines: string[] = [];
 
       for (const line of lines) {
-        // Handle "event: ..." lines
         if (line.startsWith('event: ')) {
           eventType = line.slice(7).trim();
         } else if (line.startsWith('event:')) {
           eventType = line.slice(6).trim();
-        }
-        // Handle "data: ..." lines (SSE spec: strip at most one space after colon)
-        else if (line.startsWith('data: ')) {
+        } else if (line.startsWith('data: ')) {
           const c = line.slice(6);
           if (c !== '[DONE]') dataLines.push(c);
         } else if (line.startsWith('data:')) {
@@ -53,6 +53,27 @@ export async function* parseSSEStream(
       if (dataLines.length > 0) {
         yield { eventType, data: dataLines.join('\n') };
       }
+    }
+
+    if (done) {
+      // Flush any remaining data in the buffer (final incomplete event)
+      if (buffer.trim()) {
+        const lines = buffer.split('\n');
+        const dataLines: string[] = [];
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const c = line.slice(6);
+            if (c !== '[DONE]') dataLines.push(c);
+          } else if (line.startsWith('data:')) {
+            const c = line.slice(5);
+            if (c !== '[DONE]') dataLines.push(c.startsWith(' ') ? c.slice(1) : c);
+          }
+        }
+        if (dataLines.length > 0) {
+          yield { eventType: '', data: dataLines.join('\n') };
+        }
+      }
+      break;
     }
   }
 }

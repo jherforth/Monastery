@@ -565,8 +565,8 @@ export default function App() {
           
           // --- Enhanced code block parser (patterns from bolt.diy) ---
           
-          // Pattern 1: language:path/to/file (original)
-          const pattern1 = /```(\w+)?:(\S+)\s*\n([\s\S]*?)```/g;
+          // Pattern 1: language:path/to/file (original + with optional spaces)
+          const pattern1 = /```(\w+)?\s*:\s*(\S+)\s*\n([\s\S]*?)```/g;
           
           // Pattern 2: file path on line before code block
           const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)```/gm;
@@ -577,7 +577,10 @@ export default function App() {
           // Pattern 4: file comment inside code block
           const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)```/gi;
           
-          const allPatterns = [pattern1, pattern2, pattern3, pattern4];
+          // Pattern 5: filename heading (### or **) followed by code block
+          const pattern5 = /(?:^|\n)(?:#{1,3}\s*|(?:\*\*)(.+?)(?:\*\*)\s*\n)(?:File:?\s*)?([\/\w\-\.]+\.\w+)\s*\n+```(\w*)\n([\s\S]*?)```/gmi;
+          
+          const allPatterns = [pattern1, pattern2, pattern3, pattern4, pattern5];
           const seenPaths = new Set<string>();
           
           for (const pattern of allPatterns) {
@@ -593,6 +596,9 @@ export default function App() {
               } else if (pattern === pattern4) {
                 filePath = match[2];
                 code = match[3];
+              } else if (pattern === pattern5) {
+                filePath = match[2];
+                code = match[4];
               } else {
                 filePath = match[1];
                 code = match[3];
