@@ -2433,6 +2433,11 @@ pub async fn deploy_to_hosting(
             // Create a Dockerfile-based application on Coolify
             let create_url = format!("{}/api/v1/applications/dockerfile", base);
             
+            // Read and base64-encode the Dockerfile (required by Coolify API)
+            let dockerfile_content = std::fs::read_to_string(&dockerfile_path)
+                .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port));
+            let dockerfile_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, dockerfile_content.as_bytes());
+
             let payload = serde_json::json!({
                 "project_uuid": project_uuid,
                 "server_uuid": server_uuid,
@@ -2441,8 +2446,7 @@ pub async fn deploy_to_hosting(
                 "description": format!("Deployed from Monastery — project: {}", project_name),
                 "ports_exposes": port.to_string(),
                 "base_directory": "/",
-                "dockerfile": std::fs::read_to_string(&dockerfile_path)
-                    .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port)),
+                "dockerfile": dockerfile_b64,
             });
 
             let resp = client
@@ -2492,10 +2496,32 @@ pub async fn deploy_to_hosting(
             })))
         }
         "dokploy" => {
+            // Fetch environments first (required for app creation)
+            let env_url = format!("{}/api/trpc/environment.list", base);
+            let env_resp = client
+                .post(&env_url)
+                .header("x-api-key", &api_token)
+                .header("Content-Type", "application/json")
+                .json(&serde_json::json!({ "json": {} }))
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch Dokploy environments: {}", e)))?;
+
+            let env_id = if env_resp.status().is_success() {
+                let env_data: serde_json::Value = env_resp.json().await.unwrap_or_default();
+                env_data["result"]["data"]["json"]
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|env| env["environmentId"].as_str().or_else(|| env["id"].as_str()))
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+
             // Dokploy: use tRPC endpoint for application creation
             let create_url = format!("{}/api/trpc/application.create", base);
             
-            let app_input = serde_json::json!({
+            let mut app_input = serde_json::json!({
                 "name": req.app_name,
                 "appName": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
@@ -2503,6 +2529,10 @@ pub async fn deploy_to_hosting(
                 "dockerfile": std::fs::read_to_string(&dockerfile_path)
                     .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port)),
             });
+
+            if let Some(ref id) = env_id {
+                app_input["environmentId"] = serde_json::Value::String(id.clone());
+            }
 
             // tRPC v10 format: wrap input in { "json": ... }
             let trpc_payload = serde_json::json!({ "json": app_input });
