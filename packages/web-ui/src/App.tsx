@@ -606,6 +606,12 @@ export default function App() {
               
               if (!filePath || seenPaths.has(filePath)) continue;
               seenPaths.add(filePath);
+
+              // Skip writing raw diff output — diffs should be applied, not stored as file content
+              const lang = (pattern === pattern1 || pattern === pattern4) ? match[1]?.toLowerCase()
+                : (pattern === pattern5) ? match[3]?.toLowerCase()
+                : match[2]?.toLowerCase();
+              if (lang === 'diff') continue;
               
               const cleanCode = code.trimEnd() + '\n';
               modifiedFiles.push(filePath);

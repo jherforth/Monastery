@@ -159,6 +159,10 @@ export function ChatPane({
         const lines = part.split('\n');
         const lang = lines[0].replace('```', '').trim();
         const code = lines.slice(1, -1).join('\n');
+
+        // Color-code diff blocks
+        const isDiff = lang === 'diff';
+        const diffLines = isDiff ? code.split('\n') : null;
         
         return (
           <div key={i} className="mt-2 mb-2 rounded-lg overflow-hidden border border-monastery-dark-border">
@@ -173,7 +177,25 @@ export function ChatPane({
               </button>
             </div>
             <pre className="p-3 bg-monastery-dark-bg overflow-x-auto overflow-y-auto max-h-80">
-              <code className="text-xs font-mono text-monastery-text-primary">{code}</code>
+              {isDiff ? (
+                <code className="text-xs font-mono block">
+                  {diffLines!.map((line, li) => (
+                    <span
+                      key={li}
+                      className={
+                        line.startsWith('+') && !line.startsWith('+++') ? 'text-green-400 block' :
+                        line.startsWith('-') && !line.startsWith('---') ? 'text-red-400 block' :
+                        line.startsWith('@@') ? 'text-monastery-lantern block' :
+                        'text-monastery-text-secondary block'
+                      }
+                    >
+                      {line}
+                    </span>
+                  ))}
+                </code>
+              ) : (
+                <code className="text-xs font-mono text-monastery-text-primary">{code}</code>
+              )}
             </pre>
           </div>
         );
