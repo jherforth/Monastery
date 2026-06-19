@@ -3440,7 +3440,6 @@ pub async fn hermes_agent_run(
     Json(req): Json<HermesRunRequest>,
 ) -> Result<Response, ApiError> {
     use axum::response::sse::{Event, Sse};
-    use futures::stream::Stream;
 
     let row = sqlx::query(
         "SELECT base_url, api_key FROM hermes_connections WHERE is_default = 1 LIMIT 1"
@@ -3520,7 +3519,7 @@ pub async fn hermes_agent_run(
                         // strip trailing newline
                         let line = String::from_utf8_lossy(&line_bytes[..line_bytes.len() - 1]);
                         if line.starts_with("data: ") {
-                            yield Ok(Event::default().data(line[6..].to_string()));
+                            yield Ok::<_, std::convert::Infallible>(Event::default().data(line[6..].to_string()));
                         } else if line.starts_with("data:") {
                             yield Ok(Event::default().data(line[5..].to_string()));
                         } else if !line.is_empty() {
