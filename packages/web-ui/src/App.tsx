@@ -11,6 +11,7 @@ import { useAppStore } from './store/useAppStore';
 import { useSessions } from './hooks/useSessions';
 import { useEndpoints } from './hooks/useEndpoints';
 import { useAgents } from './hooks/useAgents';
+import { useHermesAgent } from './hooks/useHermesAgent';
 import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
 
@@ -32,10 +33,15 @@ export default function App() {
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string }>>([]);
+  // When on, chat messages are routed to the Hermes agent instead of plain LLM streaming.
+  // Only selectable when a default Hermes connection is configured.
+  const [agentMode, setAgentMode] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
+  // Hermes agent: a default connection enables the "Agent mode" toggle in the chat.
+  const { defaultConnection: hermesConnection } = useHermesAgent();
 
   // Fetch available models whenever endpoints change so we always send the right model ID
   useEffect(() => {
@@ -439,6 +445,150 @@ export default function App() {
     ));
   }, []);
 
+  // Parse an assistant response for code blocks / shell commands and apply them to
+  // the project on disk. Shared by the initial send and the manual "Continue" action
+  // so both paths write files identically.
+  const applyAssistantOutput = useCallback((fullContent: string) => {
+    if (!currentProject?.id) return;
+
+    type WriteResult = { path: string; ok: boolean; error?: string };
+    const writes: Promise<WriteResult | void>[] = [];
+    const modifiedFiles: string[] = [];
+
+    // --- Code block parser ---
+    // Pattern 1: language:path/to/file on the opening fence line
+    const pattern1 = /```(\w*)\s*:\s*(\S+)\s*\n([\s\S]*?)\n```/gm;
+    // Pattern 2: file path on line immediately before code block
+    const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)\n```/gm;
+    // Pattern 3: natural language "create/update file X" followed by code block
+    const pattern3 = /(?:create|update|modify|edit|write|add|generate)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:called\s+)?[`'"]*([\/\w\-\.]+\.\w+)[`'"]*:?\s*\n+```(\w*)\n([\s\S]*?)\n```/gi;
+    // Pattern 4: file comment on first line inside code block
+    const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)\n```/gi;
+    // Pattern 5: ### filename heading or **filename** followed by code block
+    const pattern5 = /(?:^|\n)(?:#{1,3}\s*|(?:\*\*)(.+?)(?:\*\*)\s*\n)(?:File:?\s*)?([\/\w\-\.]+\.\w+)\s*\n+```(\w*)\n([\s\S]*?)\n```/gmi;
+
+    const allPatterns = [pattern1, pattern2, pattern3, pattern4, pattern5];
+    const seenPaths = new Set<string>();
+
+    for (const pattern of allPatterns) {
+      let match;
+      pattern.lastIndex = 0;
+      while ((match = pattern.exec(fullContent)) !== null) {
+        let filePath: string;
+        let code: string;
+
+        if (pattern === pattern1) {
+          filePath = match[2];
+          code = match[3];
+        } else if (pattern === pattern4) {
+          filePath = match[2];
+          code = match[3];
+        } else if (pattern === pattern5) {
+          filePath = match[2];
+          code = match[4];
+        } else {
+          filePath = match[1];
+          code = match[3];
+        }
+
+        if (!filePath || seenPaths.has(filePath)) continue;
+        seenPaths.add(filePath);
+
+        // Skip writing raw diff output — diffs should be applied, not stored as file content
+        const lang = (pattern === pattern1 || pattern === pattern4) ? match[1]?.toLowerCase()
+          : (pattern === pattern5) ? match[3]?.toLowerCase()
+          : match[2]?.toLowerCase();
+        if (lang === 'diff') continue;
+
+        const cleanCode = code.trimEnd() + '\n';
+        if (!cleanCode.trim()) continue; // skip empty blocks
+
+        modifiedFiles.push(filePath);
+
+        writes.push(
+          fetch(`/api/projects/${currentProject.id}/files/write`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, content: cleanCode }),
+          }).then(async r => {
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+              const msg = typeof err === 'object' && err !== null && 'error' in err
+                ? String(err.error) : `HTTP ${r.status}`;
+              console.error(`Failed to write ${filePath}: ${msg}`);
+              return { path: filePath, ok: false, error: msg };
+            }
+            console.log(`Wrote ${filePath} (${cleanCode.length} bytes)`);
+            return { path: filePath, ok: true };
+          }).catch(e => {
+            console.error(`Write error for ${filePath}:`, e);
+            return { path: filePath, ok: false, error: String(e) };
+          })
+        );
+      }
+    }
+
+    // --- Shell command detection ---
+    const shellRegex = /```(?:shell|bash|sh|zsh)\s*\n([\s\S]*?)\n```/gi;
+    let shellMatch;
+    const shellCommands: string[] = [];
+    while ((shellMatch = shellRegex.exec(fullContent)) !== null) {
+      const cmd = shellMatch[1].trim();
+      if (cmd) shellCommands.push(cmd);
+    }
+
+    if (shellCommands.length > 0 && currentProject.id) {
+      for (const cmd of shellCommands) {
+        writes.push(
+          fetch(`/api/projects/${currentProject.id}/shell`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd }),
+          }).then(async r => {
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) console.error(`Shell failed: ${data.error || cmd}`);
+          }).catch(e => console.error(`Shell error:`, e))
+        );
+      }
+    }
+
+    if (writes.length > 0) {
+      Promise.all(writes).then((results) => {
+        // Refresh open file if it was modified
+        if (currentFile) {
+          fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => { if (data?.content) updateTabContentByPath(currentFile, data.content); })
+            .catch(() => {});
+        }
+        // Refresh file tree
+        fetch(`/api/projects/${currentProject.id}/files`)
+          .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
+
+        // Feedback: add a system note showing which files were written
+        const okFiles = results.filter((r): r is WriteResult => !!r && r.ok).map(r => r.path);
+        const failFiles = results.filter((r): r is WriteResult => !!r && !r.ok);
+        if (okFiles.length > 0 || failFiles.length > 0) {
+          let note = '';
+          if (okFiles.length > 0) {
+            note += `✅ Wrote **${okFiles.length}** file${okFiles.length > 1 ? 's' : ''}: ${okFiles.map(f => `\`${f}\``).join(', ')}`;
+          }
+          if (failFiles.length > 0) {
+            note += (note ? '\n\n' : '') + `❌ Failed **${failFiles.length}** file${failFiles.length > 1 ? 's' : ''}: ${failFiles.map(f => `\`${f.path}\` (${f.error})`).join(', ')}`;
+          }
+          if (note) {
+            setMessages(prev => [...prev, {
+              id: `write-feedback-${Date.now()}`,
+              role: 'system' as const,
+              content: note,
+              timestamp: Date.now(),
+            }]);
+          }
+        }
+      });
+    }
+  }, [currentProject?.id, currentFile, updateTabContentByPath]);
+
   const handleSendMessage = useCallback(async (content: string, attachments?: any[]) => {
     // Auto-create a session if none exists
     let sessionId = currentSession?.id;
@@ -540,209 +690,64 @@ export default function App() {
 
       let fullContent = '';
       let reasoningContent = '';
-      // Track what we send on each iteration; updated on auto-continuation
-      let pendingMessages = [...chatMessages];
-      const MAX_CONTINUATIONS = 4;
 
-      for (let iter = 0; iter <= MAX_CONTINUATIONS; iter++) {
-        const iterRes = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: pendingMessages }),
-          signal: controller.signal,
-        });
+      // Route to the Hermes agent when Agent mode is on and a connection exists; otherwise
+      // use the standard LLM chat stream. Both endpoints emit the same SSE event shape,
+      // so the streaming loop below is identical either way.
+      const useHermes = agentMode && !!hermesConnection;
+      const res = useHermes
+        ? await fetch('/api/hermes/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: chatMessages, model: modelId, project_path: currentProject?.name }),
+            signal: controller.signal,
+          })
+        : await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: chatMessages }),
+            signal: controller.signal,
+          });
 
-        if (!iterRes.ok) {
-          const errText = await iterRes.text().catch(() => 'Unknown error');
-          console.error('Chat API returned', iterRes.status, errText);
-          throw new Error(`Backend returned ${iterRes.status}`);
-        }
-
-        const iterReader = iterRes.body?.getReader();
-        if (!iterReader) throw new Error('No response body');
-
-        let finishReason = '';
-        for await (const { eventType, data } of parseSSEStream(iterReader)) {
-          if (eventType === 'finish_reason') {
-            finishReason = data;
-          } else if (eventType === 'reasoning') {
-            reasoningContent += data;
-          } else {
-            fullContent += data;
-          }
-          setMessages(prev => prev.map(m =>
-            m.id === aiMsgId
-              ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
-              : m
-          ));
-        }
-
-        // "stop" = finished naturally; "length" = hit max_tokens, auto-continue
-        if (finishReason !== 'length') break;
-
-        // Append the partial response + a "Continue" prompt so the LLM picks up mid-stream
-        pendingMessages = [
-          ...pendingMessages,
-          { role: 'assistant' as const, content: fullContent },
-          { role: 'user' as const, content: 'Continue' },
-        ];
+      if (!res.ok) {
+        const errText = await res.text().catch(() => 'Unknown error');
+        console.error('Chat API returned', res.status, errText);
+        throw new Error(`Backend returned ${res.status}`);
       }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      let finishReason = '';
+      for await (const { eventType, data } of parseSSEStream(reader)) {
+        if (eventType === 'finish_reason') {
+          finishReason = data;
+        } else if (eventType === 'reasoning') {
+          reasoningContent += data;
+        } else {
+          fullContent += data;
+        }
+        setMessages(prev => prev.map(m =>
+          m.id === aiMsgId
+            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
+            : m
+        ));
+      }
+
+      // If the model stopped because it hit its output-token cap, flag the message so the
+      // UI can offer a manual "Continue" button. We deliberately do NOT auto-continue:
+      // that spends the user's API tokens without consent and can loop on verbose models.
+      setMessages(prev => prev.map(m =>
+        m.id === aiMsgId ? { ...m, truncated: finishReason === 'length' } : m
+      ));
 
       if (fullContent || reasoningContent) {
         if (sessionId) {
           addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
         }
-
-      // Auto-apply code blocks and shell commands to files
-      if (currentProject?.id) {
-          const writes: Promise<{ path: string; ok: boolean; error?: string }>[] = [];
-          const modifiedFiles: string[] = [];
-          
-          // --- Code block parser ---
-          // Matches code fences where the opening line specifies a file:
-          //   ```language:path/to/file
-          //   ```language : path/to/file   (spaces around colon)
-          //
-          // Closing ``` must be on its own line (standard Markdown).
-          // Uses greedy match to the LAST closing fence on its own line.
-
-          // Pattern 1: language:path/to/file on the opening fence line
-          const pattern1 = /```(\w*)\s*:\s*(\S+)\s*\n([\s\S]*?)\n```/gm;
-          
-          // Pattern 2: file path on line immediately before code block
-          const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)\n```/gm;
-          
-          // Pattern 3: natural language "create/update file X" followed by code block
-          const pattern3 = /(?:create|update|modify|edit|write|add|generate)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:called\s+)?[`'"]*([\/\w\-\.]+\.\w+)[`'"]*:?\s*\n+```(\w*)\n([\s\S]*?)\n```/gi;
-          
-          // Pattern 4: file comment on first line inside code block
-          const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)\n```/gi;
-          
-          // Pattern 5: ### filename heading or **filename** followed by code block
-          const pattern5 = /(?:^|\n)(?:#{1,3}\s*|(?:\*\*)(.+?)(?:\*\*)\s*\n)(?:File:?\s*)?([\/\w\-\.]+\.\w+)\s*\n+```(\w*)\n([\s\S]*?)\n```/gmi;
-          
-          const allPatterns = [pattern1, pattern2, pattern3, pattern4, pattern5];
-          const seenPaths = new Set<string>();
-          
-          for (const pattern of allPatterns) {
-            let match;
-            pattern.lastIndex = 0;
-            while ((match = pattern.exec(fullContent)) !== null) {
-              let filePath: string;
-              let code: string;
-              
-              if (pattern === pattern1) {
-                filePath = match[2];
-                code = match[3];
-              } else if (pattern === pattern4) {
-                filePath = match[2];
-                code = match[3];
-              } else if (pattern === pattern5) {
-                filePath = match[2];
-                code = match[4];
-              } else {
-                filePath = match[1];
-                code = match[3];
-              }
-              
-              if (!filePath || seenPaths.has(filePath)) continue;
-              seenPaths.add(filePath);
-
-              // Skip writing raw diff output — diffs should be applied, not stored as file content
-              const lang = (pattern === pattern1 || pattern === pattern4) ? match[1]?.toLowerCase()
-                : (pattern === pattern5) ? match[3]?.toLowerCase()
-                : match[2]?.toLowerCase();
-              if (lang === 'diff') continue;
-              
-              const cleanCode = code.trimEnd() + '\n';
-              if (!cleanCode.trim()) continue; // skip empty blocks
-              
-              modifiedFiles.push(filePath);
-              
-              writes.push(
-                fetch(`/api/projects/${currentProject.id}/files/write`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ path: filePath, content: cleanCode }),
-                }).then(async r => {
-                  if (!r.ok) {
-                    const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-                    const msg = typeof err === 'object' && err !== null && 'error' in err
-                      ? String(err.error) : `HTTP ${r.status}`;
-                    console.error(`Failed to write ${filePath}: ${msg}`);
-                    return { path: filePath, ok: false, error: msg };
-                  }
-                  console.log(`Wrote ${filePath} (${cleanCode.length} bytes)`);
-                  return { path: filePath, ok: true };
-                }).catch(e => {
-                  console.error(`Write error for ${filePath}:`, e);
-                  return { path: filePath, ok: false, error: String(e) };
-                })
-              );
-            }
-          }
-          
-          // --- Shell command detection ---
-          const shellRegex = /```(?:shell|bash|sh|zsh)\s*\n([\s\S]*?)\n```/gi;
-          let shellMatch;
-          const shellCommands: string[] = [];
-          while ((shellMatch = shellRegex.exec(fullContent)) !== null) {
-            const cmd = shellMatch[1].trim();
-            if (cmd) shellCommands.push(cmd);
-          }
-          
-          if (shellCommands.length > 0 && currentProject.id) {
-            for (const cmd of shellCommands) {
-              writes.push(
-                fetch(`/api/projects/${currentProject.id}/shell`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ command: cmd }),
-                }).then(async r => {
-                  const data = await r.json().catch(() => ({}));
-                  if (!r.ok) console.error(`Shell failed: ${data.error || cmd}`);
-                }).catch(e => console.error(`Shell error:`, e))
-              );
-            }
-          }
-          
-          if (writes.length > 0) {
-            Promise.all(writes).then((results) => {
-              // Refresh open file if it was modified
-              if (currentFile) {
-                fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`)
-                  .then(r => r.ok ? r.json() : null)
-                  .then(data => { if (data?.content) updateTabContentByPath(currentFile, data.content); })
-                  .catch(() => {});
-              }
-              // Refresh file tree
-              fetch(`/api/projects/${currentProject.id}/files`)
-                .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
-
-              // Feedback: add a system note showing which files were written
-              const okFiles = results.filter(r => r.ok).map(r => r.path);
-              const failFiles = results.filter(r => !r.ok);
-              if (okFiles.length > 0 || failFiles.length > 0) {
-                let note = '';
-                if (okFiles.length > 0) {
-                  note += `✅ Wrote **${okFiles.length}** file${okFiles.length > 1 ? 's' : ''}: ${okFiles.map(f => `\`${f}\``).join(', ')}`;
-                }
-                if (failFiles.length > 0) {
-                  note += (note ? '\n\n' : '') + `❌ Failed **${failFiles.length}** file${failFiles.length > 1 ? 's' : ''}: ${failFiles.map(f => `\`${f.path}\` (${f.error})`).join(', ')}`;
-                }
-                if (note) {
-                  setMessages(prev => [...prev, {
-                    id: `write-feedback-${Date.now()}`,
-                    role: 'system' as const,
-                    content: note,
-                    timestamp: Date.now(),
-                  }]);
-                }
-              }
-            });
-          }
-        }
+        applyAssistantOutput(fullContent);
       }
+
       
       setIsGenerating(false);
     } catch (err: any) {
@@ -768,7 +773,76 @@ export default function App() {
         setIsGenerating(false);
       }, 1500);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection]);
+
+  // Manually continue a response that was cut off by the model's output-token limit.
+  // Triggered by the user clicking "Continue" on a truncated message — never automatic,
+  // so the user explicitly authorizes the additional token spend. Appends the new text
+  // onto the existing (truncated) assistant message rather than creating a new bubble.
+  const handleContinueGeneration = useCallback(async (truncatedMsgId: string) => {
+    const targetIndex = messages.findIndex(m => m.id === truncatedMsgId);
+    if (targetIndex === -1) return;
+    const targetMsg = messages[targetIndex];
+
+    setIsGenerating(true);
+    setMessages(prev => prev.map(m => m.id === truncatedMsgId ? { ...m, truncated: false } : m));
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const activeEndpoint = useAppStore.getState().activeEndpoint;
+      const params = new URLSearchParams();
+      if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
+      const modelId = availableModels[0]?.id || 'deepseek-chat';
+
+      // Send the conversation up to and including the truncated message, then ask the
+      // model to continue from exactly where it stopped.
+      const priorMessages = messages.slice(0, targetIndex + 1).map(m => ({ role: m.role, content: m.content }));
+      const chatMessages = [
+        ...priorMessages,
+        { role: 'user' as const, content: 'Continue exactly where you left off. Do not repeat any text you already wrote.' },
+      ];
+
+      const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: chatMessages }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`Backend returned ${res.status}`);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      let fullContent = targetMsg.content;
+      let finishReason = '';
+      for await (const { eventType, data } of parseSSEStream(reader)) {
+        if (eventType === 'finish_reason') {
+          finishReason = data;
+        } else if (eventType === 'reasoning') {
+          // ignore reasoning on continuation
+        } else {
+          fullContent += data;
+        }
+        setMessages(prev => prev.map(m =>
+          m.id === truncatedMsgId ? { ...m, content: fullContent } : m
+        ));
+      }
+
+      setMessages(prev => prev.map(m =>
+        m.id === truncatedMsgId ? { ...m, content: fullContent, truncated: finishReason === 'length' } : m
+      ));
+      if (currentSession?.id) {
+        addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
+      }
+      applyAssistantOutput(fullContent);
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') console.error('Continue failed:', err);
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [messages, availableModels, currentSession?.id, addMessage, applyAssistantOutput]);
 
   const handleStopGeneration = () => {
     abortRef.current?.abort();
@@ -845,7 +919,11 @@ export default function App() {
               onSendMessage={handleSendMessage}
               onRunAgent={triggerAgent}
               onStopGeneration={handleStopGeneration}
+              onContinue={handleContinueGeneration}
               isGenerating={isGenerating}
+              hermesAvailable={!!hermesConnection}
+              agentMode={agentMode}
+              onToggleAgentMode={setAgentMode}
             />
           </Panel>
 

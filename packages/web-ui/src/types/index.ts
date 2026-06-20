@@ -6,6 +6,9 @@ export interface Message {
   timestamp: number;
   model?: string;
   attachments?: Attachment[];
+  /** True when the model stopped because it hit max_tokens (finish_reason="length"),
+   *  meaning the response is incomplete and can be continued on user request. */
+  truncated?: boolean;
 }
 
 export interface Attachment {

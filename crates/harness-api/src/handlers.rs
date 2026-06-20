@@ -3591,7 +3591,13 @@ pub async fn set_default_hermes_connection(
 /// Request body for Hermes agent run
 #[derive(Debug, Deserialize)]
 pub struct HermesRunRequest {
-    pub task: String,
+    /// Full conversation to forward (preferred). Includes the system context the
+    /// frontend builds (project file tree + contents) plus chat history.
+    #[serde(default)]
+    pub messages: Option<Vec<ChatMessage>>,
+    /// Legacy single-task input. Used only when `messages` is absent.
+    #[serde(default)]
+    pub task: Option<String>,
     pub project_path: Option<String>,
     pub model: Option<String>,
 }
@@ -3619,16 +3625,25 @@ pub async fn hermes_agent_run(
         }
     };
 
-    // Build the chat completion request for Hermes /v1/chat/completions
-    let mut messages: Vec<serde_json::Value> = Vec::new();
-    messages.push(serde_json::json!({
-        "role": "system",
-        "content": "You are a coding assistant. Write clean, working code. When creating files, output them as code blocks with the filename as a heading."
-    }));
-    messages.push(serde_json::json!({
-        "role": "user",
-        "content": req.task,
-    }));
+    // Build the chat completion request for Hermes /v1/chat/completions.
+    // Prefer the full conversation (system context + history) when provided; otherwise
+    // fall back to the legacy single-task shape with a built-in system prompt.
+    let messages: Vec<serde_json::Value> = match req.messages.as_ref() {
+        Some(msgs) if !msgs.is_empty() => msgs
+            .iter()
+            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+            .collect(),
+        _ => vec![
+            serde_json::json!({
+                "role": "system",
+                "content": "You are a coding assistant. Write clean, working code. When creating files, output them as code blocks with the filename as a heading."
+            }),
+            serde_json::json!({
+                "role": "user",
+                "content": req.task.clone().unwrap_or_default(),
+            }),
+        ],
+    };
 
     let mut body = serde_json::json!({
         "messages": messages,
@@ -3681,28 +3696,44 @@ pub async fn hermes_agent_run(
                         let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
                         // strip trailing newline
                         let line = String::from_utf8_lossy(&line_bytes[..line_bytes.len() - 1]);
-                        if line.starts_with("data: ") {
-                            yield Ok::<_, std::convert::Infallible>(Event::default().data(line[6..].to_string()));
-                        } else if line.starts_with("data:") {
-                            yield Ok(Event::default().data(line[5..].to_string()));
-                        } else if !line.is_empty() {
-                            yield Ok(Event::default().comment(line.to_string()));
+                        // Extract the SSE data payload (Hermes speaks OpenAI streaming format).
+                        let payload = if let Some(rest) = line.strip_prefix("data: ") {
+                            rest
+                        } else if let Some(rest) = line.strip_prefix("data:") {
+                            rest
+                        } else {
+                            continue;
+                        };
+                        let payload = payload.trim();
+                        if payload.is_empty() || payload == "[DONE]" {
+                            continue;
+                        }
+                        // Parse the OpenAI-style delta and emit clean events, matching the
+                        // normal /chat path so the frontend handles both streams identically.
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) {
+                            let delta = &json["choices"][0]["delta"];
+                            if let Some(r) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
+                                if !r.is_empty() {
+                                    yield Ok::<_, std::convert::Infallible>(Event::default().event("reasoning").data(r.to_string()));
+                                }
+                            }
+                            if let Some(c) = delta["content"].as_str() {
+                                if !c.is_empty() {
+                                    yield Ok(Event::default().data(c.to_string()));
+                                }
+                            }
+                            if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
+                                if !reason.is_empty() {
+                                    yield Ok(Event::default().event("finish_reason").data(reason.to_string()));
+                                }
+                            }
                         }
                     }
                 }
                 Err(e) => {
-                    yield Ok(Event::default().data(format!("{{\"error\": \"Stream error: {}\"}}", e)));
+                    yield Ok(Event::default().data(format!("Stream error: {}", e)));
                     break;
                 }
-            }
-        }
-        // Flush remaining buffer
-        if !buffer.is_empty() {
-            let line = String::from_utf8_lossy(&buffer);
-            if line.starts_with("data: ") {
-                yield Ok(Event::default().data(line[6..].to_string()));
-            } else if line.starts_with("data:") {
-                yield Ok(Event::default().data(line[5..].to_string()));
             }
         }
         // Signal done

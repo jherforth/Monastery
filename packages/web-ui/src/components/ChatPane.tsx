@@ -37,15 +37,25 @@ interface ChatPaneProps {
   onSendMessage: (content: string, attachments?: Attachment[]) => void;
   onRunAgent?: (agentId: string, task: string) => void;
   onStopGeneration?: () => void;
+  onContinue?: (messageId: string) => void;
   isGenerating?: boolean;
+  /** Whether a default Hermes connection exists (enables the Agent mode toggle). */
+  hermesAvailable?: boolean;
+  /** Whether Agent mode (route to Hermes) is currently on. */
+  agentMode?: boolean;
+  onToggleAgentMode?: (on: boolean) => void;
 }
 
-export function ChatPane({ 
-  messages, 
+export function ChatPane({
+  messages,
   onSendMessage,
   onRunAgent,
   onStopGeneration,
+  onContinue,
   isGenerating = false,
+  hermesAvailable = false,
+  agentMode = false,
+  onToggleAgentMode,
 }: ChatPaneProps) {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -328,6 +338,19 @@ export function ChatPane({
                 <div className={`text-sm ${message.role === 'system' ? 'text-monastery-text-secondary' : ''}`}>
                   {renderContent(message.content)}
                 </div>
+                {/* Continue button when the model hit its output-token limit mid-response.
+                    Manual on purpose — each click is an explicit, user-authorized token spend. */}
+                {message.role === 'assistant' && message.truncated && !isGenerating && onContinue && (
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      onClick={() => onContinue(message.id)}
+                      className="flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-lantern text-monastery-dark-bg hover:opacity-90 rounded-lg transition-opacity font-medium"
+                    >
+                      ⏵ Continue generating
+                    </button>
+                    <span className="text-xs text-monastery-text-muted">Response hit the model's output-token limit</span>
+                  </div>
+                )}
                 {/* Revert button on commit markers */}
                 {message.role === 'system' && message.model && (
                   <button
@@ -388,6 +411,29 @@ export function ChatPane({
 
       {/* Input */}
       <form onSubmit={handleSubmit} className="border-t border-monastery-dark-border p-4">
+        {/* Agent mode toggle — only shown when a Hermes connection is configured.
+            On = route messages to the Hermes agent; off = standard LLM chat. */}
+        {hermesAvailable && onToggleAgentMode && (
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs text-monastery-text-muted">
+              {agentMode ? 'Routing through Hermes agent' : 'Standard LLM chat'}
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={agentMode}
+              onClick={() => onToggleAgentMode(!agentMode)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-colors ${
+                agentMode
+                  ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
+                  : 'bg-monastery-dark-surface text-monastery-text-secondary border-monastery-dark-border hover:border-monastery-pine'
+              }`}
+            >
+              <Bot size={13} />
+              Agent mode {agentMode ? 'on' : 'off'}
+            </button>
+          </div>
+        )}
         {attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-3">
             {attachments.map((attachment, index) => (
