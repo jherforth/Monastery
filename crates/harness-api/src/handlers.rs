@@ -2668,6 +2668,12 @@ pub async fn deploy_to_hosting(
                 }
             }
 
+            // When a Cloudflare tunnel connector will be launched, publish the app's port on
+            // the VPS host so the host-networked cloudflared can reach it at http://localhost:PORT.
+            if req.include_cloudflare_tunnel {
+                payload["ports_mappings"] = serde_json::Value::String(format!("{}:{}", port, port));
+            }
+
             let resp = client
                 .post(&create_url)
                 .header("Authorization", format!("Bearer {}", api_token))
@@ -2696,6 +2702,61 @@ pub async fn deploy_to_hosting(
             // No separate deploy call needed.
             let deploy_success = coolify_status.is_success();
 
+            // Optionally launch a Cloudflare Tunnel connector as a sidecar Coolify Service so
+            // the user doesn't have to run cloudflared themselves. A token tunnel is remotely
+            // managed: the connector only needs the token; the public-hostname → service mapping
+            // is still configured in the Cloudflare Zero Trust dashboard (point it at the
+            // returned tunnel_service_url). The connector uses host networking so it can reach
+            // the app published on the VPS host above.
+            let mut tunnel_deployed = false;
+            let mut tunnel_error: Option<String> = None;
+            if req.include_cloudflare_tunnel {
+                match req.cloudflare_tunnel_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                    Some(token) => {
+                        let compose = format!(
+                            "services:\n  cloudflared:\n    image: cloudflare/cloudflared:latest\n    command: tunnel --no-autoupdate run\n    environment:\n      - TUNNEL_TOKEN={token}\n    network_mode: host\n    restart: unless-stopped\n",
+                            token = token,
+                        );
+                        let compose_b64 = base64::engine::general_purpose::STANDARD.encode(compose.as_bytes());
+                        let svc_payload = serde_json::json!({
+                            "project_uuid": project_uuid,
+                            "server_uuid": server_uuid,
+                            "environment_name": "production",
+                            "name": format!("{}-cloudflared", req.app_name),
+                            "description": format!("Cloudflare Tunnel connector for {} (Monastery)", req.app_name),
+                            "docker_compose_raw": compose_b64,
+                            "instant_deploy": true,
+                        });
+                        match client
+                            .post(format!("{}/api/v1/services", base))
+                            .header("Authorization", format!("Bearer {}", api_token))
+                            .header("Content-Type", "application/json")
+                            .json(&svc_payload)
+                            .send()
+                            .await
+                        {
+                            Ok(r) if r.status().is_success() => { tunnel_deployed = true; }
+                            Ok(r) => {
+                                let status = r.status().as_u16();
+                                let body = r.text().await.unwrap_or_default();
+                                let snippet: String = body.chars().take(200).collect();
+                                let msg = format!("Cloudflare connector deploy failed (HTTP {}): {}", status, snippet);
+                                tracing::warn!("{}", msg);
+                                tunnel_error = Some(msg);
+                            }
+                            Err(e) => {
+                                let msg = format!("Cloudflare connector deploy request failed: {}", e);
+                                tracing::warn!("{}", msg);
+                                tunnel_error = Some(msg);
+                            }
+                        }
+                    }
+                    None => {
+                        tunnel_error = Some("Cloudflare tunnel was requested but no token was provided.".into());
+                    }
+                }
+            }
+
             Ok(Json(serde_json::json!({
                 "success": true,
                 "platform": "coolify",
@@ -2707,6 +2768,11 @@ pub async fn deploy_to_hosting(
                 "port": port,
                 "server": chosen_server_name,
                 "server_is_localhost": is_localhost(chosen_server),
+                "tunnel_requested": req.include_cloudflare_tunnel,
+                "tunnel_deployed": tunnel_deployed,
+                "tunnel_error": tunnel_error,
+                // The exact "Service" URL to set for the Public Hostname in the Cloudflare dashboard.
+                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://localhost:{}", port)) } else { None },
             })))
         }
         "dokploy" => {

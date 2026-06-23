@@ -44,6 +44,10 @@ export interface DeployResult {
   port: number;
   server?: string;
   server_is_localhost?: boolean;
+  tunnel_requested?: boolean;
+  tunnel_deployed?: boolean;
+  tunnel_error?: string | null;
+  tunnel_service_url?: string | null;
 }
 
 export interface PreviewResult {

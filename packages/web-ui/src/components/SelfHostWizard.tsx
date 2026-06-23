@@ -367,6 +367,23 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
                   <p className="text-amber-300 flex items-start gap-1"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> Deployed to the platform's own host — to reach a VPS instead, pick a remote server above and redeploy.</p>
                 )}
                 {deployResult.deploy_triggered && <p className="text-monastery-text-secondary">Deployment triggered — building now.</p>}
+                {deployResult.tunnel_requested && (
+                  deployResult.tunnel_deployed ? (
+                    <div className="mt-1 pt-2 border-t border-green-400/20 space-y-1">
+                      <div className="flex items-center gap-2 font-medium"><Cloud size={13} /> Cloudflare connector launched</div>
+                      <p className="text-monastery-text-secondary">
+                        Last step (one-time, in Cloudflare): Zero Trust → Networks → Tunnels → your tunnel → <strong>Public Hostname</strong> → add your domain with <strong>Service</strong> set to:
+                      </p>
+                      <code className="block px-2 py-1 rounded bg-monastery-dark-bg text-monastery-lantern">{deployResult.tunnel_service_url}</code>
+                      <p className="text-monastery-text-muted">The connector should show <strong>HEALTHY</strong> in the dashboard within a minute.</p>
+                    </div>
+                  ) : (
+                    <div className="mt-1 pt-2 border-t border-amber-400/20 flex items-start gap-1 text-amber-300">
+                      <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                      <span>Connector not launched{deployResult.tunnel_error ? `: ${deployResult.tunnel_error}` : ''}. Run cloudflared manually, then point the Public Hostname at {deployResult.tunnel_service_url || `http://localhost:${deployResult.port}`}.</span>
+                    </div>
+                  )
+                )}
                 <a href={deployResult.dashboard_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-monastery-lantern hover:underline"><Globe size={12} /> Open {deployResult.platform} Dashboard</a></div>)}
               <button onClick={handleDeploy} disabled={deploying || !activePlatformConn || !currentProject}
                 className="w-full px-4 py-2.5 text-sm bg-monastery-pine text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium transition-colors">
