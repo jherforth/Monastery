@@ -2472,6 +2472,114 @@ pub async fn preview_deploy(
     })))
 }
 
+/// Git info needed to deploy a project from its forge repository.
+struct GitDeployInfo {
+    remote_url: String,
+    branch: String,
+    token: String,
+}
+
+/// Extract the host (and optional port) from a URL string without pulling in a URL crate.
+fn url_host(url: &str) -> Option<String> {
+    let after_scheme = url.split("://").nth(1)?;
+    // Strip any userinfo (user:pass@) then take up to the first '/'.
+    let authority = after_scheme.splitn(2, '/').next()?;
+    let host = authority.rsplitn(2, '@').next()?; // part after '@' if present, else whole
+    Some(host.to_string())
+}
+
+/// Build an authenticated HTTPS clone URL using the forge token, so Coolify can clone a
+/// private repo. Uses the `oauth2:<token>@` form Forgejo/Gitea/GitLab accept. Leaves
+/// non-HTTPS (e.g. SSH) or already-credentialed URLs untouched.
+fn build_authed_clone_url(remote_url: &str, token: &str) -> String {
+    if remote_url.starts_with("https://") && !remote_url.contains('@') {
+        remote_url.replacen("https://", &format!("https://oauth2:{}@", token), 1)
+    } else {
+        remote_url.to_string()
+    }
+}
+
+/// Resolve the project's git remote, branch, and a matching forge token (for clone auth).
+async fn resolve_project_git(
+    state: &AppState,
+    project_path: &std::path::Path,
+) -> Result<GitDeployInfo, ApiError> {
+    use sqlx::Row;
+    let status = harness_core::GitService::git_status(project_path).map_err(ApiError::Core)?;
+    let remote_url = status.remote_url.ok_or_else(|| ApiError::Config(
+        "This project has no git remote. Push it to your git forge first — the deploy clones the app from there.".into()
+    ))?;
+    let branch = if status.branch.trim().is_empty() { "main".to_string() } else { status.branch };
+
+    // Find a forge connection token matching the remote's host; fall back to the most recent.
+    let host = url_host(&remote_url);
+    let rows = sqlx::query("SELECT api_token, base_url FROM git_connections ORDER BY created_at DESC")
+        .fetch_all(&*state.db)
+        .await?;
+    let mut token: Option<String> = None;
+    if let Some(h) = host.as_deref() {
+        for r in &rows {
+            let bu: String = r.get(1);
+            if bu.contains(h) { token = Some(r.get::<String, _>(0)); break; }
+        }
+    }
+    if token.is_none() {
+        token = rows.first().map(|r| r.get::<String, _>(0));
+    }
+    let token = token.ok_or_else(|| ApiError::Config(
+        "No git forge connection found to authenticate the repo clone. Connect your forge in Settings first.".into()
+    ))?;
+
+    Ok(GitDeployInfo { remote_url, branch, token })
+}
+
+/// Look up the remote app uuid previously deployed for this (project, connection), if any.
+async fn lookup_deployment(
+    state: &AppState,
+    project_id: uuid::Uuid,
+    connection_id: uuid::Uuid,
+) -> Result<Option<String>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT app_uuid FROM deployments WHERE project_id = ? AND connection_id = ?")
+        .bind(project_id.to_string())
+        .bind(connection_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+    Ok(row.map(|r| r.get::<String, _>(0)))
+}
+
+/// Persist (or update) the app uuid deployed for this (project, connection).
+async fn save_deployment(
+    state: &AppState,
+    project_id: uuid::Uuid,
+    connection_id: uuid::Uuid,
+    platform: &str,
+    app_uuid: &str,
+    app_name: &str,
+    server_uuid: &str,
+) -> Result<(), ApiError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    // Upsert on the (project_id, connection_id) unique constraint.
+    sqlx::query(
+        "INSERT INTO deployments (id, project_id, connection_id, platform, app_uuid, app_name, server_uuid, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT(project_id, connection_id) DO UPDATE SET \
+           app_uuid = excluded.app_uuid, app_name = excluded.app_name, server_uuid = excluded.server_uuid, updated_at = excluded.updated_at"
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(project_id.to_string())
+    .bind(connection_id.to_string())
+    .bind(platform)
+    .bind(app_uuid)
+    .bind(app_name)
+    .bind(server_uuid)
+    .bind(&now)
+    .bind(&now)
+    .execute(&*state.db)
+    .await?;
+    Ok(())
+}
+
 /// Deploy a project to a connected hosting service
 pub async fn deploy_to_hosting(
     State(state): State<AppState>,
@@ -2530,6 +2638,55 @@ pub async fn deploy_to_hosting(
 
     match service_type.as_str() {
         "coolify" => {
+            // Git-based deployment: Coolify clones the project's repo and builds its Dockerfile.
+            // This is what actually carries the app source — an inline Dockerfile has no build
+            // context, so it would serve an empty directory. Requires the forge be reachable by
+            // Coolify over HTTPS at a real hostname (not a raw IP / localhost / .local).
+            let git = resolve_project_git(&state, &project_path).await?;
+
+            // Ensure the generated Dockerfile (written above if missing) and any local changes
+            // are committed and pushed, so Coolify's clone includes them.
+            if let Err(e) = harness_core::GitService::git_push(
+                &project_path, &git.remote_url, &git.token, &git.branch,
+                "Add/update Dockerfile for Coolify deployment (Monastery)",
+            ) {
+                tracing::warn!("Could not push before deploy (continuing; remote may already be current): {}", e);
+            }
+
+            let git_repository = build_authed_clone_url(&git.remote_url, &git.token);
+
+            // If this project was already deployed to this connection, redeploy the SAME app
+            // (Coolify re-clones and rebuilds from the latest commit) instead of creating a new one.
+            if let Some(existing_uuid) = lookup_deployment(&state, req.project_id, req.connection_id).await? {
+                let deploy_url = format!("{}/api/v1/deploy?uuid={}", base, existing_uuid);
+                let redeploy = client
+                    .get(&deploy_url)
+                    .header("Authorization", format!("Bearer {}", api_token))
+                    .send()
+                    .await;
+                let triggered = matches!(&redeploy, Ok(r) if r.status().is_success());
+                if let Ok(r) = redeploy {
+                    if !r.status().is_success() {
+                        let status = r.status().as_u16();
+                        let body = r.text().await.unwrap_or_default();
+                        let snippet: String = body.chars().take(200).collect();
+                        tracing::warn!("Coolify redeploy failed (HTTP {}): {}", status, snippet);
+                    }
+                }
+                let _ = save_deployment(&state, req.project_id, req.connection_id, "coolify", &existing_uuid, &req.app_name, "").await;
+                return Ok(Json(serde_json::json!({
+                    "success": true,
+                    "platform": "coolify",
+                    "app_uuid": existing_uuid,
+                    "app_name": req.app_name,
+                    "deploy_triggered": triggered,
+                    "redeployed": true,
+                    "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), existing_uuid),
+                    "framework": framework,
+                    "port": port,
+                })));
+            }
+
             // Fetch available project and server from Coolify
             let projects_url = format!("{}/api/v1/projects", base);
             let projects_resp = client
@@ -2636,17 +2793,9 @@ pub async fn deploy_to_hosting(
                 );
             }
 
-            // Create a Dockerfile-based application on Coolify
-            let create_url = format!("{}/api/v1/applications/dockerfile", base);
-            
-            // Read the Dockerfile. Coolify's POST /api/v1/applications/dockerfile endpoint
-            // rejects plain text with HTTP 422 ("The dockerfile should be base64 encoded.")
-            // — it calls isBase64Encoded() then base64_decode() on the field. So we must
-            // base64-encode the content before sending.
-            let dockerfile_content = std::fs::read_to_string(&dockerfile_path)
-                .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port));
-            use base64::Engine as _;
-            let dockerfile_b64 = base64::engine::general_purpose::STANDARD.encode(dockerfile_content.as_bytes());
+            // Create a git-based application on Coolify. Coolify clones the repo (so the app
+            // source is the build context) and builds the Dockerfile committed in step above.
+            let create_url = format!("{}/api/v1/applications/public", base);
 
             let mut payload = serde_json::json!({
                 "project_uuid": project_uuid,
@@ -2654,8 +2803,10 @@ pub async fn deploy_to_hosting(
                 "environment_name": "production",
                 "name": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
+                "git_repository": git_repository,
+                "git_branch": git.branch,
                 "build_pack": "dockerfile",
-                "dockerfile": dockerfile_b64,
+                "dockerfile_location": "/Dockerfile",
                 "ports_exposes": port.to_string(),
                 "base_directory": "/",
                 "instant_deploy": true,
@@ -2698,9 +2849,13 @@ pub async fn deploy_to_hosting(
 
             let app_uuid = app["uuid"].as_str().unwrap_or("unknown");
 
+            // Remember this app so future deploys redeploy it in place instead of creating a new one.
+            let _ = save_deployment(&state, req.project_id, req.connection_id, "coolify", app_uuid, &req.app_name, server_uuid).await;
+
             // With instant_deploy=true, Coolify queues deployment automatically.
             // No separate deploy call needed.
             let deploy_success = coolify_status.is_success();
+            use base64::Engine as _;
 
             // Optionally launch a Cloudflare Tunnel connector as a sidecar Coolify Service so
             // the user doesn't have to run cloudflared themselves. A token tunnel is remotely
@@ -2763,6 +2918,7 @@ pub async fn deploy_to_hosting(
                 "app_uuid": app_uuid,
                 "app_name": req.app_name,
                 "deploy_triggered": deploy_success,
+                "redeployed": false,
                 "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), app_uuid),
                 "framework": framework,
                 "port": port,

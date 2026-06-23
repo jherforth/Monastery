@@ -142,6 +142,9 @@ The built-in wizard helps you:
 3. Set up reverse proxies (Traefik, Nginx)
 4. Deploy to Coolify, Proxmox, or Kubernetes
 
+> Deploying to Coolify? See [Coolify Deployment — Requirements & Setup](docs/COOLIFY_DEPLOYMENT.md)
+> for the HTTPS-hostname/TLS prerequisites, how updates redeploy in place, and troubleshooting.
+
 ## Security
 
 - Minimal outbound connectivity by default

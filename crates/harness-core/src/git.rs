@@ -408,6 +408,10 @@ impl GitService {
         branch: &str,
         commit_message: &str,
     ) -> Result<()> {
+        // Ensure a commit identity exists (a fresh clone may have none, which makes `git commit` fail).
+        let _ = run_git(project_path, &["config", "user.email", "monastery@homelab.local"]);
+        let _ = run_git(project_path, &["config", "user.name", "Monastery AI"]);
+
         // Stage all changes
         run_git(project_path, &["add", "-A"])?;
 

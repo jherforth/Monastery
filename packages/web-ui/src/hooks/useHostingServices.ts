@@ -42,6 +42,7 @@ export interface DeployResult {
   dashboard_url: string;
   framework: string;
   port: number;
+  redeployed?: boolean;
   server?: string;
   server_is_localhost?: boolean;
   tunnel_requested?: boolean;

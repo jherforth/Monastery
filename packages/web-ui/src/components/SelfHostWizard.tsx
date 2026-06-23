@@ -360,7 +360,7 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
             {deployTab === 'auto' && (<>
               {deployError && <div className="p-3 rounded-lg text-xs bg-red-400/10 text-red-400 flex items-center gap-2"><AlertTriangle size={14} /> {deployError}</div>}
               {deployResult && (<div className="p-3 rounded-lg text-xs bg-green-400/10 text-green-400 space-y-2">
-                <div className="flex items-center gap-2 font-medium"><CheckCircle2 size={14} /> App created on {deployResult.platform}!</div>
+                <div className="flex items-center gap-2 font-medium"><CheckCircle2 size={14} /> {deployResult.redeployed ? `Redeployed existing app on ${deployResult.platform}` : `App created on ${deployResult.platform}!`}</div>
                 <p className="text-monastery-text-secondary">Framework: <span className="text-monastery-text-primary">{deployResult.framework}</span> — Port: {deployResult.port}</p>
                 {deployResult.server && <p className="text-monastery-text-secondary">Server: <span className="text-monastery-text-primary">{deployResult.server}</span></p>}
                 {deployResult.server_is_localhost && (

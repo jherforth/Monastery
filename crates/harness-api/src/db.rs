@@ -229,6 +229,28 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     .execute(&pool)
     .await?;
 
+    // Deployments table — maps a (project, hosting connection) to the remote app it created,
+    // so subsequent deploys redeploy the SAME app instead of creating a new one each time.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS deployments (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            connection_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            app_uuid TEXT NOT NULL,
+            app_name TEXT,
+            server_uuid TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(project_id, connection_id),
+            FOREIGN KEY (project_id) REFERENCES projects(id)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await?;
+
     // Hermes agent connections table
     sqlx::query(
         r#"
