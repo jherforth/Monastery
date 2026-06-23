@@ -64,60 +64,8 @@ export default function App() {
     addMessage,
   } = useSessions(currentProject?.id ?? null);
 
-  // Agent system
-  const { runAgent, getAgent, editorPrompts } = useAgents();
-
-  // Shared agent trigger — used by both ChatPane quick-actions and editor toolbar
-  const triggerAgent = useCallback(async (agentId: string, task: string) => {
-    if (!currentProject?.id) return;
-
-    const agent = getAgent(agentId);
-
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: 'user' as const,
-      content: `${agent?.icon || '🤖'} **${agent?.name || agentId}**: ${task}`,
-      timestamp: Date.now(),
-    };
-    setMessages(prev => [...prev, userMsg]);
-    setIsGenerating(true);
-
-    // Create abort controller for this agent run
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    const agentMsgId = (Date.now() + 1).toString();
-    setMessages(prev => [...prev, {
-      id: agentMsgId,
-      role: 'assistant' as const,
-      content: '',
-      timestamp: Date.now(),
-    }]);
-
-    try {
-      let finalContent = '';
-      await runAgent(agentId, task, currentProject.id, (content) => {
-        finalContent = content;
-        setMessages(prev => prev.map(m =>
-          m.id === agentMsgId ? { ...m, content } : m
-        ));
-      }, controller.signal);
-
-      if (currentSession?.id) {
-        addMessage({ role: 'assistant', content: finalContent }).catch(() => {});
-      }
-    } catch (e: any) {
-      if (e?.name === 'AbortError') return;
-      setMessages(prev => prev.map(m =>
-        m.id === agentMsgId
-          ? { ...m, content: `⚠️ Agent error: ${e.message}` }
-          : m
-      ));
-    } finally {
-      setIsGenerating(false);
-    }
-  }, [currentProject?.id, getAgent, runAgent, currentSession?.id, addMessage]);
+  // Agent system (execution is unified through handleSendMessage; see triggerAgent below)
+  const { getAgent, editorPrompts } = useAgents();
 
   // Sync persisted theme with the HTML data-theme attribute on load
   useEffect(() => {
@@ -589,7 +537,7 @@ export default function App() {
     }
   }, [currentProject?.id, currentFile, updateTabContentByPath]);
 
-  const handleSendMessage = useCallback(async (content: string, attachments?: any[]) => {
+  const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { preferHermes?: boolean }) => {
     // Auto-create a session if none exists
     let sessionId = currentSession?.id;
     if (!sessionId && currentProject?.id) {
@@ -679,6 +627,11 @@ export default function App() {
       
       const modelId = availableModels[0]?.id || 'deepseek-chat';
 
+      // Route to the Hermes agent when Agent mode is on, or an agent button forced it, and a
+      // connection exists; otherwise use the standard LLM chat stream. Both endpoints emit the
+      // same SSE event shape, so the streaming loop below is identical either way.
+      const useHermes = (agentMode || options?.preferHermes) && !!hermesConnection;
+
       // Create placeholder immediately so the user sees streaming output in real-time
       const aiMsgId = (Date.now() + 1).toString();
       setMessages(prev => [...prev, {
@@ -686,15 +639,12 @@ export default function App() {
         role: 'assistant' as const,
         content: '',
         timestamp: Date.now(),
+        via: useHermes ? 'hermes' : 'llm',
       }]);
 
       let fullContent = '';
       let reasoningContent = '';
 
-      // Route to the Hermes agent when Agent mode is on and a connection exists; otherwise
-      // use the standard LLM chat stream. Both endpoints emit the same SSE event shape,
-      // so the streaming loop below is identical either way.
-      const useHermes = agentMode && !!hermesConnection;
       const res = useHermes
         ? await fetch('/api/hermes/run', {
             method: 'POST',
@@ -843,6 +793,27 @@ export default function App() {
       setIsGenerating(false);
     }
   }, [messages, availableModels, currentSession?.id, addMessage, applyAssistantOutput]);
+
+  // Shared agent trigger — used by ChatPane quick-actions and the editor toolbar. Agents run
+  // through the same chat flow as a normal message (so they get full project context and their
+  // returned code blocks are applied to files), and force routing to Hermes when connected.
+  const triggerAgent = useCallback((agentId: string, task: string) => {
+    if (!currentProject?.id) {
+      setMessages(prev => [...prev, {
+        id: `agent-guard-${Date.now()}`,
+        role: 'system' as const,
+        content: 'Select or create a project first — agents work on the active project.',
+        timestamp: Date.now(),
+      }]);
+      return;
+    }
+    const agent = getAgent(agentId);
+    const prompt = agent
+      ? `${agent.icon} Act as the ${agent.name} (${agent.role}). ${task}`
+      : task;
+    // preferHermes routes to Hermes when a connection exists; falls back to the local LLM otherwise.
+    handleSendMessage(prompt, undefined, { preferHermes: true });
+  }, [currentProject?.id, getAgent, handleSendMessage]);
 
   const handleStopGeneration = () => {
     abortRef.current?.abort();

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload } from 'lucide-react';
+import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
@@ -32,6 +32,11 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [newProjectDesc, setNewProjectDesc] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
   const [gitDropdownOpen, setGitDropdownOpen] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -62,6 +67,34 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       console.error('Restore failed:', e);
     } finally {
       setRestoringId(null);
+    }
+  };
+
+  const handleCreateProject = async () => {
+    const name = newProjectName.trim();
+    if (!name) { setCreateError('Project name is required.'); return; }
+    setCreatingProject(true); setCreateError(null);
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: newProjectDesc.trim() || undefined }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'Failed to create project' }));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      const proj = await res.json();
+      setCurrentProject({ id: proj.id, name: proj.name, path: '', lastOpened: Date.now(), files: [] });
+      onRefreshProjects?.();
+      setNewProjectOpen(false);
+      setNewProjectName('');
+      setNewProjectDesc('');
+      setProjectDropdownOpen(false);
+    } catch (e: any) {
+      setCreateError(e.message || 'Failed to create project');
+    } finally {
+      setCreatingProject(false);
     }
   };
 
@@ -121,65 +154,77 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
               className="w-8 h-8"
             />
             <span className="font-semibold text-lg">Monastery</span>
-            {currentProject && (
-              <>
-                <span className="text-monastery-text-muted">/</span>
-                <div className="relative">
-                  <button
-                    onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
-                    className="flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm"
-                  >
-                    <FolderGit2 size={14} />
-                    <span className="text-monastery-text-secondary">{currentProject.name}</span>
-                    {availableProjects.length > 1 && (
-                      <ChevronDown size={12} className="text-monastery-text-muted" />
+            {/* Project menu — always available, for switching projects and creating new ones */}
+            <span className="text-monastery-text-muted">/</span>
+            <div className="relative">
+              <button
+                onClick={() => setProjectDropdownOpen(!projectDropdownOpen)}
+                className="flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm"
+                title="Switch or create a project"
+              >
+                <FolderGit2 size={14} />
+                <span className={currentProject ? 'text-monastery-text-secondary' : 'text-monastery-text-muted'}>
+                  {currentProject?.name || 'Select project'}
+                </span>
+                <ChevronDown size={12} className="text-monastery-text-muted" />
+              </button>
+
+              {/* Project Dropdown */}
+              {projectDropdownOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setProjectDropdownOpen(false)}
+                  />
+                  <div className="absolute top-full left-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-72 overflow-y-auto">
+                    {availableProjects.length === 0 && (
+                      <div className="px-3 py-2 text-xs text-monastery-text-muted">No projects yet — create one below.</div>
                     )}
-                  </button>
-                  
-                  {/* Project Dropdown */}
-                  {projectDropdownOpen && availableProjects.length > 1 && (
-                    <>
-                      <div
-                        className="fixed inset-0 z-10"
-                        onClick={() => setProjectDropdownOpen(false)}
-                      />
-                      <div className="absolute top-full left-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-60 overflow-y-auto">
-                        {availableProjects.map((proj) => (
-                          <button
-                            key={proj.id}
-                            onClick={() => {
-                              setCurrentProject({
-                                id: proj.id,
-                                name: proj.name,
-                                path: '',
-                                lastOpened: Date.now(),
-                                files: [],
-                              });
-                              setProjectDropdownOpen(false);
-                            }}
-                            className={`w-full text-left px-3 py-2 text-sm transition-colors ${
-                              currentProject?.id === proj.id
-                                ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
-                                : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <FolderGit2 size={14} className="text-monastery-text-muted shrink-0" />
-                              <span className="truncate">{proj.name}</span>
-                            </div>
-                            {proj.description && (
-                              <div className="text-xs text-monastery-text-muted mt-0.5 truncate pl-6">
-                                {proj.description}
-                              </div>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </>
-            )}
+                    {availableProjects.map((proj) => (
+                      <button
+                        key={proj.id}
+                        onClick={() => {
+                          setCurrentProject({
+                            id: proj.id,
+                            name: proj.name,
+                            path: '',
+                            lastOpened: Date.now(),
+                            files: [],
+                          });
+                          setProjectDropdownOpen(false);
+                        }}
+                        className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                          currentProject?.id === proj.id
+                            ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
+                            : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <FolderGit2 size={14} className="text-monastery-text-muted shrink-0" />
+                          <span className="truncate">{proj.name}</span>
+                          {currentProject?.id === proj.id && (
+                            <span className="ml-auto w-2 h-2 rounded-full bg-status-success shrink-0" />
+                          )}
+                        </div>
+                        {proj.description && (
+                          <div className="text-xs text-monastery-text-muted mt-0.5 truncate pl-6">
+                            {proj.description}
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                    <div className="border-t border-monastery-dark-border mt-1 pt-1">
+                      <button
+                        onClick={() => { setCreateError(null); setNewProjectOpen(true); setProjectDropdownOpen(false); }}
+                        className="w-full text-left px-3 py-2 text-sm text-monastery-lantern hover:bg-monastery-dark-tertiary transition-colors flex items-center gap-2"
+                      >
+                        <Plus size={14} /> New Project
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
@@ -421,6 +466,57 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       </header>
 
       <SettingsModal isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); onRefreshProjects?.(); }} />
+
+      {/* New Project modal */}
+      {newProjectOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => { if (!creatingProject) setNewProjectOpen(false); }}
+        >
+          <div
+            className="bg-monastery-dark-surface rounded-lg w-full max-w-sm p-5 shadow-xl border border-monastery-dark-border"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <FolderGit2 size={16} className="text-monastery-lantern" /> New Project
+            </h3>
+            <label className="block text-xs text-monastery-text-secondary mb-1">Name</label>
+            <input
+              autoFocus
+              value={newProjectName}
+              onChange={(e) => setNewProjectName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateProject(); }}
+              placeholder="my-app"
+              className="w-full mb-3 px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-sm text-monastery-text-primary placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
+            />
+            <label className="block text-xs text-monastery-text-secondary mb-1">Description (optional)</label>
+            <input
+              value={newProjectDesc}
+              onChange={(e) => setNewProjectDesc(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreateProject(); }}
+              placeholder="What is this project?"
+              className="w-full mb-3 px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-sm text-monastery-text-primary placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
+            />
+            {createError && <p className="text-xs text-red-400 mb-2">{createError}</p>}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setNewProjectOpen(false)}
+                disabled={creatingProject}
+                className="px-3 py-1.5 text-sm text-monastery-text-secondary hover:text-monastery-text-primary disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateProject}
+                disabled={creatingProject || !newProjectName.trim()}
+                className="px-3 py-1.5 text-sm bg-monastery-pine text-white rounded-lg hover:bg-monastery-forest disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {creatingProject ? 'Creating…' : 'Create'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

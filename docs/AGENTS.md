@@ -6,6 +6,10 @@ Monastery's agent system dispatches specialized work (review, refactor, test, de
 
 **Status: Phase 4 complete.** Built-in agent prompts have been stripped. All agent runs now proxy through Hermes's REST API (`POST /v1/chat/completions`). Connect your Hermes instance in **Settings → Hermes Agent**.
 
+### Integration model (important)
+
+Monastery talks to Hermes as an **OpenAI-compatible chat endpoint**: it sends your prompt **plus the project's file tree and contents** as messages, Hermes replies (streamed), and Monastery **writes back any code blocks Hermes returns** (in the ` ```language:path/to/file ` format) to your project on disk. Hermes operating its **own** filesystem tools directly on the project is **not** wired up yet — file changes happen via Monastery applying the returned code. Agent actions and the chat "Agent mode" toggle share one code path (`handleSendMessage` in `App.tsx`), so both carry project context and apply edits identically.
+
 ## Architecture
 
 ```
@@ -26,21 +30,25 @@ Monastery's agent system dispatches specialized work (review, refactor, test, de
 ┌──────────────────────────────────────────────────────────┐
 │                     Hermes Agent                         │
 │  • Agent loop (tools, sub-agents, memory)                │
-│  • File I/O via Monastery project mounts                 │
 │  • Model/provider routing                                │
 │  • Streaming response (SSE)                              │
 └──────────────────────────────────────────────────────────┘
 ```
 
+> Note: Hermes receives the project as **message context** (files in the prompt) and returns code
+> blocks that Monastery applies. Direct Hermes-native filesystem access to the project mount is a
+> future enhancement, not the current behavior.
+
 **How it works under the hood:**
 
 ```
-User clicks "🔍 Review"
-  → POST /api/hermes/run { task, project_id, agent_role }
+User clicks "🔍 Review" (or types in chat with Agent mode on)
+  → handleSendMessage builds messages = [system: project file tree + contents, ...history, user: role-prefixed task]
+  → POST /api/hermes/run { messages, model, project_path }   (routes to Hermes when connected)
   → Backend loads default Hermes connection from hermes_connections table
   → Proxies to Hermes POST /v1/chat/completions with Bearer auth
-  → Hermes SSE stream is passed transparently to Monastery UI
-  → Frontend renders live-streamed agent message in chat
+  → Hermes SSE stream is parsed (content / reasoning / finish_reason) and passed to the UI
+  → Frontend renders the live-streamed reply AND writes any ```lang:path code blocks to the project
 ```
 
 ---
@@ -102,21 +110,47 @@ In the code editor toolbar, beside the file path:
 
 Buttons are disabled when no file is open in the editor. Prompt templates live in `useAgents.ts`'s `editorPrompts` map — easy to customize without touching UI components.
 
-### 3. Chat Input
+### 3. Chat Input + "Agent mode" toggle
 
-Type a message like *"Review my latest changes"* — the task is dispatched to Hermes with the selected agent role as context.
+When a Hermes connection exists, a small **Agent mode** toggle appears above the chat input. With
+it **on**, your normal chat messages route to Hermes (instead of the local LLM). Clicking an agent
+button **always** routes to Hermes when connected (it doesn't require the toggle); if no Hermes
+connection is configured, agent buttons fall back to the local LLM. Assistant messages answered by
+Hermes show a small **"via Hermes"** badge.
 
 ---
 
 ## Response Flow
 
-When an agent is invoked:
+When an agent is invoked (button or Agent-mode chat):
 
-1. A **user message** appears in chat showing which agent was called (e.g., `🔍 **Reviewer**: Review my latest changes...`)
-2. A **placeholder assistant message** is created and updated in real-time as Hermes streams
-3. Monastery backend proxies the request to Hermes `POST /v1/chat/completions` with Bearer auth
-4. Hermes SSE response is streamed transparently through Monastery to the frontend
-5. The final response is saved to the session if one is active
+1. A **user message** appears in chat (agent buttons prefix the role, e.g. `🔍 Act as the Reviewer (Code Review). …`).
+2. `handleSendMessage` builds the request: a system message with the **project file tree + contents**, the chat history, and the user task.
+3. A **placeholder assistant message** is created and updated live as Hermes streams (tagged **via Hermes**).
+4. The backend proxies to Hermes `POST /v1/chat/completions` with Bearer auth and re-emits the SSE.
+5. On completion, any ` ```lang:path ` code blocks are **written to the project files**, and the reply is saved to the active session. Use **Commit & Push** to persist to your repo.
+
+---
+
+## How to test Hermes (end to end)
+
+1. **Run Hermes** with its REST API enabled (default port `8642`). Confirm it answers — a quick chat to it should reply (e.g. "operational").
+2. **Connect it:** Settings → **Hermes Agent** → add a connection (name, base URL `http://localhost:8642` — or `http://host.docker.internal:8642` from the Monastery container — and API key) → **test** → it's set as default automatically.
+3. **Pick a project:** use the **project menu** in the top bar (next to "Monastery") to switch projects or **+ New Project** to start a fresh one.
+4. **Engage an agent:** click an agent button (e.g. 💻 Implement) *or* turn on **Agent mode** and send a chat message like *"Build a simple landing page in index.html."*
+5. **Watch it work:** the reply streams with a **via Hermes** badge; any returned code blocks appear as files in the file tree. Open them to verify, then **Commit & Push**.
+
+If an agent button does nothing, check that a project is selected (you'll get a "select or create a project first" notice) and that the Hermes connection tests green.
+
+---
+
+## Projects: the unit of work
+
+A **project** is the workspace: its own directory (`data/<name>`), its own git repo, its own chat
+sessions, and its own files. Switching the active project (top-bar **project menu**) reloads all of
+that. The connected git repo and chat sessions belong to whichever project is active — starting a
+**new chat session** is just a new conversation *within* the same project, not a new workspace. Use
+**+ New Project** to create an empty project, or the git **clone** flow to start one from a repo.
 
 ---
 
@@ -148,11 +182,12 @@ External agents follow the same **Connect → Validate → Dispatch** pattern as
 ### Frontend
 | File | Purpose |
 |---|---|
-| `packages/web-ui/src/hooks/useAgents.ts` | Agent role profiles, `runAgent()` → `POST /api/hermes/run` via SSE, quick action config, `editorPrompts` map |
+| `packages/web-ui/src/hooks/useAgents.ts` | Agent role profiles, quick-action config, `editorPrompts` map (execution is unified through `handleSendMessage`) |
 | `packages/web-ui/src/hooks/useHermesAgent.ts` | SWR-based hook for Hermes connection CRUD (list/create/delete/test/set-default) |
-| `packages/web-ui/src/components/ChatPane.tsx` | Toggleable quick-action buttons above chat input |
+| `packages/web-ui/src/components/ChatPane.tsx` | Quick-action buttons + Agent-mode toggle above chat input; "via Hermes" badge on assistant messages |
 | `packages/web-ui/src/components/SettingsModal.tsx` | Hermes tab — add/test/delete connections, set default, connection status |
-| `packages/web-ui/src/App.tsx` | `triggerAgent()` callback — shared by chat quick-actions and editor toolbar, uses `editorPrompts` |
+| `packages/web-ui/src/components/TopBar.tsx` | Project menu (switch projects) + **New Project** modal (`POST /api/projects`) |
+| `packages/web-ui/src/App.tsx` | `handleSendMessage` (builds context, routes to Hermes via `preferHermes`/Agent mode, applies code blocks); `triggerAgent()` delegates agent buttons to it |
 
 ### Backend
 | File | Purpose |

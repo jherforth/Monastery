@@ -331,6 +331,12 @@ export function ChatPane({
                     ))}
                   </div>
                 )}
+                {/* Badge showing which backend answered (Hermes agent vs local LLM) */}
+                {message.role === 'assistant' && message.via === 'hermes' && (
+                  <span className="inline-flex items-center gap-1 mb-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-monastery-lantern/15 text-monastery-lantern">
+                    <Bot size={10} /> via Hermes
+                  </span>
+                )}
                 {/* Reasoning window for assistant messages */}
                 {message.role === 'assistant' && message.reasoning && (
                   <ReasoningWindow reasoning={message.reasoning} />

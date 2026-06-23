@@ -9,6 +9,8 @@ export interface Message {
   /** True when the model stopped because it hit max_tokens (finish_reason="length"),
    *  meaning the response is incomplete and can be continued on user request. */
   truncated?: boolean;
+  /** Which backend produced this assistant message — shown as a small badge in the UI. */
+  via?: 'hermes' | 'llm';
 }
 
 export interface Attachment {

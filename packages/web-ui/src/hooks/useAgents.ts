@@ -1,5 +1,4 @@
-import { useMemo, useCallback } from 'react';
-import { parseSSEStream } from '../lib/sse';
+import { useMemo } from 'react';
 
 interface AgentDefinition {
   id: string;
@@ -80,49 +79,13 @@ const EDITOR_QUICK_PROMPTS: Record<string, (file: string, content: string) => st
 export function useAgents() {
   const agents = useMemo(() => AGENT_PROFILES, []);
 
-  const runAgent = useCallback(async (
-    agentId: string,
-    task: string,
-    projectId: string,
-    onChunk: (chunk: string, isReasoning: boolean) => void,
-    signal?: AbortSignal,
-  ): Promise<string> => {
-    const agent = AGENT_PROFILES.find(a => a.id === agentId);
-    if (!agent) throw new Error(`Unknown agent: ${agentId}`);
-
-    const res = await fetch('/api/hermes/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task,
-        project_id: projectId,
-        agent_role: agent.role,
-      }),
-      signal,
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'Hermes agent run failed' }));
-      throw new Error(err.error || 'Hermes agent run failed');
-    }
-
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    let fullContent = '';
-    for await (const { eventType, data } of parseSSEStream(reader)) {
-      fullContent += data;
-      onChunk(fullContent, eventType === 'reasoning');
-    }
-
-    return fullContent;
-  }, []);
-
+  // Note: agent execution is unified through the main chat flow (App.tsx handleSendMessage /
+  // triggerAgent), which builds project context, routes to Hermes when connected, and applies
+  // returned code blocks to files. This hook only exposes the agent profiles/prompts for the UI.
   return {
     agents,
     quickActions: QUICK_ACTIONS,
     editorPrompts: EDITOR_QUICK_PROMPTS,
     getAgent: (id: string) => agents.find(a => a.id === id),
-    runAgent,
   };
 }
