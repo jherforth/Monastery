@@ -2488,12 +2488,16 @@ fn url_host(url: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-/// Build an authenticated HTTPS clone URL using the forge token, so Coolify can clone a
-/// private repo. Uses the `oauth2:<token>@` form Forgejo/Gitea/GitLab accept. Leaves
-/// non-HTTPS (e.g. SSH) or already-credentialed URLs untouched.
+/// Build an authenticated clone URL using the forge token, for the in-Dockerfile `git clone`.
+/// Uses the `oauth2:<token>@` form Forgejo/Gitea/GitLab accept, for both https and http (some
+/// all-local forges are HTTP-only). Leaves SSH or already-credentialed URLs untouched.
 fn build_authed_clone_url(remote_url: &str, token: &str) -> String {
-    if remote_url.starts_with("https://") && !remote_url.contains('@') {
-        remote_url.replacen("https://", &format!("https://oauth2:{}@", token), 1)
+    if remote_url.contains('@') {
+        remote_url.to_string()
+    } else if let Some(rest) = remote_url.strip_prefix("https://") {
+        format!("https://oauth2:{}@{}", token, rest)
+    } else if let Some(rest) = remote_url.strip_prefix("http://") {
+        format!("http://oauth2:{}@{}", token, rest)
     } else {
         remote_url.to_string()
     }
@@ -2638,53 +2642,70 @@ pub async fn deploy_to_hosting(
 
     match service_type.as_str() {
         "coolify" => {
-            // Git-based deployment: Coolify clones the project's repo and builds its Dockerfile.
-            // This is what actually carries the app source — an inline Dockerfile has no build
-            // context, so it would serve an empty directory. Requires the forge be reachable by
-            // Coolify over HTTPS at a real hostname (not a raw IP / localhost / .local).
+            use base64::Engine as _;
+
+            // "Clone-at-build" deployment: we send Coolify an inline Dockerfile that itself
+            // git-clones the project repo at build time. The clone runs inside the Docker build
+            // on the deploy server (which can reach the forge on the LAN), so it bypasses
+            // Coolify's git-URL validation entirely and works with IP / .local / self-signed
+            // forges — the all-local homelab case. Coolify's own git flows only support SSH
+            // deploy keys or provider OAuth apps, not arbitrary token-in-URL HTTPS (it strips the
+            // host down to owner/repo and clones over SSH, which fails for self-hosted forges).
             let git = resolve_project_git(&state, &project_path).await?;
+            let clone_url = build_authed_clone_url(&git.remote_url, &git.token);
+            let (clone_dockerfile, container_port) =
+                generate_clone_dockerfile(&framework, &output_dir, port, &clone_url, &git.branch);
+            // The container listens on this port (e.g. 80 for nginx-served builds); use it for
+            // Coolify's port mapping and the tunnel instead of the framework's dev port.
+            let port = container_port;
 
-            // Ensure the generated Dockerfile (written above if missing) and any local changes
-            // are committed and pushed, so Coolify's clone includes them.
-            if let Err(e) = harness_core::GitService::git_push(
-                &project_path, &git.remote_url, &git.token, &git.branch,
-                "Add/update Dockerfile for Coolify deployment (Monastery)",
-            ) {
-                tracing::warn!("Could not push before deploy (continuing; remote may already be current): {}", e);
-            }
-
-            let git_repository = build_authed_clone_url(&git.remote_url, &git.token);
-
-            // If this project was already deployed to this connection, redeploy the SAME app
-            // (Coolify re-clones and rebuilds from the latest commit) instead of creating a new one.
+            // If already deployed for this (project, connection), redeploy the SAME app with a
+            // forced (no-cache) rebuild so the in-Dockerfile clone re-fetches the latest commit.
+            // If the app was deleted in Coolify (404), drop the stale mapping and fall through to
+            // create a fresh one — so a user who wipes the app in Coolify can just redeploy.
             if let Some(existing_uuid) = lookup_deployment(&state, req.project_id, req.connection_id).await? {
-                let deploy_url = format!("{}/api/v1/deploy?uuid={}", base, existing_uuid);
-                let redeploy = client
+                let deploy_url = format!("{}/api/v1/deploy?uuid={}&force=true", base, existing_uuid);
+                match client
                     .get(&deploy_url)
                     .header("Authorization", format!("Bearer {}", api_token))
                     .send()
-                    .await;
-                let triggered = matches!(&redeploy, Ok(r) if r.status().is_success());
-                if let Ok(r) = redeploy {
-                    if !r.status().is_success() {
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => {
+                        return Ok(Json(serde_json::json!({
+                            "success": true,
+                            "platform": "coolify",
+                            "app_uuid": existing_uuid,
+                            "app_name": req.app_name,
+                            "deploy_triggered": true,
+                            "redeployed": true,
+                            "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), existing_uuid),
+                            "framework": framework,
+                            "port": port,
+                        })));
+                    }
+                    // 404 = the app no longer exists in Coolify (deleted by the user). Forget the
+                    // stale mapping and continue on to recreate it below.
+                    Ok(r) if r.status().as_u16() == 404 => {
+                        tracing::warn!("Coolify app {} no longer exists (404) — recreating a fresh app.", existing_uuid);
+                        let _ = sqlx::query("DELETE FROM deployments WHERE project_id = ? AND connection_id = ?")
+                            .bind(req.project_id.to_string())
+                            .bind(req.connection_id.to_string())
+                            .execute(&*state.db)
+                            .await;
+                    }
+                    // Any other failure is likely transient — surface it instead of silently
+                    // creating a duplicate app.
+                    Ok(r) => {
                         let status = r.status().as_u16();
                         let body = r.text().await.unwrap_or_default();
                         let snippet: String = body.chars().take(200).collect();
-                        tracing::warn!("Coolify redeploy failed (HTTP {}): {}", status, snippet);
+                        return Err(ApiError::Internal(format!("Coolify redeploy failed (HTTP {}): {}", status, snippet)));
+                    }
+                    Err(e) => {
+                        return Err(ApiError::Internal(format!("Coolify redeploy request failed: {}", e)));
                     }
                 }
-                let _ = save_deployment(&state, req.project_id, req.connection_id, "coolify", &existing_uuid, &req.app_name, "").await;
-                return Ok(Json(serde_json::json!({
-                    "success": true,
-                    "platform": "coolify",
-                    "app_uuid": existing_uuid,
-                    "app_name": req.app_name,
-                    "deploy_triggered": triggered,
-                    "redeployed": true,
-                    "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), existing_uuid),
-                    "framework": framework,
-                    "port": port,
-                })));
             }
 
             // Fetch available project and server from Coolify
@@ -2793,9 +2814,12 @@ pub async fn deploy_to_hosting(
                 );
             }
 
-            // Create a git-based application on Coolify. Coolify clones the repo (so the app
-            // source is the build context) and builds the Dockerfile committed in step above.
-            let create_url = format!("{}/api/v1/applications/public", base);
+            // Create a Dockerfile application on Coolify. The Dockerfile clones the repo at
+            // build time (see generate_clone_dockerfile), so the app source ends up in the image
+            // without Coolify needing to clone anything itself.
+            let create_url = format!("{}/api/v1/applications/dockerfile", base);
+            // Coolify requires the dockerfile field base64-encoded.
+            let dockerfile_b64 = base64::engine::general_purpose::STANDARD.encode(clone_dockerfile.as_bytes());
 
             let mut payload = serde_json::json!({
                 "project_uuid": project_uuid,
@@ -2803,10 +2827,8 @@ pub async fn deploy_to_hosting(
                 "environment_name": "production",
                 "name": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
-                "git_repository": git_repository,
-                "git_branch": git.branch,
                 "build_pack": "dockerfile",
-                "dockerfile_location": "/Dockerfile",
+                "dockerfile": dockerfile_b64,
                 "ports_exposes": port.to_string(),
                 "base_directory": "/",
                 "instant_deploy": true,
@@ -2855,7 +2877,6 @@ pub async fn deploy_to_hosting(
             // With instant_deploy=true, Coolify queues deployment automatically.
             // No separate deploy call needed.
             let deploy_success = coolify_status.is_success();
-            use base64::Engine as _;
 
             // Optionally launch a Cloudflare Tunnel connector as a sidecar Coolify Service so
             // the user doesn't have to run cloudflared themselves. A token tunnel is remotely
@@ -2932,6 +2953,13 @@ pub async fn deploy_to_hosting(
             })))
         }
         "dokploy" => {
+            // TODO: Dokploy still creates a new application on every deploy — it does NOT use the
+            // `deployments` table for redeploy-in-place, nor does it carry app source the way the
+            // Coolify clone-at-build path does. When Dokploy gets the git/clone-at-build treatment,
+            // mirror the Coolify branch: persist the app id via save_deployment, redeploy the same
+            // app on subsequent deploys, and add the same 404/"app deleted" fallback that drops the
+            // stale mapping and recreates (see the Coolify arm above).
+            //
             // Dokploy's tRPC query procedures are invoked via GET (mutations via POST),
             // and the list endpoints are `server.all` / `project.all` — there is no
             // `*.list`. `project.all` returns each project with its nested environments
@@ -3209,6 +3237,52 @@ fn detect_framework(project_path: &std::path::Path) -> (String, String, String, 
 }
 
 /// Generate a Dockerfile for the detected framework
+/// Generate a Dockerfile that clones the project repo at build time (instead of relying on a
+/// build context). Returns the Dockerfile plus the port the resulting container actually
+/// listens on. The clone disables TLS verification to tolerate self-signed homelab certs and
+/// uses the token-bearing URL, so it works for forges on IPs/.local that Coolify itself can't
+/// clone. `CACHEBUST` changes each generation so a fresh create rebuilds; redeploys pass
+/// `force=true` for a no-cache rebuild.
+fn generate_clone_dockerfile(
+    framework: &str,
+    output_dir: &str,
+    build_port: u16,
+    clone_url: &str,
+    branch: &str,
+) -> (String, u16) {
+    let cachebust = chrono::Utc::now().timestamp();
+    // Clone step for node-based stages (git installed via apk).
+    let node_clone = format!(
+        "RUN apk add --no-cache git && git -c http.sslVerify=false clone --depth 1 --single-branch --branch {b} \"{u}\" . && rm -rf .git",
+        b = branch, u = clone_url
+    );
+    // Clone step for the prebuilt alpine/git image (git already present).
+    let git_clone = format!(
+        "RUN git -c http.sslVerify=false clone --depth 1 --single-branch --branch {b} \"{u}\" . && rm -rf .git",
+        b = branch, u = clone_url
+    );
+
+    match framework {
+        "nextjs" => (format!(
+            "FROM node:18-alpine AS builder\nWORKDIR /app\nARG CACHEBUST={cb}\n{clone}\nRUN npm install && npm run build\n\nFROM node:18-alpine AS runner\nWORKDIR /app\nENV NODE_ENV=production\nCOPY --from=builder /app/package*.json ./\nCOPY --from=builder /app/{out} ./{out}\nCOPY --from=builder /app/node_modules ./node_modules\nEXPOSE {p}\nCMD [\"npm\", \"start\"]\n",
+            cb = cachebust, clone = node_clone, out = output_dir, p = build_port
+        ), build_port),
+        "vite-react" | "vue" | "react" => (format!(
+            "FROM node:18-alpine AS builder\nWORKDIR /app\nARG CACHEBUST={cb}\n{clone}\nRUN npm install && npm run build\n\nFROM nginx:alpine\nCOPY --from=builder /app/{out} /usr/share/nginx/html\nEXPOSE 80\n",
+            cb = cachebust, clone = node_clone, out = output_dir
+        ), 80),
+        "express" | "fastify" | "node" => (format!(
+            "FROM node:18-alpine\nWORKDIR /app\nARG CACHEBUST={cb}\n{clone}\nRUN npm install --production\nEXPOSE {p}\nCMD [\"node\", \"index.js\"]\n",
+            cb = cachebust, clone = node_clone, p = build_port
+        ), build_port),
+        // static / unknown: clone the repo and serve it as static files via nginx (port 80).
+        _ => (format!(
+            "FROM alpine/git AS source\nWORKDIR /src\nARG CACHEBUST={cb}\n{clone}\n\nFROM nginx:alpine\nCOPY --from=source /src /usr/share/nginx/html\nEXPOSE 80\n",
+            cb = cachebust, clone = git_clone
+        ), 80),
+    }
+}
+
 fn generate_dockerfile(framework: &str, _build_cmd: &str, output_dir: &str, port: u16) -> String {
     match framework {
         "nextjs" => format!(
