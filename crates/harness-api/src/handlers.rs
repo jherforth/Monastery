@@ -2659,10 +2659,28 @@ pub async fn deploy_to_hosting(
             // Coolify's port mapping and the tunnel instead of the framework's dev port.
             let port = container_port;
 
+            // Host port to publish the app on, so it's directly reachable at
+            // http://<server-ip>:<host_port> on the LAN — no DNS / sslip.io / Traefik domain
+            // needed (the all-local case). Must NOT be 80/443 — those are owned by Coolify's
+            // proxy on the deploy host, so publishing there fails with "port is already
+            // allocated". Pick a stable high port per app (deterministic so redeploys keep the
+            // same port); the Cloudflare tunnel, when used, also points at this port.
+            let host_port: u16 = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                req.app_name.hash(&mut h);
+                20000 + (h.finish() % 10000) as u16
+            };
+
             // If already deployed for this (project, connection), redeploy the SAME app with a
             // forced (no-cache) rebuild so the in-Dockerfile clone re-fetches the latest commit.
             // If the app was deleted in Coolify (404), drop the stale mapping and fall through to
             // create a fresh one — so a user who wipes the app in Coolify can just redeploy.
+            //
+            // NOTE (config drift): a redeploy reuses the app config Coolify stored at create time
+            // (Dockerfile, ports_mappings, etc.). Changes to how Monastery *generates* those won't
+            // reach an existing app via redeploy — the user must delete the app in Coolify and
+            // redeploy (404 path) to pick them up. TODO: PATCH the app config on redeploy to sync.
             if let Some(existing_uuid) = lookup_deployment(&state, req.project_id, req.connection_id).await? {
                 let deploy_url = format!("{}/api/v1/deploy?uuid={}&force=true", base, existing_uuid);
                 match client
@@ -2679,7 +2697,7 @@ pub async fn deploy_to_hosting(
                             "app_name": req.app_name,
                             "deploy_triggered": true,
                             "redeployed": true,
-                            "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), existing_uuid),
+                            "dashboard_url": format!("{}/projects", base.trim_end_matches("/api/v1")),
                             "framework": framework,
                             "port": port,
                         })));
@@ -2841,11 +2859,10 @@ pub async fn deploy_to_hosting(
                 }
             }
 
-            // When a Cloudflare tunnel connector will be launched, publish the app's port on
-            // the VPS host so the host-networked cloudflared can reach it at http://localhost:PORT.
-            if req.include_cloudflare_tunnel {
-                payload["ports_mappings"] = serde_json::Value::String(format!("{}:{}", port, port));
-            }
+            // Always publish the app on the host port so it's reachable on the LAN at
+            // http://<server-ip>:<host_port> (and so a host-networked Cloudflare connector can
+            // reach it). host_port avoids 80/443 to not collide with Coolify's proxy.
+            payload["ports_mappings"] = serde_json::Value::String(format!("{}:{}", host_port, port));
 
             let resp = client
                 .post(&create_url)
@@ -2940,16 +2957,20 @@ pub async fn deploy_to_hosting(
                 "app_name": req.app_name,
                 "deploy_triggered": deploy_success,
                 "redeployed": false,
-                "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), app_uuid),
+                "dashboard_url": format!("{}/projects", base.trim_end_matches("/api/v1")),
                 "framework": framework,
                 "port": port,
                 "server": chosen_server_name,
                 "server_is_localhost": is_localhost(chosen_server),
+                "host_port": host_port,
+                // Direct LAN URL — reachable without DNS once the build finishes and the
+                // container is up. Uses the chosen server's IP.
+                "access_url": chosen_server["ip"].as_str().map(|ip| format!("http://{}:{}", ip, host_port)),
                 "tunnel_requested": req.include_cloudflare_tunnel,
                 "tunnel_deployed": tunnel_deployed,
                 "tunnel_error": tunnel_error,
                 // The exact "Service" URL to set for the Public Hostname in the Cloudflare dashboard.
-                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://localhost:{}", port)) } else { None },
+                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://localhost:{}", host_port)) } else { None },
             })))
         }
         "dokploy" => {

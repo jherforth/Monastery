@@ -45,6 +45,8 @@ export interface DeployResult {
   redeployed?: boolean;
   server?: string;
   server_is_localhost?: boolean;
+  host_port?: number;
+  access_url?: string | null;
   tunnel_requested?: boolean;
   tunnel_deployed?: boolean;
   tunnel_error?: string | null;

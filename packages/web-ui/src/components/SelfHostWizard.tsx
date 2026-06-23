@@ -363,6 +363,14 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
                 <div className="flex items-center gap-2 font-medium"><CheckCircle2 size={14} /> {deployResult.redeployed ? `Redeployed existing app on ${deployResult.platform}` : `App created on ${deployResult.platform}!`}</div>
                 <p className="text-monastery-text-secondary">Framework: <span className="text-monastery-text-primary">{deployResult.framework}</span> — Port: {deployResult.port}</p>
                 {deployResult.server && <p className="text-monastery-text-secondary">Server: <span className="text-monastery-text-primary">{deployResult.server}</span></p>}
+                {deployResult.access_url && (
+                  <div className="pt-1">
+                    <p className="text-monastery-text-secondary mb-1">Open on your network (give it a moment to finish building):</p>
+                    <a href={deployResult.access_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 px-2 py-1 rounded bg-monastery-dark-bg text-monastery-lantern hover:underline break-all">
+                      <Globe size={12} className="shrink-0" /> {deployResult.access_url}
+                    </a>
+                  </div>
+                )}
                 {deployResult.server_is_localhost && (
                   <p className="text-amber-300 flex items-start gap-1"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> Deployed to the platform's own host — to reach a VPS instead, pick a remote server above and redeploy.</p>
                 )}
