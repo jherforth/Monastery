@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useHostingServices } from '../hooks/useHostingServices';
-import type { DeployResult, PreviewResult } from '../hooks/useHostingServices';
+import type { DeployResult, PreviewResult, HostingServer } from '../hooks/useHostingServices';
 import { useGitForge } from '../hooks/useGitForge';
 import { useAppStore } from '../store/useAppStore';
 import {
@@ -18,7 +18,7 @@ interface SelfHostWizardProps {
 }
 
 export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
-  const { connections: hostingConns, deployProject, previewDeploy, connectService } = useHostingServices();
+  const { connections: hostingConns, deployProject, previewDeploy, connectService, listServers } = useHostingServices();
   const { connections: gitConns } = useGitForge();
   const currentProject = useAppStore(s => s.currentProject);
 
@@ -43,6 +43,10 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployTab, setDeployTab] = useState<'auto' | 'manual'>('auto');
   const [copiedFile, setCopiedFile] = useState<string | null>(null);
+  const [servers, setServers] = useState<HostingServer[]>([]);
+  const [selectedServer, setSelectedServer] = useState<string>('');
+  const [loadingServers, setLoadingServers] = useState(false);
+  const [serversError, setServersError] = useState<string | null>(null);
 
   const dokploy = hostingConns.find(c => c.service_type === 'dokploy');
   const coolify = hostingConns.find(c => c.service_type === 'coolify');
@@ -60,6 +64,7 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
     setShowPreview(false); setDeployResult(null); setDeployError(null);
     setDeployTab('auto'); setIncludePocketbase(false); setDomain('');
     setIncludeCloudflareTunnel(false); setCloudflareTunnelToken('');
+    setServers([]); setSelectedServer(''); setServersError(null);
   }, []);
 
   useEffect(() => {
@@ -81,6 +86,30 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
         .finally(() => setLoadingPreview(false));
     }
   }, [step, includePocketbase, includeCloudflareTunnel]);
+
+  // Fetch the platform's servers when entering the Configure step so the user can pick
+  // a deploy target (avoids the default "localhost" server trap on Coolify/Dokploy).
+  useEffect(() => {
+    const platform = activePlatformConn?.service_type;
+    if (step !== 2 || !activePlatformConn?.id || (platform !== 'coolify' && platform !== 'dokploy')) {
+      return;
+    }
+    let cancelled = false;
+    setLoadingServers(true); setServersError(null);
+    listServers(activePlatformConn.id)
+      .then(list => {
+        if (cancelled) return;
+        setServers(list);
+        // Preselect a usable, non-localhost server when available.
+        const preferred = list.find(s => s.is_usable && !s.is_localhost)
+          ?? list.find(s => !s.is_localhost)
+          ?? list[0];
+        setSelectedServer(preferred?.uuid ?? '');
+      })
+      .catch(e => { if (!cancelled) { setServers([]); setServersError(e.message || 'Failed to load servers'); } })
+      .finally(() => { if (!cancelled) setLoadingServers(false); });
+    return () => { cancelled = true; };
+  }, [step, activePlatformConn?.id, activePlatformConn?.service_type, listServers]);
 
   const handleSelectPlatform = (platform: string) => {
     setSelectedPlatform(platform);
@@ -108,6 +137,7 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
       const result = await deployProject({
         connection_id: activePlatformConn.id, project_id: currentProject.id,
         app_name: appName.trim() || 'monastery-app', domain: domain.trim() || undefined,
+        server_uuid: selectedServer || undefined,
         port: parseInt(port) || 3000, include_pocketbase: includePocketbase,
         pocketbase_connection_id: includePocketbase ? pocketbase?.id : undefined,
         include_cloudflare_tunnel: includeCloudflareTunnel,
@@ -233,11 +263,34 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
             <h3 className="text-sm font-medium text-monastery-text-primary flex items-center gap-2"><Rocket size={16} className="text-monastery-lantern" /> Configure Your Deployment</h3>
             <div className={`p-2 rounded-lg border text-xs flex items-center gap-2 ${activePlatformConn ? 'border-green-400/30 bg-green-400/5 text-green-400' : 'border-monastery-dark-border bg-monastery-dark-bg text-monastery-text-muted'}`}>
               <CheckCircle2 size={12} />{activePlatformConn ? `Deploying to ${activePlatformConn.service_type} (${activePlatformConn.base_url})` : 'No platform connected'}</div>
-            {/* Server selection reminder */}
-            <div className="p-2 rounded-lg border border-amber-400/20 bg-amber-400/5 text-xs text-amber-300 flex items-start gap-2">
-              <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-              <span>After deploying, log in to your {activePlatformConn?.service_type || 'platform'} dashboard and verify the <strong>deployment server</strong> is correctly selected. The wizard auto-selects the first available server, but you should confirm it's the right one for your app.</span>
-            </div>
+            {/* Deployment server selector */}
+            {(activePlatformConn?.service_type === 'coolify' || activePlatformConn?.service_type === 'dokploy') && (
+              <div>
+                <label className="block text-xs font-medium text-monastery-text-secondary mb-1">Deployment Server</label>
+                {loadingServers ? (
+                  <div className="text-xs text-monastery-text-muted flex items-center gap-2"><Loader2 size={12} className="animate-spin" /> Loading servers…</div>
+                ) : serversError ? (
+                  <div className="text-xs text-red-400">{serversError}</div>
+                ) : servers.length === 0 ? (
+                  <div className="text-xs text-monastery-text-muted">No servers found. Add one in your {activePlatformConn?.service_type} dashboard first.</div>
+                ) : (
+                  <select value={selectedServer} onChange={e => setSelectedServer(e.target.value)}
+                    className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine focus:outline-none">
+                    {servers.map(s => (
+                      <option key={s.uuid} value={s.uuid}>
+                        {s.name}{s.ip ? ` (${s.ip})` : ''}{s.is_localhost ? ' — localhost' : ''}{!s.is_usable ? ' — unreachable' : ''}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {servers.find(s => s.uuid === selectedServer)?.is_localhost && (
+                  <p className="text-xs text-amber-300 mt-1 flex items-start gap-1">
+                    <AlertTriangle size={11} className="shrink-0 mt-0.5" />
+                    This is the platform's own host — the app will run there and may collide on port 80. Pick a remote server to deploy to your VPS.
+                  </p>
+                )}
+              </div>
+            )}
             <div><label className="block text-xs font-medium text-monastery-text-secondary mb-1">App Name</label>
               <input type="text" value={appName} onChange={e => setAppName(e.target.value)} placeholder="my-monastery-app"
                 className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" /></div>
@@ -309,6 +362,10 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
               {deployResult && (<div className="p-3 rounded-lg text-xs bg-green-400/10 text-green-400 space-y-2">
                 <div className="flex items-center gap-2 font-medium"><CheckCircle2 size={14} /> App created on {deployResult.platform}!</div>
                 <p className="text-monastery-text-secondary">Framework: <span className="text-monastery-text-primary">{deployResult.framework}</span> — Port: {deployResult.port}</p>
+                {deployResult.server && <p className="text-monastery-text-secondary">Server: <span className="text-monastery-text-primary">{deployResult.server}</span></p>}
+                {deployResult.server_is_localhost && (
+                  <p className="text-amber-300 flex items-start gap-1"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> Deployed to the platform's own host — to reach a VPS instead, pick a remote server above and redeploy.</p>
+                )}
                 {deployResult.deploy_triggered && <p className="text-monastery-text-secondary">Deployment triggered — building now.</p>}
                 <a href={deployResult.dashboard_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-monastery-lantern hover:underline"><Globe size={12} /> Open {deployResult.platform} Dashboard</a></div>)}
               <button onClick={handleDeploy} disabled={deploying || !activePlatformConn || !currentProject}

@@ -15,12 +15,21 @@ interface DeployRequest {
   connection_id: string;
   project_id: string;
   app_name: string;
+  server_uuid?: string;
   domain?: string;
   port?: number;
   include_pocketbase?: boolean;
   pocketbase_connection_id?: string;
   include_cloudflare_tunnel?: boolean;
   cloudflare_tunnel_token?: string;
+}
+
+export interface HostingServer {
+  uuid: string;
+  name: string;
+  ip?: string | null;
+  is_localhost: boolean;
+  is_usable: boolean;
 }
 
 export interface DeployResult {
@@ -33,6 +42,8 @@ export interface DeployResult {
   dashboard_url: string;
   framework: string;
   port: number;
+  server?: string;
+  server_is_localhost?: boolean;
 }
 
 export interface PreviewResult {
@@ -72,6 +83,15 @@ export function useHostingServices() {
       method: 'POST',
     });
     return res.json() as Promise<{ healthy: boolean; message: string }>;
+  }, []);
+
+  const listServers = useCallback(async (connectionId: string): Promise<HostingServer[]> => {
+    const res = await fetch(`/api/hosting/connections/${connectionId}/servers`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to list servers' }));
+      throw new Error(err.error || 'Failed to list servers');
+    }
+    return res.json();
   }, []);
 
   const deployProject = useCallback(async (req: DeployRequest): Promise<DeployResult> => {
@@ -119,6 +139,7 @@ export function useHostingServices() {
     connectService,
     deleteConnection,
     testConnection,
+    listServers,
     deployProject,
     previewDeploy,
     refreshConnections: mutate,

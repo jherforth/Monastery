@@ -2263,6 +2263,110 @@ pub async fn test_hosting_connection(
     }
 }
 
+/// A deployable server returned by a hosting platform, normalized across providers.
+#[derive(Debug, Serialize)]
+pub(crate) struct HostingServer {
+    /// Coolify server uuid, or Dokploy serverId — the value passed back as `server_uuid`.
+    pub uuid: String,
+    pub name: String,
+    pub ip: Option<String>,
+    /// True for the platform's built-in "localhost" server (the host running Coolify/Dokploy).
+    pub is_localhost: bool,
+    /// Whether the platform reports the server as reachable/usable for deployment.
+    pub is_usable: bool,
+}
+
+/// List the servers available on a hosting connection so the UI can let the user pick
+/// a deployment target. Works for both Coolify (`/api/v1/servers`) and Dokploy
+/// (`/api/trpc/server.all`).
+pub async fn list_hosting_servers(
+    Path(id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<HostingServer>>, ApiError> {
+    let row = sqlx::query(
+        "SELECT service_type, base_url, api_token FROM hosting_connections WHERE id = ?"
+    )
+    .bind(id.to_string())
+    .fetch_optional(&*state.db)
+    .await?;
+
+    let (service_type, base_url, api_token) = match row {
+        Some(r) => (r.get::<String, _>(0), r.get::<String, _>(1), r.get::<String, _>(2)),
+        None => return Err(ApiError::NotFound("Hosting connection not found".into())),
+    };
+
+    let base = base_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("Failed to build HTTP client: {}", e)))?;
+
+    match service_type.as_str() {
+        "coolify" => {
+            let resp = client
+                .get(format!("{}/api/v1/servers", base))
+                .header("Authorization", format!("Bearer {}", api_token))
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch Coolify servers: {}", e)))?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(ApiError::Internal(format!("Failed to list Coolify servers: HTTP {}: {}", status, body)));
+            }
+            let servers: Vec<serde_json::Value> = resp.json().await
+                .map_err(|e| ApiError::Internal(format!("Failed to parse Coolify servers: {}", e)))?;
+            let out = servers.iter().filter_map(|s| {
+                let uuid = s["uuid"].as_str()?.to_string();
+                let ip = s["ip"].as_str().map(|v| v.to_string());
+                Some(HostingServer {
+                    name: s["name"].as_str().unwrap_or("unnamed").to_string(),
+                    is_localhost: ip.as_deref() == Some("host.docker.internal"),
+                    is_usable: s["is_usable"].as_bool().unwrap_or(true) && s["is_reachable"].as_bool().unwrap_or(true),
+                    ip,
+                    uuid,
+                })
+            }).collect();
+            Ok(Json(out))
+        }
+        "dokploy" => {
+            let resp = client
+                .get(format!("{}/api/trpc/server.all", base))
+                .header("x-api-key", &api_token)
+                .send()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to fetch Dokploy servers: {}", e)))?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(ApiError::Internal(format!("Failed to list Dokploy servers: HTTP {}: {}", status, body)));
+            }
+            let data: serde_json::Value = resp.json().await.unwrap_or_default();
+            let list = data["result"]["data"]["json"].as_array()
+                .or_else(|| data["result"]["data"].as_array())
+                .or_else(|| data["result"].as_array())
+                .cloned()
+                .unwrap_or_default();
+            let out = list.iter().filter_map(|s| {
+                let uuid = s["serverId"].as_str().or_else(|| s["id"].as_str())?.to_string();
+                let ip = s["ipAddress"].as_str().or_else(|| s["ip"].as_str()).map(|v| v.to_string());
+                let is_localhost = matches!(ip.as_deref(), Some("") | Some("127.0.0.1") | Some("localhost") | None);
+                Some(HostingServer {
+                    name: s["name"].as_str().unwrap_or("unnamed").to_string(),
+                    is_localhost,
+                    is_usable: s["serverStatus"].as_str().map(|st| st == "active").unwrap_or(true),
+                    ip,
+                    uuid,
+                })
+            }).collect();
+            Ok(Json(out))
+        }
+        other => Err(ApiError::Config(format!(
+            "Listing servers is not supported for service type '{}'.", other
+        ))),
+    }
+}
+
 // ============================================================
 // Self-Host Deployment Handler
 // ============================================================
@@ -2273,6 +2377,11 @@ pub(crate) struct DeployRequest {
     pub connection_id: uuid::Uuid,
     pub project_id: uuid::Uuid,
     pub app_name: String,
+    /// Target server to deploy to. When the platform has multiple servers, the UI lets
+    /// the user pick one (its uuid for Coolify / serverId for Dokploy). When omitted,
+    /// the backend auto-selects a usable, non-localhost server.
+    #[serde(default)]
+    pub server_uuid: Option<String>,
     #[serde(default)]
     pub domain: Option<String>,
     #[serde(default)]
@@ -2486,11 +2595,46 @@ pub async fn deploy_to_hosting(
             
             let servers: Vec<serde_json::Value> = servers_resp.json().await
                 .map_err(|e| ApiError::Internal(format!("Failed to parse Coolify servers: {}", e)))?;
-            let server_uuid = servers.first()
-                .and_then(|s| s["uuid"].as_str())
-                .ok_or_else(|| ApiError::Config(
-                    "No servers found in Coolify. You must add a server in the Coolify dashboard first. Go to Servers → Add Server, then retry the deployment.".into()
-                ))?;
+
+            // Coolify's first server is the built-in "localhost" — the Coolify host itself,
+            // identified by ip == "host.docker.internal". Deploying there runs the app ON the
+            // Coolify box (colliding with whatever already serves port 80 there), not on the
+            // user's VPS. Prefer a usable, non-localhost server; fall back progressively so we
+            // never hard-fail when only localhost exists.
+            let is_localhost = |s: &serde_json::Value| s["ip"].as_str() == Some("host.docker.internal");
+            let is_usable = |s: &serde_json::Value| {
+                // Treat missing flags as usable so an unexpected API shape doesn't exclude everything.
+                s["is_usable"].as_bool().unwrap_or(true) && s["is_reachable"].as_bool().unwrap_or(true)
+            };
+            // If the user explicitly picked a server in the wizard, honor it. Otherwise
+            // auto-select a usable, non-localhost server (see comment above).
+            let explicit_server = req.server_uuid.as_deref()
+                .and_then(|want| servers.iter().find(|s| s["uuid"].as_str() == Some(want)));
+            if req.server_uuid.is_some() && explicit_server.is_none() {
+                return Err(ApiError::Config(
+                    "The selected server was not found in Coolify. Refresh the server list and try again.".into()
+                ));
+            }
+            let chosen_server = explicit_server
+                .or_else(|| servers.iter().find(|s| is_usable(s) && !is_localhost(s)))
+                .or_else(|| servers.iter().find(|s| !is_localhost(s)))
+                .or_else(|| servers.iter().find(|s| is_usable(s)))
+                .or_else(|| servers.first());
+
+            let chosen_server = chosen_server.ok_or_else(|| ApiError::Config(
+                "No servers found in Coolify. You must add a server in the Coolify dashboard first. Go to Servers → Add Server, then retry the deployment.".into()
+            ))?;
+            let server_uuid = chosen_server["uuid"].as_str().ok_or_else(|| ApiError::Config(
+                "Coolify server entry is missing its uuid. Check the Coolify dashboard.".into()
+            ))?;
+            let chosen_server_name = chosen_server["name"].as_str().unwrap_or("unknown").to_string();
+            if is_localhost(chosen_server) {
+                tracing::warn!(
+                    "Coolify deploy is targeting the built-in localhost server ('{}'). \
+                     Add a remote server in Coolify (Servers → Add Server) to deploy to your VPS.",
+                    chosen_server_name
+                );
+            }
 
             // Create a Dockerfile-based application on Coolify
             let create_url = format!("{}/api/v1/applications/dockerfile", base);
@@ -2561,6 +2705,8 @@ pub async fn deploy_to_hosting(
                 "dashboard_url": format!("{}/applications/{}", base.trim_end_matches("/api/v1"), app_uuid),
                 "framework": framework,
                 "port": port,
+                "server": chosen_server_name,
+                "server_is_localhost": is_localhost(chosen_server),
             })))
         }
         "dokploy" => {
@@ -2590,9 +2736,14 @@ pub async fn deploy_to_hosting(
             let server_id = match server_resp {
                 Ok(resp) if resp.status().is_success() => {
                     let data: serde_json::Value = resp.json().await.unwrap_or_default();
-                    trpc_array(&data)
-                        .and_then(|arr| arr.first())
-                        .and_then(|srv| srv["serverId"].as_str().or_else(|| srv["id"].as_str()))
+                    let servers = trpc_array(&data).cloned().unwrap_or_default();
+                    // Honor an explicitly chosen server; otherwise use the first one.
+                    let pick = req.server_uuid.as_deref()
+                        .and_then(|want| servers.iter().find(|s| {
+                            s["serverId"].as_str().or_else(|| s["id"].as_str()) == Some(want)
+                        }))
+                        .or_else(|| servers.first());
+                    pick.and_then(|srv| srv["serverId"].as_str().or_else(|| srv["id"].as_str()))
                         .map(|s| s.to_string())
                 }
                 Ok(resp) => {
