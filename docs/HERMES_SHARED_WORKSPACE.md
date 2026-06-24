@@ -28,45 +28,73 @@ Monastery stores each project at **`/app/data/<project-name>`** inside its conta
 (`DATA_DIR=/app/data`; the default outside Docker is `./data`). The goal is to make that path
 **also** Hermes's working directory, on a filesystem both can see.
 
-### Recipe A — Host bind-mount (simplest if Hermes runs on the host)
+### Three things to know about the `nousresearch/hermes-agent` image
 
-1. In Monastery's `docker-compose.yml`, change the data volume from the named volume to a **host
-   bind-mount** so the files exist on your host:
-   ```yaml
-   services:
-     harness:
-       volumes:
-         - ./data:/app/data            # was: harness_data:/app/data
-   ```
-   (Re-create the container; copy any existing project data into `./data` first.)
-2. Run Hermes on the host and point it at the project:
-   ```yaml
-   # ~/.hermes/config.yaml
-   terminal:
-     cwd: /absolute/path/to/Monastery/data/<project-name>
-   ```
-   or per-run: `TERMINAL_CWD=/absolute/path/to/Monastery/data/<project-name>`.
+1. **`/opt/data` is Hermes's *home* dir** (`HERMES_HOME` — config.yaml, sessions, skills), **not**
+   the project workspace. Leave it mounted as-is; add a **separate** mount for projects.
+2. The image sets **`HERMES_WRITE_SAFE_ROOT=/opt/data`**, which **restricts `write_file` to
+   `/opt/data`**. To let Hermes write into the shared project mount you **must override** this.
+3. With **`HERMES_DASHBOARD=1` + a non-loopback bind + no auth provider**, Hermes raises a fatal
+   error and the **whole gateway (API included) won't start**. Disabling the dashboard avoids it
+   (the API stays protected by `API_SERVER_KEY`).
 
-### Recipe B — Co-locate Hermes in the same Compose (shared named volume)
+### Step 1 — Pick a shared host directory
 
-Keep the named volume and give Hermes a container that mounts it too:
+Use a host folder both containers mount, e.g. **`/apps/monastery/data`**. Projects will live at
+`/apps/monastery/data/<project>` on the host.
+
+### Step 2 — Point Monastery at it (host bind-mount) + migrate existing data
+
+In Monastery's `docker-compose.yml`, replace the named volume with the bind-mount:
 ```yaml
 services:
   harness:
     volumes:
-      - harness_data:/app/data
-  hermes:
-    image: <your-hermes-image>
-    volumes:
-      - harness_data:/app/data        # same volume Monastery uses
+      - /apps/monastery/data:/app/data        # was: harness_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      - TERMINAL_CWD=/app/data/<project-name>
-volumes:
-  harness_data:
+      - DATA_DIR=/app/data
+# remove the top-level `volumes: { harness_data: ... }` block once migrated
+```
+Copy your existing projects out of the old named volume first:
+```bash
+docker volume ls | grep harness_data     # find the real name, e.g. monastery_harness_data
+docker run --rm -v monastery_harness_data:/from -v /apps/monastery/data:/to \
+  alpine sh -c "cp -a /from/. /to/"
 ```
 
-Either way, Hermes's `write_file` now lands in `…/data/<project>`, which **is** your Monastery
-project.
+### Step 3 — Mount the same host dir into Hermes + set the write root
+
+Add a **second** volume to Hermes at `/workspace` (keep `/opt/data` for Hermes's own home), and set
+the agent's working dir + safe root to it. Disable the dashboard:
+```yaml
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    command: gateway run
+    ports:
+      - "8642:8642"                          # API only; dashboard port removed
+    volumes:
+      - /apps/hermes/data:/opt/data          # Hermes home — unchanged
+      - /apps/monastery/data:/workspace      # SAME host dir Monastery uses
+    environment:
+      - HERMES_DASHBOARD=0                    # avoid the auth-gate startup failure
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${API_SERVER_KEY}
+      - TERMINAL_CWD=/workspace/<project-name>     # where the agent writes
+      - HERMES_WRITE_SAFE_ROOT=/workspace          # OVERRIDE the image default (/opt/data)
+```
+
+Now Hermes's `write_file` writes to `/workspace/<project>` = `/apps/monastery/data/<project>` =
+Monastery's `/app/data/<project>` — the same files.
+
+### Step 4 — Order of operations
+
+Create the project in **Monastery first** (so `/apps/monastery/data/<project>` exists — `TERMINAL_CWD`
+must point at an existing directory, or Hermes silently falls back to its own dir). Then start Hermes
+with `TERMINAL_CWD` set to that project.
 
 ---
 
@@ -84,17 +112,21 @@ project.
 
 ## Caveats & safety
 
-- **One project at a time.** Hermes's `terminal.cwd` is a single config value (not a per-request
-  parameter on the standard `/v1/chat/completions` API), so the shared workspace targets **one**
-  project directory until you change the config. (The `project_path` Monastery sends to
-  `/api/hermes/run` is currently informational — Hermes ignores it.)
-- **Constrain writes.** Set `HERMES_WRITE_SAFE_ROOT` to the project directory so Hermes can't write
-  outside it:
+- **One project at a time.** `TERMINAL_CWD` is a single value (not a per-request parameter on the
+  standard `/v1/chat/completions` API), so Hermes targets **one** project until you change it and
+  restart — or set it in `/opt/data/config.yaml`:
+  ```yaml
+  terminal:
+    cwd: /workspace/<project-name>
   ```
-  HERMES_WRITE_SAFE_ROOT=/app/data/<project-name>
-  ```
-- **Same path on both sides.** Whatever path Monastery sees (`/app/data/<project>`) must be the same
-  path Hermes writes to. With a host bind-mount the host path and container path differ — point
-  Hermes at whichever path *Hermes itself* sees.
+  (The `project_path` Monastery sends to `/api/hermes/run` is currently informational — Hermes ignores it.)
+- **Write root must include the workspace.** The image defaults `HERMES_WRITE_SAFE_ROOT=/opt/data`,
+  which blocks writes to `/workspace`. Override it (to `/workspace`, or a specific project dir) or
+  Hermes will refuse to write your files.
+- **Same underlying directory, possibly different container paths.** With the bind-mount, Monastery
+  sees `/app/data/<project>` and Hermes sees `/workspace/<project>` — both map to host
+  `/apps/monastery/data/<project>`. Point `TERMINAL_CWD` at whichever path *Hermes itself* sees.
+- **File ownership.** Monastery (Rust) and Hermes may run as different UIDs; if you hit permission
+  errors on the shared dir, `chown`/`chmod` it so both can read/write (homelab-acceptable).
 - This is a filesystem bridge only. Tighter coupling (Hermes's API accepting a per-request project
   path, or Monastery driving Hermes's tool loop) is future work.
