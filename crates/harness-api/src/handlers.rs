@@ -2584,6 +2584,38 @@ async fn save_deployment(
     Ok(())
 }
 
+/// POST a Dokploy tRPC mutation (`{ "json": input }`) and return the parsed response, mapping a
+/// non-2xx tRPC error into a readable `ApiError` (so failures like a missing source provider surface
+/// clearly instead of only showing up later in Dokploy's build logs).
+async fn dokploy_mutation(
+    client: &reqwest::Client,
+    base: &str,
+    api_token: &str,
+    procedure: &str,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, ApiError> {
+    let url = format!("{}/api/trpc/{}", base, procedure);
+    let resp = client
+        .post(&url)
+        .header("x-api-key", api_token)
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "json": input }))
+        .send()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Dokploy {} request failed: {}", procedure, e)))?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.unwrap_or_default();
+    if !status.is_success() {
+        let msg = body["error"]["json"]["message"].as_str()
+            .or_else(|| body["message"].as_str())
+            .unwrap_or("unknown error");
+        return Err(ApiError::Internal(format!(
+            "Dokploy {} failed (HTTP {}): {}", procedure, status.as_u16(), msg
+        )));
+    }
+    Ok(body)
+}
+
 /// Deploy a project to a connected hosting service
 pub async fn deploy_to_hosting(
     State(state): State<AppState>,
@@ -2974,20 +3006,65 @@ pub async fn deploy_to_hosting(
             })))
         }
         "dokploy" => {
-            // TODO: Dokploy still creates a new application on every deploy — it does NOT use the
-            // `deployments` table for redeploy-in-place, nor does it carry app source the way the
-            // Coolify clone-at-build path does. When Dokploy gets the git/clone-at-build treatment,
-            // mirror the Coolify branch: persist the app id via save_deployment, redeploy the same
-            // app on subsequent deploys, and add the same 404/"app deleted" fallback that drops the
-            // stale mapping and recreates (see the Coolify arm above).
+            // Dokploy clones a git source and builds its Dockerfile — it does NOT accept an inline
+            // Dockerfile. So we point Dokploy at the project's repo (custom git, token-in-URL) and
+            // ensure a Dockerfile is committed there. Dokploy's custom-git provider is permissive
+            // (no host validation), so it works with a local IP/.local Forgejo.
             //
-            // Dokploy's tRPC query procedures are invoked via GET (mutations via POST),
-            // and the list endpoints are `server.all` / `project.all` — there is no
-            // `*.list`. `project.all` returns each project with its nested environments
-            // (Dokploy auto-creates a "production" environment with every project).
-            // The previous code POSTed to `server.list` / `environment.list` / `project.list`,
-            // which don't exist, so every lookup failed and surfaced the misleading
-            // "requires at least one project and one environment" error.
+            // tRPC note: query procedures use GET, mutations POST `{ "json": input }`; the list
+            // endpoints are `server.all` / `project.all` (no `*.list`); `project.all` returns each
+            // project with its nested (auto-created "production") environments.
+            let git = resolve_project_git(&state, &project_path).await?;
+            // Ensure the generated Dockerfile (written above if missing) and any local changes are
+            // committed and pushed so Dokploy's clone includes them.
+            if let Err(e) = harness_core::GitService::git_push(
+                &project_path, &git.remote_url, &git.token, &git.branch,
+                "Add/update Dockerfile for Dokploy deployment (Monastery)",
+            ) {
+                tracing::warn!("Could not push before Dokploy deploy (continuing; remote may be current): {}", e);
+            }
+            let git_repository = build_authed_clone_url(&git.remote_url, &git.token);
+
+            // Redeploy the SAME app if we've deployed this (project, connection) before. On 404
+            // (app deleted in Dokploy) drop the stale mapping and fall through to recreate.
+            if let Some(existing_app_id) = lookup_deployment(&state, req.project_id, req.connection_id).await? {
+                let deploy_url = format!("{}/api/trpc/application.deploy", base);
+                match client.post(&deploy_url)
+                    .header("x-api-key", &api_token).header("Content-Type", "application/json")
+                    .json(&serde_json::json!({ "json": { "applicationId": existing_app_id } }))
+                    .send().await
+                {
+                    Ok(r) if r.status().is_success() => {
+                        return Ok(Json(serde_json::json!({
+                            "success": true,
+                            "platform": "dokploy",
+                            "app_id": existing_app_id,
+                            "app_name": req.app_name,
+                            "deploy_triggered": true,
+                            "redeployed": true,
+                            "dashboard_url": format!("{}/dashboard", base.trim_end_matches("/api")),
+                            "framework": framework,
+                            "port": port,
+                        })));
+                    }
+                    Ok(r) if r.status().as_u16() == 404 => {
+                        tracing::warn!("Dokploy app {} no longer exists (404) — recreating.", existing_app_id);
+                        let _ = sqlx::query("DELETE FROM deployments WHERE project_id = ? AND connection_id = ?")
+                            .bind(req.project_id.to_string())
+                            .bind(req.connection_id.to_string())
+                            .execute(&*state.db).await;
+                    }
+                    Ok(r) => {
+                        let status = r.status().as_u16();
+                        let body = r.text().await.unwrap_or_default();
+                        let snippet: String = body.chars().take(200).collect();
+                        return Err(ApiError::Internal(format!("Dokploy redeploy failed (HTTP {}): {}", status, snippet)));
+                    }
+                    Err(e) => {
+                        return Err(ApiError::Internal(format!("Dokploy redeploy request failed: {}", e)));
+                    }
+                }
+            }
 
             // Helper to dig the payload out of a tRPC/superjson response envelope.
             fn trpc_array(data: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -3117,68 +3194,46 @@ pub async fn deploy_to_hosting(
                 }
             };
 
-            // Step 6: Build the application creation payload with ALL required fields
-            let create_url = format!("{}/api/trpc/application.create", base);
-
-            let app_input = serde_json::json!({
+            // Step 6: Create the application (only name/appName/description/environmentId/serverId
+            // are accepted — source & build are configured in the next two calls).
+            let create_body = dokploy_mutation(&client, base, &api_token, "application.create", serde_json::json!({
                 "name": req.app_name,
                 "appName": req.app_name,
                 "description": format!("Deployed from Monastery — project: {}", project_name),
                 "environmentId": env_id,
                 "serverId": server_id,
-                "port": port,
-                "dockerfile": std::fs::read_to_string(&dockerfile_path)
-                    .unwrap_or_else(|_| format!("FROM node:18-alpine\nWORKDIR /app\nCOPY . .\nEXPOSE {}\nCMD [\"npm\", \"start\"]", port)),
-            });
+            })).await?;
 
-            // tRPC v10 format: wrap input in { "json": ... }
-            let trpc_payload = serde_json::json!({ "json": app_input });
+            let app_id = create_body["result"]["data"]["json"]["applicationId"].as_str()
+                .or_else(|| create_body["result"]["data"]["json"]["appId"].as_str())
+                .or_else(|| create_body["result"]["data"]["json"]["id"].as_str())
+                .ok_or_else(|| ApiError::Internal("Dokploy application.create returned no applicationId".into()))?
+                .to_string();
 
-            let resp = client
-                .post(&create_url)
-                .header("x-api-key", &api_token)
-                .header("Content-Type", "application/json")
-                .json(&trpc_payload)
-                .send()
-                .await
-                .map_err(|e| ApiError::Internal(format!("Dokploy API request failed: {}", e)))?;
+            // Step 7: Point the app at the project's git repo (custom git, token-in-URL). Without a
+            // source, Dokploy defaults to a GitHub provider that doesn't exist ("Github Provider not
+            // found") and the container shows "select-a-container".
+            dokploy_mutation(&client, base, &api_token, "application.saveGitProvider", serde_json::json!({
+                "applicationId": app_id,
+                "customGitUrl": git_repository,
+                "customGitBranch": git.branch,
+                "customGitBuildPath": "/",
+            })).await?;
 
-            let dokploy_status = resp.status();
-            if !dokploy_status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(ApiError::Internal(format!(
-                    "Dokploy returned HTTP {}: {}",
-                    dokploy_status.as_u16(),
-                    if body.len() > 300 { format!("{}...", &body[..300]) } else { body }
-                )));
-            }
+            // Step 8: Build from the Dockerfile committed in the repo.
+            dokploy_mutation(&client, base, &api_token, "application.saveBuildType", serde_json::json!({
+                "applicationId": app_id,
+                "buildType": "dockerfile",
+                "dockerfile": "Dockerfile",
+                "dockerContextPath": ".",
+            })).await?;
 
-            let result: serde_json::Value = resp.json().await
-                .map_err(|e| ApiError::Internal(format!("Failed to parse Dokploy response: {}", e)))?;
+            // Step 9: Trigger the deploy (clones the repo and builds the Dockerfile).
+            let deploy_success = dokploy_mutation(&client, base, &api_token, "application.deploy",
+                serde_json::json!({ "applicationId": app_id })).await.is_ok();
 
-            // tRPC response wraps data in { result: { data: { json: ... } } }
-            let app = result["result"]["data"]["json"].as_object()
-                .map(|o| serde_json::Value::Object(o.clone()))
-                .unwrap_or(result);
-
-            let app_id = app["applicationId"].as_str()
-                .or_else(|| app["appId"].as_str())
-                .or_else(|| app["id"].as_str())
-                .unwrap_or("unknown");
-
-            // Trigger deploy via tRPC
-            let deploy_url = format!("{}/api/trpc/application.deploy", base);
-            let deploy_payload = serde_json::json!({ "json": { "applicationId": app_id } });
-            let deploy_resp = client
-                .post(&deploy_url)
-                .header("x-api-key", &api_token)
-                .header("Content-Type", "application/json")
-                .json(&deploy_payload)
-                .send()
-                .await
-                .map_err(|e| ApiError::Internal(format!("Deploy trigger failed: {}", e)))?;
-
-            let deploy_success = deploy_resp.status().is_success();
+            // Remember this app so future deploys redeploy it in place.
+            let _ = save_deployment(&state, req.project_id, req.connection_id, "dokploy", &app_id, &req.app_name, &server_id).await;
 
             Ok(Json(serde_json::json!({
                 "success": true,
@@ -3186,9 +3241,16 @@ pub async fn deploy_to_hosting(
                 "app_id": app_id,
                 "app_name": req.app_name,
                 "deploy_triggered": deploy_success,
-                "dashboard_url": format!("{}/dashboard/project/{}", base.trim_end_matches("/api"), app_id),
+                "redeployed": false,
+                "dashboard_url": format!("{}/dashboard", base.trim_end_matches("/api")),
                 "framework": framework,
                 "port": port,
+                // Cloudflare tunnel auto-setup is Coolify-only for now.
+                "tunnel_requested": req.include_cloudflare_tunnel,
+                "tunnel_deployed": false,
+                "tunnel_error": if req.include_cloudflare_tunnel {
+                    Some("Cloudflare tunnel auto-setup is currently Coolify-only — configure the tunnel manually in Dokploy.".to_string())
+                } else { None },
             })))
         }
         other => Err(ApiError::Config(format!(
