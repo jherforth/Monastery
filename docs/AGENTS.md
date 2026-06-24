@@ -83,20 +83,30 @@ In Docker, use `http://host.docker.internal:8642` to reach a host-running Hermes
 
 ## Invocation Methods
 
-### 1. Chat Quick-Action Buttons (collapsible)
+### 1. Agent role selector (above the chat input)
 
-Toggleable row above the chat input. Click to expand/collapse:
+The **Agent roles** row above the chat input lets you **select one or more roles** that act as a
+*lens* over your next messages. Clicking a role **toggles it active** (highlighted); it does **not**
+fire a canned prompt. You then type your real request and send — the selected role(s) are injected
+**silently** as a system instruction along with your project context, and the reply shows the
+**"via Hermes"** badge. The active role(s) persist (and show as chips by the input) until you remove
+them or **Clear**.
 
-| Button | Agent | Predefined Task |
+| Role | Agent | Lens it applies |
 |---|---|---|
-| 🔍 Review | Reviewer | "Review my latest changes for bugs, security issues, and anti-patterns." |
-| 🏗️ Plan | Architect | "Analyze this project and recommend the best architecture, patterns, and structure." |
-| 🧪 Test | Tester | "Write comprehensive unit and integration tests for the current module." |
-| 📝 Docs | Documenter | "Generate documentation for this project: README, API docs, and inline comments." |
-| 💻 Implement | Coder | "Implement the feature described in the latest conversation with clean, secure code." |
-| 🚀 Deploy | Deployer | "Prepare this project for deployment: check configuration, generate Dockerfile if needed." |
+| 🔍 Review | Reviewer | Bugs, security, performance, anti-patterns |
+| 🏗️ Plan | Architect | Architecture, patterns, project structure |
+| 🧪 Test | Tester | Unit/integration/edge-case tests |
+| 📝 Docs | Documenter | README, API docs, inline comments |
+| 💻 Implement | Coder | Clean, secure implementation |
+| 🚀 Deploy | Deployer | Deploy config, Dockerfile, env checks |
 
-The quick-actions row is toggled by clicking the **🤖 Agents** header above the chat input. Users familiar with agents can collapse it.
+- **Multi-select is capped** (default **2**, the `MAX_ACTIVE_ROLES` constant in `App.tsx`) — when two
+  are active the rest are disabled until you remove one. This keeps the model focused.
+- **Roles need no external setup.** They are Monastery-side prompt snippets in `useAgents.ts`
+  (`AGENT_PROFILES`) — **not** Hermes entities, no kanban, no DB. A bare Hermes + LLM connection is
+  all that's required; selecting a role just prepends an instruction to the request.
+- When exactly one role is active, the input placeholder shows that role's suggested task as a hint.
 
 ### 2. Editor Toolbar Buttons
 
@@ -113,10 +123,11 @@ Buttons are disabled when no file is open in the editor. Prompt templates live i
 ### 3. Chat Input + "Agent mode" toggle
 
 When a Hermes connection exists, a small **Agent mode** toggle appears above the chat input. With
-it **on**, your normal chat messages route to Hermes (instead of the local LLM). Clicking an agent
-button **always** routes to Hermes when connected (it doesn't require the toggle); if no Hermes
-connection is configured, agent buttons fall back to the local LLM. Assistant messages answered by
-Hermes show a small **"via Hermes"** badge.
+it **on**, your normal chat messages route to Hermes (instead of the local LLM). Selecting an
+**agent role** also routes your messages to Hermes when connected (independent of the toggle); if no
+Hermes connection is configured, messages fall back to the local LLM. Assistant messages answered by
+Hermes show a small **"via Hermes"** badge, and your sent message shows a chip for the role(s) it
+used.
 
 ---
 

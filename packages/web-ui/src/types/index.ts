@@ -11,6 +11,8 @@ export interface Message {
   truncated?: boolean;
   /** Which backend produced this assistant message — shown as a small badge in the UI. */
   via?: 'hermes' | 'llm';
+  /** Agent role label(s) active when a user message was sent (e.g. "🏗️ Architect") — shown as chips. */
+  agentLabels?: string[];
 }
 
 export interface Attachment {

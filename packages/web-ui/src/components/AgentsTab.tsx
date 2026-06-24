@@ -1,11 +1,14 @@
+import { useState } from 'react';
 import { useAgents } from '../hooks/useAgents';
 import { useHermesAgent } from '../hooks/useHermesAgent';
-import { Bot, Wifi, WifiOff, Settings, ExternalLink, ChevronRight } from 'lucide-react';
+import { Bot, Wifi, WifiOff, Settings, ExternalLink, ChevronRight, ChevronDown } from 'lucide-react';
 
 export function AgentsTab() {
   const { agents } = useAgents();
   const { connections, defaultConnection, isLoading } = useHermesAgent();
   const hermesConnected = defaultConnection !== null;
+  // Which role's description is expanded (collapsed by default so all roles fit without scrolling).
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   return (
     <div className="px-3 py-2 space-y-4">
@@ -81,31 +84,36 @@ export function AgentsTab() {
           <span className="text-[10px] font-medium text-monastery-text-muted uppercase tracking-wider">Agent Roles</span>
           <span className="text-[10px] text-monastery-text-muted">({agents.length})</span>
         </div>
-        <div className="space-y-1">
-          {agents.map(agent => (
-            <div
-              key={agent.id}
-              className="px-2 py-2 rounded-md hover:bg-monastery-dark-surface transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-sm flex-shrink-0">{agent.icon}</span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-xs font-medium text-monastery-text-primary">{agent.name}</span>
-                    <span className="text-[10px] text-monastery-text-muted">{agent.role}</span>
-                  </div>
-                  <p className="text-[11px] text-monastery-text-muted mt-0.5 leading-relaxed">
-                    {agent.description}
-                  </p>
-                  <div className="flex items-center gap-1 mt-1">
-                    <span className="text-[9px] text-monastery-text-muted">
+        <div className="space-y-0.5">
+          {agents.map(agent => {
+            const expanded = expandedId === agent.id;
+            return (
+              <div key={agent.id} className="rounded-md hover:bg-monastery-dark-surface transition-colors">
+                <button
+                  onClick={() => setExpandedId(expanded ? null : agent.id)}
+                  aria-expanded={expanded}
+                  className="w-full flex items-center gap-2 px-2 py-1.5 text-left"
+                >
+                  <span className="text-sm flex-shrink-0">{agent.icon}</span>
+                  <span className="text-xs font-medium text-monastery-text-primary">{agent.name}</span>
+                  <span className="text-[10px] text-monastery-text-muted truncate">{agent.role}</span>
+                  <span className="ml-auto text-monastery-text-muted flex-shrink-0">
+                    {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </span>
+                </button>
+                {expanded && (
+                  <div className="px-2 pb-2 pl-8">
+                    <p className="text-[11px] text-monastery-text-muted leading-relaxed">
+                      {agent.description}
+                    </p>
+                    <span className="text-[9px] text-monastery-text-muted mt-1 inline-block">
                       {hermesConnected ? '▶ Available via Hermes' : '⚡ Requires Hermes connection'}
                     </span>
                   </div>
-                </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

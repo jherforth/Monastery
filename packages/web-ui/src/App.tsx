@@ -36,6 +36,16 @@ export default function App() {
   // When on, chat messages are routed to the Hermes agent instead of plain LLM streaming.
   // Only selectable when a default Hermes connection is configured.
   const [agentMode, setAgentMode] = useState(false);
+  // Active agent role(s) — a persistent "lens" applied to chat messages. Capped to keep focus.
+  const MAX_ACTIVE_ROLES = 2;
+  const [activeAgentIds, setActiveAgentIds] = useState<string[]>([]);
+  const toggleActiveAgent = useCallback((id: string) => {
+    setActiveAgentIds(ids =>
+      ids.includes(id)
+        ? ids.filter(x => x !== id)
+        : ids.length < MAX_ACTIVE_ROLES ? [...ids, id] : ids
+    );
+  }, []);
   const abortRef = useRef<AbortController | null>(null);
 
   // Endpoints for LLM selector in TopBar
@@ -550,14 +560,21 @@ export default function App() {
       }
     }
 
+    // Resolve any active agent role(s) — applied as a silent system instruction and shown as chips.
+    const activeAgents = activeAgentIds
+      .map(id => getAgent(id))
+      .filter((a): a is NonNullable<typeof a> => !!a);
+    const agentLabels = activeAgents.map(a => `${a.icon} ${a.name}`);
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
       content,
       timestamp: Date.now(),
       attachments,
+      agentLabels: agentLabels.length ? agentLabels : undefined,
     };
-    
+
     setMessages((prev) => [...prev, userMessage]);
     setIsGenerating(true);
 
@@ -581,6 +598,14 @@ export default function App() {
       
       // Build system context from the current project
       const contextParts: string[] = [];
+      // Inject the active agent role(s) silently as a leading system instruction.
+      if (activeAgents.length === 1) {
+        const a = activeAgents[0];
+        contextParts.push(`AGENT ROLE: You are acting as the ${a.name} (${a.role}). ${a.description}. Approach the user's request in that capacity.`);
+      } else if (activeAgents.length > 1) {
+        const list = activeAgents.map(a => `${a.name} (${a.role}) — ${a.description}`).join('; ');
+        contextParts.push(`AGENT ROLES: Combine the perspectives of: ${list}. Address the user's request considering all of these roles.`);
+      }
       if (currentProject) {
         contextParts.push(`You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
       }
@@ -630,7 +655,7 @@ export default function App() {
       // Route to the Hermes agent when Agent mode is on, or an agent button forced it, and a
       // connection exists; otherwise use the standard LLM chat stream. Both endpoints emit the
       // same SSE event shape, so the streaming loop below is identical either way.
-      const useHermes = (agentMode || options?.preferHermes) && !!hermesConnection;
+      const useHermes = (agentMode || options?.preferHermes || activeAgents.length > 0) && !!hermesConnection;
 
       // Create placeholder immediately so the user sees streaming output in real-time
       const aiMsgId = (Date.now() + 1).toString();
@@ -723,7 +748,7 @@ export default function App() {
         setIsGenerating(false);
       }, 1500);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent]);
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
@@ -888,7 +913,9 @@ export default function App() {
             <ChatPane
               messages={messages}
               onSendMessage={handleSendMessage}
-              onRunAgent={triggerAgent}
+              activeAgentIds={activeAgentIds}
+              onToggleAgent={toggleActiveAgent}
+              maxActiveRoles={MAX_ACTIVE_ROLES}
               onStopGeneration={handleStopGeneration}
               onContinue={handleContinueGeneration}
               isGenerating={isGenerating}

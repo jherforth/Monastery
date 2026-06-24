@@ -35,7 +35,12 @@ function ReasoningWindow({ reasoning }: { reasoning: string }) {
 interface ChatPaneProps {
   messages: Message[];
   onSendMessage: (content: string, attachments?: Attachment[]) => void;
-  onRunAgent?: (agentId: string, task: string) => void;
+  /** Currently active agent role ids (a persistent "lens" over chat messages). */
+  activeAgentIds?: string[];
+  /** Toggle an agent role on/off (caller enforces the max). */
+  onToggleAgent?: (agentId: string) => void;
+  /** Max number of roles that can be active at once (for disabling extras). */
+  maxActiveRoles?: number;
   onStopGeneration?: () => void;
   onContinue?: (messageId: string) => void;
   isGenerating?: boolean;
@@ -49,7 +54,9 @@ interface ChatPaneProps {
 export function ChatPane({
   messages,
   onSendMessage,
-  onRunAgent,
+  activeAgentIds = [],
+  onToggleAgent,
+  maxActiveRoles = 2,
   onStopGeneration,
   onContinue,
   isGenerating = false,
@@ -64,7 +71,7 @@ export function ChatPane({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { activeEndpoint, theme } = useAppStore();
   const { restoreSnapshot } = useSnapshots();
-  const { quickActions } = useAgents();
+  const { quickActions, getAgent } = useAgents();
   const [revertingId, setRevertingId] = useState<string | null>(null);
 
   const handleRevert = async (snapshotId: string) => {
@@ -318,6 +325,16 @@ export function ChatPane({
                     : 'bg-monastery-dark-surface border border-monastery-dark-border'
                 }`}
               >
+                {/* Agent role chips on a user message (which role(s) it was sent under) */}
+                {message.role === 'user' && message.agentLabels && message.agentLabels.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-1.5">
+                    {message.agentLabels.map((label, i) => (
+                      <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-white/15 font-medium">
+                        {label}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 {message.attachments && message.attachments.length > 0 && (
                   <div className="flex flex-wrap gap-2 mb-2">
                     {message.attachments.map((attachment, i) => (
@@ -387,29 +404,41 @@ export function ChatPane({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Agent Quick Actions */}
-      {onRunAgent && quickActions.length > 0 && (
+      {/* Agent role selector — multi-select (capped). Selecting a role applies it as a silent
+          lens over your next messages (sent to Hermes); it does not fire a canned prompt. */}
+      {onToggleAgent && quickActions.length > 0 && (
         <div className="px-4 pb-1">
           <button
             onClick={() => setShowQuickActions(!showQuickActions)}
             className="flex items-center gap-1 text-xs text-monastery-text-muted hover:text-monastery-text-secondary transition-colors mb-1"
           >
             <Bot size={12} />
-            Agents
+            Agent roles
+            {activeAgentIds.length > 0 && <span className="text-monastery-lantern font-medium">{activeAgentIds.length}</span>}
             {showQuickActions ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
           </button>
           {showQuickActions && (
             <div className="flex flex-wrap gap-1.5">
-              {quickActions.map(action => (
-                <button
-                  key={action.agentId}
-                  onClick={() => onRunAgent(action.agentId, action.prompt)}
-                  disabled={isGenerating}
-                  className="px-2 py-1 text-xs bg-monastery-dark-surface border border-monastery-dark-border rounded-lg text-monastery-text-secondary hover:text-monastery-text-primary hover:border-monastery-pine transition-colors disabled:opacity-50"
-                >
-                  {action.label}
-                </button>
-              ))}
+              {quickActions.map(action => {
+                const active = activeAgentIds.includes(action.agentId);
+                const atCap = !active && activeAgentIds.length >= maxActiveRoles;
+                return (
+                  <button
+                    key={action.agentId}
+                    onClick={() => onToggleAgent(action.agentId)}
+                    disabled={atCap}
+                    title={atCap ? `Max ${maxActiveRoles} roles — remove one first` : undefined}
+                    aria-pressed={active}
+                    className={`px-2 py-1 text-xs rounded-lg border transition-colors disabled:opacity-40 ${
+                      active
+                        ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
+                        : 'bg-monastery-dark-surface border-monastery-dark-border text-monastery-text-secondary hover:text-monastery-text-primary hover:border-monastery-pine'
+                    }`}
+                  >
+                    {action.label}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -437,6 +466,31 @@ export function ChatPane({
             >
               <Bot size={13} />
               Agent mode {agentMode ? 'on' : 'off'}
+            </button>
+          </div>
+        )}
+        {/* Active agent role chips — the lens applied to your next message */}
+        {activeAgentIds.length > 0 && (
+          <div className="flex items-center flex-wrap gap-1.5 mb-3">
+            <span className="text-[10px] text-monastery-text-muted">Acting as:</span>
+            {activeAgentIds.map(id => {
+              const a = getAgent(id);
+              if (!a) return null;
+              return (
+                <span key={id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-monastery-lantern/15 text-monastery-lantern">
+                  {a.icon} {a.name}
+                  <button type="button" onClick={() => onToggleAgent?.(id)} className="hover:opacity-70" title={`Remove ${a.name}`}>
+                    <X size={9} />
+                  </button>
+                </span>
+              );
+            })}
+            <button
+              type="button"
+              onClick={() => activeAgentIds.forEach(id => onToggleAgent?.(id))}
+              className="text-[10px] text-monastery-text-muted hover:text-monastery-text-primary underline"
+            >
+              Clear
             </button>
           </div>
         )}
@@ -478,7 +532,9 @@ export function ChatPane({
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={
-              activeEndpoint
+              activeAgentIds.length === 1
+                ? (quickActions.find(q => q.agentId === activeAgentIds[0])?.prompt ?? 'Ask anything...')
+                : activeEndpoint
                 ? "Ask anything... (Shift+Enter for new line)"
                 : "Connect an LLM endpoint to start chatting"
             }
