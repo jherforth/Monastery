@@ -3002,7 +3002,9 @@ pub async fn deploy_to_hosting(
                 "tunnel_deployed": tunnel_deployed,
                 "tunnel_error": tunnel_error,
                 // The exact "Service" URL to set for the Public Hostname in the Cloudflare dashboard.
-                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://localhost:{}", host_port)) } else { None },
+                // Use 127.0.0.1 (not "localhost"): cloudflared resolves "localhost" to IPv6 ::1,
+                // but the published host port binds on IPv4 — so localhost gives "connection refused".
+                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://127.0.0.1:{}", host_port)) } else { None },
             })))
         }
         "dokploy" => {
@@ -3238,36 +3240,54 @@ pub async fn deploy_to_hosting(
                 "railpackVersion": "",
             })).await?;
 
-            // Step 9: Trigger the deploy (clones the repo and builds the Dockerfile).
-            let deploy_success = dokploy_mutation(&client, base, &api_token, "application.deploy",
-                serde_json::json!({ "applicationId": app_id })).await.is_ok();
-
-            // Remember this app so future deploys redeploy it in place.
-            let _ = save_deployment(&state, req.project_id, req.connection_id, "dokploy", &app_id, &req.app_name, &server_id).await;
-
-            // Optional Cloudflare tunnel: publish the app's port on the host, then deploy a
-            // cloudflared connector as a Dokploy compose service (raw compose, host networking) —
-            // mirrors the Coolify tunnel. Best-effort: failures don't fail the main deploy.
+            // Stable host port for tunnel / LAN access (derived from the app name).
             let host_port: u16 = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 req.app_name.hash(&mut h);
                 20000 + (h.finish() % 10000) as u16
             };
-            let mut tunnel_deployed = false;
             let mut tunnel_error: Option<String> = None;
+
+            // The container port the app actually listens on = the LAST `EXPOSE` in the Dockerfile
+            // (final stage), which is more reliable than the wizard "Port" for a repo Dockerfile.
+            // Fall back to the wizard port if there's no EXPOSE.
+            let container_port = std::fs::read_to_string(&dockerfile_path).ok()
+                .and_then(|df| df.lines().rev().find_map(|l| {
+                    l.trim().strip_prefix("EXPOSE ")
+                        .and_then(|rest| rest.split_whitespace().next())
+                        .and_then(|p| p.split('/').next())
+                        .and_then(|p| p.parse::<u16>().ok())
+                }))
+                .unwrap_or(port);
+
+            // If a tunnel is requested, publish the app's port on the host BEFORE deploying —
+            // Swarm applies port mappings at deploy time, so adding it afterwards never takes effect.
+            if req.include_cloudflare_tunnel {
+                if let Err(e) = dokploy_mutation(&client, base, &api_token, "port.create", serde_json::json!({
+                    "applicationId": app_id,
+                    "publishedPort": host_port,
+                    "targetPort": container_port,
+                    "publishMode": "host",
+                    "protocol": "tcp",
+                })).await {
+                    tunnel_error = Some(format!("port publish failed: {:?}", e));
+                }
+            }
+
+            // Step 9: Trigger the deploy (clones the repo, builds the Dockerfile, applies the port).
+            let deploy_success = dokploy_mutation(&client, base, &api_token, "application.deploy",
+                serde_json::json!({ "applicationId": app_id })).await.is_ok();
+
+            // Remember this app so future deploys redeploy it in place.
+            let _ = save_deployment(&state, req.project_id, req.connection_id, "dokploy", &app_id, &req.app_name, &server_id).await;
+
+            // Deploy the cloudflared connector as a Dokploy compose service (raw compose, host
+            // networking) after the app. Best-effort: failures don't fail the main deploy.
+            let mut tunnel_deployed = false;
             if req.include_cloudflare_tunnel {
                 match req.cloudflare_tunnel_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
                     Some(token) => {
-                        // Publish host_port -> the app's container port (`port`, from the wizard).
-                        let publish = dokploy_mutation(&client, base, &api_token, "port.create", serde_json::json!({
-                            "applicationId": app_id,
-                            "publishedPort": host_port,
-                            "targetPort": port,
-                            "publishMode": "host",
-                            "protocol": "tcp",
-                        })).await;
-                        // Create + configure + deploy the cloudflared connector.
                         let compose_yaml = format!(
                             "services:\n  cloudflared:\n    image: cloudflare/cloudflared:latest\n    command: tunnel --no-autoupdate run\n    environment:\n      - TUNNEL_TOKEN={token}\n    network_mode: host\n    restart: unless-stopped\n",
                             token = token,
@@ -3294,17 +3314,14 @@ pub async fn deploy_to_hosting(
                                             "composeId": cid, "sourceType": "raw", "composeFile": compose_yaml,
                                         })).await;
                                         match dokploy_mutation(&client, base, &api_token, "compose.deploy", serde_json::json!({ "composeId": cid })).await {
-                                            Ok(_) => { tunnel_deployed = publish.is_ok(); }
-                                            Err(e) => { tunnel_error = Some(format!("{:?}", e)); }
+                                            Ok(_) => { tunnel_deployed = true; }
+                                            Err(e) => { if tunnel_error.is_none() { tunnel_error = Some(format!("{:?}", e)); } }
                                         }
                                     }
-                                    None => { tunnel_error = Some("compose.create returned no composeId".into()); }
+                                    None => { if tunnel_error.is_none() { tunnel_error = Some("compose.create returned no composeId".into()); } }
                                 }
                             }
-                            Err(e) => { tunnel_error = Some(format!("{:?}", e)); }
-                        }
-                        if let Err(e) = publish {
-                            tunnel_error.get_or_insert(format!("port publish failed: {:?}", e));
+                            Err(e) => { if tunnel_error.is_none() { tunnel_error = Some(format!("{:?}", e)); } }
                         }
                     }
                     None => { tunnel_error = Some("Cloudflare tunnel was requested but no token was provided.".into()); }
@@ -3322,11 +3339,13 @@ pub async fn deploy_to_hosting(
                 "framework": framework,
                 "port": port,
                 "host_port": host_port,
-                "access_url": server_ip.as_ref().map(|ip| format!("http://{}:{}", ip, host_port)),
+                "access_url": if req.include_cloudflare_tunnel { server_ip.as_ref().map(|ip| format!("http://{}:{}", ip, host_port)) } else { None },
                 "tunnel_requested": req.include_cloudflare_tunnel,
                 "tunnel_deployed": tunnel_deployed,
                 "tunnel_error": tunnel_error,
-                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://localhost:{}", host_port)) } else { None },
+                // Use 127.0.0.1 (not "localhost"): cloudflared resolves "localhost" to IPv6 ::1,
+                // but the published host port binds on IPv4 — so localhost gives "connection refused".
+                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://127.0.0.1:{}", host_port)) } else { None },
             })))
         }
         other => Err(ApiError::Config(format!(
