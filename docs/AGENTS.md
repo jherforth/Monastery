@@ -10,6 +10,11 @@ Monastery's agent system dispatches specialized work (review, refactor, test, de
 
 Monastery talks to Hermes as an **OpenAI-compatible chat endpoint**: it sends your prompt **plus the project's file tree and contents** as messages, Hermes replies (streamed), and Monastery **writes back any code blocks Hermes returns** (in the ` ```language:path/to/file ` format) to your project on disk. Hermes operating its **own** filesystem tools directly on the project is **not** wired up yet — file changes happen via Monastery applying the returned code. Agent actions and the chat "Agent mode" toggle share one code path (`handleSendMessage` in `App.tsx`), so both carry project context and apply edits identically.
 
+> Want Hermes's *own* agent work (its `write_file` tool, planning files, etc.) to show up in
+> Monastery? Hermes writes into its own workspace by default. See
+> [Hermes Shared Workspace](HERMES_SHARED_WORKSPACE.md) to point Hermes at your Monastery project
+> directory on a shared volume, then use the **Refresh** button in the Files sidebar to pick up its writes.
+
 ## Architecture
 
 ```

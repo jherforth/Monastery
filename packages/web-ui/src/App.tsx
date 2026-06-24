@@ -190,6 +190,21 @@ export default function App() {
       .catch(() => {});
   }, [currentProject?.id]);
 
+  // When the window regains focus, do a lightweight re-read of the file tree so files written
+  // outside Monastery (e.g. by Hermes on a shared workspace) show up without a manual refresh.
+  useEffect(() => {
+    const pid = currentProject?.id;
+    if (!pid) return;
+    const onFocus = () => {
+      fetch(`/api/projects/${pid}/files`)
+        .then(r => r.json())
+        .then(files => setProjectFiles(files))
+        .catch(() => {});
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [currentProject?.id]);
+
   // Shared delete-with-confirmation helper
   const deleteWithConfirm = useCallback(async (
     path: string,
@@ -889,6 +904,7 @@ export default function App() {
               onDeleteDirectory={handleDeleteDirectory}
               onUploadFile={handleUploadFile}
               onMoveFile={handleMoveFile}
+              onRefreshFiles={refreshFileTree}
               sessions={sessions}
               currentSessionId={currentSession?.id ?? null}
               isLoadingSessions={isLoadingSessions}

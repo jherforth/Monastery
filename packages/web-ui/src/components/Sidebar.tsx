@@ -1,4 +1,4 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot, FilePlus, FolderPlus, Upload } from 'lucide-react';
+import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot, FilePlus, FolderPlus, Upload, RefreshCw } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileNode, SessionInfo, SessionDetail } from '../types';
 import { useEndpoints } from '../hooks/useEndpoints';
@@ -326,6 +326,8 @@ interface SidebarProps {
   onDeleteDirectory?: (path: string) => void;
   onUploadFile?: (parentPath: string, file: File) => void;
   onMoveFile?: (sourcePath: string, targetDirPath: string) => void;
+  /** Re-read the project files from disk (surfaces changes made outside Monastery, e.g. by Hermes). */
+  onRefreshFiles?: () => void;
   // Session props
   sessions?: SessionInfo[];
   currentSessionId?: string | null;
@@ -344,6 +346,7 @@ export function Sidebar({
   onDeleteDirectory,
   onUploadFile,
   onMoveFile,
+  onRefreshFiles,
   sessions = [],
   currentSessionId = null,
   isLoadingSessions = false,
@@ -423,7 +426,18 @@ export function Sidebar({
             {/* Files Toolbar */}
             <div className="flex items-center gap-1 px-3 py-1.5 border-b border-monastery-dark-border mb-1">
               <span className="text-xs text-monastery-text-muted flex-1">Files</span>
-              
+
+              {/* Refresh from disk — surfaces files written outside Monastery (e.g. by Hermes) */}
+              {onRefreshFiles && (
+                <button
+                  onClick={onRefreshFiles}
+                  className="p-1 hover:bg-monastery-dark-surface rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
+                  title="Refresh files from disk (e.g. changes written by Hermes)"
+                >
+                  <RefreshCw size={14} />
+                </button>
+              )}
+
               {/* Upload button */}
               <button
                 onClick={() => fileInputRef.current?.click()}
