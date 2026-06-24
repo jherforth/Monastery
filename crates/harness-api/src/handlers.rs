@@ -3218,6 +3218,9 @@ pub async fn deploy_to_hosting(
                 "customGitUrl": git_repository,
                 "customGitBranch": git.branch,
                 "customGitBuildPath": "/",
+                // Dokploy's schema marks these required (.required()), even though we don't use them.
+                "watchPaths": [],
+                "enableSubmodules": false,
             })).await?;
 
             // Step 8: Build from the Dockerfile committed in the repo.
@@ -3226,6 +3229,10 @@ pub async fn deploy_to_hosting(
                 "buildType": "dockerfile",
                 "dockerfile": "Dockerfile",
                 "dockerContextPath": ".",
+                // Required-but-unused for a dockerfile build (Dokploy's schema uses .required()).
+                "dockerBuildStage": "",
+                "herokuVersion": "",
+                "railpackVersion": "",
             })).await?;
 
             // Step 9: Trigger the deploy (clones the repo and builds the Dockerfile).
