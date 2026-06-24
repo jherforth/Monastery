@@ -94,6 +94,16 @@ export function ChatPane({
     scrollToBottom();
   }, [messages]);
 
+  // Auto-grow the input with its content (handles wrapped long lines, not just newlines),
+  // up to a generous max; beyond that it scrolls. Users can also drag the handle (resize-y).
+  const MAX_INPUT_HEIGHT = 260;
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, MAX_INPUT_HEIGHT)}px`;
+  }, [inputValue]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim() && attachments.length === 0) return;
@@ -539,8 +549,9 @@ export function ChatPane({
                 : "Connect an LLM endpoint to start chatting"
             }
             disabled={!activeEndpoint && messages.length === 0}
-            rows={Math.min(Math.max(inputValue.split('\n').length, 1), 6)}
-            className="flex-1 bg-monastery-dark-surface border border-monastery-dark-border rounded-xl px-4 py-3 text-sm resize-none focus:outline-none focus:border-monastery-pine transition-colors"
+            rows={1}
+            style={{ maxHeight: MAX_INPUT_HEIGHT }}
+            className="flex-1 bg-monastery-dark-surface border border-monastery-dark-border rounded-xl px-4 py-3 text-sm resize-y overflow-y-auto focus:outline-none focus:border-monastery-pine transition-colors"
           />
           
           {isGenerating ? (

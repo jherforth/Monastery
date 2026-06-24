@@ -687,7 +687,10 @@ export default function App() {
       if (!res.ok) {
         const errText = await res.text().catch(() => 'Unknown error');
         console.error('Chat API returned', res.status, errText);
-        throw new Error(`Backend returned ${res.status}`);
+        // Try to extract a JSON { error } message; otherwise include the raw body snippet.
+        let detail = errText;
+        try { detail = JSON.parse(errText).error || errText; } catch { /* keep raw */ }
+        throw new Error(`${useHermes ? 'Hermes' : 'LLM'} request failed (HTTP ${res.status}): ${String(detail).slice(0, 300)}`);
       }
 
       const reader = res.body?.getReader();
@@ -726,27 +729,21 @@ export default function App() {
       
       setIsGenerating(false);
     } catch (err: any) {
-      // Don't show fallback if user intentionally stopped generation
+      // Don't show an error if the user intentionally stopped generation
       if (err?.name === 'AbortError') {
         setIsGenerating(false);
         return;
       }
-      console.error('Chat streaming failed, using fallback:', err);
-      // Fallback: simulated response
-      setTimeout(() => {
-        const aiMessage: Message = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: 'This is a simulated response. Connect to the backend API for real AI interactions.',
-          timestamp: Date.now(),
-        };
-        setMessages((prev) => [...prev, aiMessage]);
-        
-        if (sessionId) {
-          addMessage({ role: 'assistant', content: aiMessage.content }).catch(console.error);
-        }
-        setIsGenerating(false);
-      }, 1500);
+      console.error('Chat request failed:', err);
+      // Surface the real error so the user can debug (e.g. a Hermes/LLM failure) instead of a
+      // misleading "simulated response".
+      setMessages((prev) => [...prev, {
+        id: (Date.now() + 1).toString(),
+        role: 'system' as const,
+        content: `⚠️ Request failed: ${err?.message || 'Unknown error'}`,
+        timestamp: Date.now(),
+      }]);
+      setIsGenerating(false);
     }
   }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent]);
 

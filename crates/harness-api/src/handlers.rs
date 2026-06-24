@@ -4156,6 +4156,20 @@ pub async fn hermes_agent_run(
                                     yield Ok(Event::default().data(c.to_string()));
                                 }
                             }
+                            // Hermes is an autonomous agent: it may emit tool calls rather than
+                            // (or alongside) text. We can't drive its tool loop, but we surface the
+                            // tool's name as a visible step so the response degrades gracefully
+                            // instead of looking empty/broken. The name appears on the first delta
+                            // of each tool call; later deltas carry only argument fragments.
+                            if let Some(tool_calls) = delta["tool_calls"].as_array() {
+                                for tc in tool_calls {
+                                    if let Some(name) = tc["function"]["name"].as_str() {
+                                        if !name.is_empty() {
+                                            yield Ok(Event::default().data(format!("\n> 🔧 Hermes is running tool `{}`…\n", name)));
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
                                 if !reason.is_empty() {
                                     yield Ok(Event::default().event("finish_reason").data(reason.to_string()));
@@ -4165,7 +4179,9 @@ pub async fn hermes_agent_run(
                     }
                 }
                 Err(e) => {
-                    yield Ok(Event::default().data(format!("Stream error: {}", e)));
+                    // Surface the interruption inline (as content) so the user keeps whatever
+                    // streamed so far plus a clear note, instead of the whole turn erroring out.
+                    yield Ok(Event::default().data(format!("\n\n⚠️ Hermes stream interrupted: {}", e)));
                     break;
                 }
             }
