@@ -3081,7 +3081,7 @@ pub async fn deploy_to_hosting(
                 .send()
                 .await;
 
-            let server_id = match server_resp {
+            let (server_id, server_ip) = match server_resp {
                 Ok(resp) if resp.status().is_success() => {
                     let data: serde_json::Value = resp.json().await.unwrap_or_default();
                     let servers = trpc_array(&data).cloned().unwrap_or_default();
@@ -3091,18 +3091,21 @@ pub async fn deploy_to_hosting(
                             s["serverId"].as_str().or_else(|| s["id"].as_str()) == Some(want)
                         }))
                         .or_else(|| servers.first());
-                    pick.and_then(|srv| srv["serverId"].as_str().or_else(|| srv["id"].as_str()))
-                        .map(|s| s.to_string())
+                    let id = pick.and_then(|srv| srv["serverId"].as_str().or_else(|| srv["id"].as_str()))
+                        .map(|s| s.to_string());
+                    let ip = pick.and_then(|srv| srv["ipAddress"].as_str().or_else(|| srv["ip"].as_str()))
+                        .map(|s| s.to_string());
+                    (id, ip)
                 }
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let body = resp.text().await.unwrap_or_default();
                     tracing::warn!("Dokploy server fetch failed (HTTP {}): {}", status, body);
-                    None
+                    (None, None)
                 }
                 Err(e) => {
                     tracing::warn!("Dokploy server fetch error: {}", e);
-                    None
+                    (None, None)
                 }
             };
 
@@ -3242,6 +3245,72 @@ pub async fn deploy_to_hosting(
             // Remember this app so future deploys redeploy it in place.
             let _ = save_deployment(&state, req.project_id, req.connection_id, "dokploy", &app_id, &req.app_name, &server_id).await;
 
+            // Optional Cloudflare tunnel: publish the app's port on the host, then deploy a
+            // cloudflared connector as a Dokploy compose service (raw compose, host networking) —
+            // mirrors the Coolify tunnel. Best-effort: failures don't fail the main deploy.
+            let host_port: u16 = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                req.app_name.hash(&mut h);
+                20000 + (h.finish() % 10000) as u16
+            };
+            let mut tunnel_deployed = false;
+            let mut tunnel_error: Option<String> = None;
+            if req.include_cloudflare_tunnel {
+                match req.cloudflare_tunnel_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                    Some(token) => {
+                        // Publish host_port -> the app's container port (`port`, from the wizard).
+                        let publish = dokploy_mutation(&client, base, &api_token, "port.create", serde_json::json!({
+                            "applicationId": app_id,
+                            "publishedPort": host_port,
+                            "targetPort": port,
+                            "publishMode": "host",
+                            "protocol": "tcp",
+                        })).await;
+                        // Create + configure + deploy the cloudflared connector.
+                        let compose_yaml = format!(
+                            "services:\n  cloudflared:\n    image: cloudflare/cloudflared:latest\n    command: tunnel --no-autoupdate run\n    environment:\n      - TUNNEL_TOKEN={token}\n    network_mode: host\n    restart: unless-stopped\n",
+                            token = token,
+                        );
+                        let svc_name = format!("{}-cloudflared", req.app_name);
+                        let created = dokploy_mutation(&client, base, &api_token, "compose.create", serde_json::json!({
+                            "name": svc_name,
+                            "appName": svc_name,
+                            "description": format!("Cloudflare Tunnel connector for {} (Monastery)", req.app_name),
+                            "environmentId": env_id,
+                            "serverId": server_id,
+                            "composeType": "docker-compose",
+                            "composeFile": compose_yaml,
+                        })).await;
+                        match created {
+                            Ok(body) => {
+                                let compose_id = body["result"]["data"]["json"]["composeId"].as_str()
+                                    .or_else(|| body["result"]["data"]["json"]["id"].as_str())
+                                    .map(|s| s.to_string());
+                                match compose_id {
+                                    Some(cid) => {
+                                        // Mark it a raw compose (default sourceType is github) and set the file.
+                                        let _ = dokploy_mutation(&client, base, &api_token, "compose.update", serde_json::json!({
+                                            "composeId": cid, "sourceType": "raw", "composeFile": compose_yaml,
+                                        })).await;
+                                        match dokploy_mutation(&client, base, &api_token, "compose.deploy", serde_json::json!({ "composeId": cid })).await {
+                                            Ok(_) => { tunnel_deployed = publish.is_ok(); }
+                                            Err(e) => { tunnel_error = Some(format!("{:?}", e)); }
+                                        }
+                                    }
+                                    None => { tunnel_error = Some("compose.create returned no composeId".into()); }
+                                }
+                            }
+                            Err(e) => { tunnel_error = Some(format!("{:?}", e)); }
+                        }
+                        if let Err(e) = publish {
+                            tunnel_error.get_or_insert(format!("port publish failed: {:?}", e));
+                        }
+                    }
+                    None => { tunnel_error = Some("Cloudflare tunnel was requested but no token was provided.".into()); }
+                }
+            }
+
             Ok(Json(serde_json::json!({
                 "success": true,
                 "platform": "dokploy",
@@ -3252,12 +3321,12 @@ pub async fn deploy_to_hosting(
                 "dashboard_url": format!("{}/dashboard", base.trim_end_matches("/api")),
                 "framework": framework,
                 "port": port,
-                // Cloudflare tunnel auto-setup is Coolify-only for now.
+                "host_port": host_port,
+                "access_url": server_ip.as_ref().map(|ip| format!("http://{}:{}", ip, host_port)),
                 "tunnel_requested": req.include_cloudflare_tunnel,
-                "tunnel_deployed": false,
-                "tunnel_error": if req.include_cloudflare_tunnel {
-                    Some("Cloudflare tunnel auto-setup is currently Coolify-only — configure the tunnel manually in Dokploy.".to_string())
-                } else { None },
+                "tunnel_deployed": tunnel_deployed,
+                "tunnel_error": tunnel_error,
+                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://localhost:{}", host_port)) } else { None },
             })))
         }
         other => Err(ApiError::Config(format!(
