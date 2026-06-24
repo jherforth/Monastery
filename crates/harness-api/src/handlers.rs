@@ -3042,7 +3042,7 @@ pub async fn deploy_to_hosting(
                             "app_name": req.app_name,
                             "deploy_triggered": true,
                             "redeployed": true,
-                            "dashboard_url": format!("{}/dashboard", base.trim_end_matches("/api")),
+                            "dashboard_url": format!("{}/dashboard/home", base.trim_end_matches("/api")),
                             "framework": framework,
                             "port": port,
                         })));
@@ -3318,7 +3318,7 @@ pub async fn deploy_to_hosting(
                 "app_name": req.app_name,
                 "deploy_triggered": deploy_success,
                 "redeployed": false,
-                "dashboard_url": format!("{}/dashboard", base.trim_end_matches("/api")),
+                "dashboard_url": format!("{}/dashboard/home", base.trim_end_matches("/api")),
                 "framework": framework,
                 "port": port,
                 "host_port": host_port,
