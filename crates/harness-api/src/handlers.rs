@@ -2747,6 +2747,7 @@ pub async fn get_deployment_log(
             // readLogs SSHes to the deployment's server (execAsyncRemote) and can fail there.
             let mut logs = String::new();
             let mut readlogs_err: Option<String> = None;
+            let mut readlogs_raw: Option<String> = None;
             if !deployment_id.is_empty() {
                 let logs_input = serde_json::json!({ "json": { "deploymentId": deployment_id, "tail": 300 } }).to_string();
                 match client.get(format!("{}/api/trpc/deployment.readLogs", base))
@@ -2755,7 +2756,10 @@ pub async fn get_deployment_log(
                     .send().await
                 {
                     Ok(r) => {
-                        let d: serde_json::Value = r.json().await.unwrap_or_default();
+                        // Capture the raw body so we can see exactly what readLogs returned when it
+                        // looks empty (e.g. IS_CLOUD short-circuit vs an unexpected envelope).
+                        let raw = r.text().await.unwrap_or_default();
+                        let d: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
                         if let Some(err) = d["error"]["json"]["message"].as_str()
                             .or_else(|| d["error"]["message"].as_str())
                         {
@@ -2764,6 +2768,9 @@ pub async fn get_deployment_log(
                             logs = d["result"]["data"]["json"].as_str()
                                 .or_else(|| d["result"]["data"].as_str())
                                 .unwrap_or("").to_string();
+                        }
+                        if logs.trim().is_empty() && readlogs_err.is_none() {
+                            readlogs_raw = Some(raw.chars().take(400).collect::<String>().replace('\n', "\\n"));
                         }
                     }
                     Err(e) => readlogs_err = Some(e.to_string()),
@@ -2779,11 +2786,12 @@ pub async fn get_deployment_log(
             // Always provide a diagnostic `detail` so a blank log isn't a dead end — it shows why
             // (readLogs error, where the log lives, which server) directly in the UI.
             let detail = format!(
-                "deploymentId={} | logPath={} | serverId={} | readLogsError={}",
+                "deploymentId={} | logPath={} | serverId={} | readLogsError={} | rawResp={}",
                 deployment_id,
                 latest["logPath"].as_str().unwrap_or("(none)"),
                 latest["serverId"].as_str().unwrap_or("(local)"),
                 readlogs_err.as_deref().unwrap_or("none"),
+                readlogs_raw.as_deref().unwrap_or("(had-content-or-not-fetched)"),
             );
             Ok(Json(serde_json::json!({
                 "status": status,
