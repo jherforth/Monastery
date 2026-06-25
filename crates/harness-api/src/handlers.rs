@@ -2616,6 +2616,26 @@ async fn dokploy_mutation(
     Ok(body)
 }
 
+/// Resolve the Pocketbase URL to wire into a deploy: the `base_url` of the configured Pocketbase
+/// hosting connection (the "one shared Pocketbase" model). Returns None when the deploy didn't
+/// request Pocketbase or no connection is configured.
+async fn resolve_pocketbase_url(state: &AppState, req: &DeployRequest) -> Option<String> {
+    use sqlx::Row;
+    if !req.include_pocketbase {
+        return None;
+    }
+    // Prefer the explicitly chosen connection; otherwise fall back to any pocketbase connection.
+    let row = if let Some(id) = req.pocketbase_connection_id {
+        sqlx::query("SELECT base_url FROM hosting_connections WHERE id = ? AND service_type = 'pocketbase'")
+            .bind(id.to_string())
+            .fetch_optional(&*state.db).await.ok().flatten()
+    } else {
+        sqlx::query("SELECT base_url FROM hosting_connections WHERE service_type = 'pocketbase' ORDER BY created_at DESC LIMIT 1")
+            .fetch_optional(&*state.db).await.ok().flatten()
+    };
+    row.map(|r| r.get::<String, _>(0).trim_end_matches('/').to_string())
+}
+
 /// Deploy a project to a connected hosting service
 pub async fn deploy_to_hosting(
     State(state): State<AppState>,
@@ -2667,6 +2687,10 @@ pub async fn deploy_to_hosting(
     }
 
     let port = req.port.unwrap_or(default_port);
+
+    // The configured shared Pocketbase URL to inject into the app (build-time + runtime), if the
+    // user requested a Pocketbase backend for this deploy.
+    let pocketbase_url = resolve_pocketbase_url(&state, &req).await;
 
     // Build and deploy based on service type
     let base = base_url.trim_end_matches('/');
@@ -2881,7 +2905,9 @@ pub async fn deploy_to_hosting(
                 "dockerfile": dockerfile_b64,
                 "ports_exposes": port.to_string(),
                 "base_directory": "/",
-                "instant_deploy": true,
+                // When wiring a Pocketbase env we must set it BEFORE the build, so defer the deploy
+                // (instant_deploy=false) and trigger it explicitly after injecting the env.
+                "instant_deploy": pocketbase_url.is_none(),
             });
 
             // Attach custom domain (Coolify API uses "domains", not "fqdn")
@@ -2923,9 +2949,27 @@ pub async fn deploy_to_hosting(
             // Remember this app so future deploys redeploy it in place instead of creating a new one.
             let _ = save_deployment(&state, req.project_id, req.connection_id, "coolify", app_uuid, &req.app_name, server_uuid).await;
 
-            // With instant_deploy=true, Coolify queues deployment automatically.
-            // No separate deploy call needed.
-            let deploy_success = coolify_status.is_success();
+            // Inject the shared Pocketbase URL (build-time + runtime) then deploy; otherwise
+            // instant_deploy already queued the build.
+            let deploy_success = if let Some(ref pb_url) = pocketbase_url {
+                let _ = client
+                    .post(format!("{}/api/v1/applications/{}/envs", base, app_uuid))
+                    .header("Authorization", format!("Bearer {}", api_token))
+                    .header("Content-Type", "application/json")
+                    .json(&serde_json::json!({
+                        "key": "POCKETBASE_URL", "value": pb_url,
+                        "is_buildtime": true, "is_runtime": true,
+                    }))
+                    .send().await;
+                let dep = client
+                    .get(format!("{}/api/v1/deploy?uuid={}&force=true", base, app_uuid))
+                    .header("Authorization", format!("Bearer {}", api_token))
+                    .send().await;
+                matches!(dep, Ok(r) if r.status().is_success())
+            } else {
+                // instant_deploy=true queued the deployment automatically.
+                coolify_status.is_success()
+            };
 
             // Optionally launch a Cloudflare Tunnel connector as a sidecar Coolify Service so
             // the user doesn't have to run cloudflared themselves. A token tunnel is remotely
@@ -3005,6 +3049,7 @@ pub async fn deploy_to_hosting(
                 // Use 127.0.0.1 (not "localhost"): cloudflared resolves "localhost" to IPv6 ::1,
                 // but the published host port binds on IPv4 — so localhost gives "connection refused".
                 "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://127.0.0.1:{}", host_port)) } else { None },
+                "pocketbase_url": pocketbase_url,
             })))
         }
         "dokploy" => {
@@ -3240,6 +3285,21 @@ pub async fn deploy_to_hosting(
                 "railpackVersion": "",
             })).await?;
 
+            // Step 8.5: Wire the shared Pocketbase URL as both runtime env and build arg (frontend
+            // apps bake env at build time). Must happen before the deploy/build.
+            if let Some(ref pb_url) = pocketbase_url {
+                let pb_line = format!("POCKETBASE_URL={}\n", pb_url);
+                if let Err(e) = dokploy_mutation(&client, base, &api_token, "application.saveEnvironment", serde_json::json!({
+                    "applicationId": app_id,
+                    "env": pb_line,
+                    "buildArgs": pb_line,
+                    "buildSecrets": "",
+                    "createEnvFile": false,
+                })).await {
+                    tracing::warn!("Dokploy saveEnvironment (POCKETBASE_URL) failed: {:?}", e);
+                }
+            }
+
             // Stable host port for tunnel / LAN access (derived from the app name).
             let host_port: u16 = {
                 use std::hash::{Hash, Hasher};
@@ -3346,6 +3406,7 @@ pub async fn deploy_to_hosting(
                 // Use 127.0.0.1 (not "localhost"): cloudflared resolves "localhost" to IPv6 ::1,
                 // but the published host port binds on IPv4 — so localhost gives "connection refused".
                 "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://127.0.0.1:{}", host_port)) } else { None },
+                "pocketbase_url": pocketbase_url,
             })))
         }
         other => Err(ApiError::Config(format!(

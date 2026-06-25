@@ -51,6 +51,7 @@ export interface DeployResult {
   tunnel_deployed?: boolean;
   tunnel_error?: string | null;
   tunnel_service_url?: string | null;
+  pocketbase_url?: string | null;
 }
 
 export interface PreviewResult {

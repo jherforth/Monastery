@@ -12,6 +12,7 @@ import { useSessions } from './hooks/useSessions';
 import { useEndpoints } from './hooks/useEndpoints';
 import { useAgents } from './hooks/useAgents';
 import { useHermesAgent } from './hooks/useHermesAgent';
+import { useHostingServices } from './hooks/useHostingServices';
 import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
 
@@ -36,6 +37,9 @@ export default function App() {
   // When on, chat messages are routed to the Hermes agent instead of plain LLM streaming.
   // Only selectable when a default Hermes connection is configured.
   const [agentMode, setAgentMode] = useState(false);
+  // When on, the LLM system context includes Pocketbase + deployment instructions (with the
+  // configured Pocketbase URL). Toggled by the user when building a DB-backed app.
+  const [useDatabaseContext, setUseDatabaseContext] = useState(false);
   // Active agent role(s) — a persistent "lens" applied to chat messages. Capped to keep focus.
   const MAX_ACTIVE_ROLES = 2;
   const [activeAgentIds, setActiveAgentIds] = useState<string[]>([]);
@@ -52,6 +56,10 @@ export default function App() {
   const { endpoints } = useEndpoints();
   // Hermes agent: a default connection enables the "Agent mode" toggle in the chat.
   const { defaultConnection: hermesConnection } = useHermesAgent();
+  // Pocketbase: a configured connection enables the "Pocketbase backend" toggle + its URL is
+  // injected into the LLM context and into deploys.
+  const { connections: hostingConns } = useHostingServices();
+  const pocketbaseConn = hostingConns.find((c: any) => c.service_type === 'pocketbase');
 
   // Fetch available models whenever endpoints change so we always send the right model ID
   useEffect(() => {
@@ -630,6 +638,21 @@ export default function App() {
 - The file path after the colon determines where the code is written.
 - To create a NEW file, just use a path that doesn't exist yet.
 - You can write multiple files in a single response — each code block becomes a file.`);
+
+      // Pocketbase + deployment integration instructions — only when the user enables the
+      // "Pocketbase backend" toggle (and a Pocketbase connection is configured).
+      if (useDatabaseContext && pocketbaseConn?.base_url) {
+        const pbUrl = pocketbaseConn.base_url.replace(/\/$/, '');
+        contextParts.push(`BACKEND & DEPLOYMENT (Pocketbase):
+- This project is deployed via Monastery's Self-Host Wizard: its Dockerfile is built and the app is served. The shared Pocketbase backend (database + auth + file storage) is at: ${pbUrl}
+- Monastery injects \`POCKETBASE_URL=${pbUrl}\` into the deployed app as BOTH a build-time arg and a runtime env var.
+- Use the official \`pocketbase\` JS SDK (\`npm i pocketbase\`). Initialize it from the env, with the URL above as a fallback:
+  - Frontend (Vite/Angular/etc., baked at build time): \`new PocketBase(import.meta.env.VITE_POCKETBASE_URL || '${pbUrl}')\` (or framework-equivalent build-time env). If the framework only exposes prefixed vars (e.g. VITE_/NG_APP_), also reference \`${pbUrl}\` directly.
+  - Backend (Node/Express, runtime): \`new PocketBase(process.env.POCKETBASE_URL || '${pbUrl}')\`.
+- Common patterns: \`pb.collection('<name>').getList()\`, \`.create({...})\`, \`.update(id,{...})\`, \`.delete(id)\`; auth: \`pb.collection('users').authWithPassword(email, pass)\` / \`.create(...)\`.
+- Collections/schema must already exist in the Pocketbase admin UI — the app cannot create collections at runtime, so handle missing-collection errors gracefully and document any collections you assume.
+- The app (especially a browser frontend) must be able to REACH ${pbUrl} from where it runs; enable CORS in Pocketbase for the app's origin.`);
+      }
       
       if (projectFiles.length > 0) {
         const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
@@ -760,7 +783,7 @@ export default function App() {
       }]);
       setIsGenerating(false);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, useDatabaseContext, pocketbaseConn?.base_url]);
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
@@ -935,6 +958,9 @@ export default function App() {
               hermesAvailable={!!hermesConnection}
               agentMode={agentMode}
               onToggleAgentMode={setAgentMode}
+              pocketbaseAvailable={!!pocketbaseConn}
+              useDatabaseContext={useDatabaseContext}
+              onToggleDatabaseContext={setUseDatabaseContext}
             />
           </Panel>
 

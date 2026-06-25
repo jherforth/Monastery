@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, ChevronUp } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, ChevronUp, Database } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
@@ -49,6 +49,11 @@ interface ChatPaneProps {
   /** Whether Agent mode (route to Hermes) is currently on. */
   agentMode?: boolean;
   onToggleAgentMode?: (on: boolean) => void;
+  /** Whether a Pocketbase connection is configured (enables the Pocketbase backend toggle). */
+  pocketbaseAvailable?: boolean;
+  /** Whether to include Pocketbase + deployment instructions in the LLM context. */
+  useDatabaseContext?: boolean;
+  onToggleDatabaseContext?: (on: boolean) => void;
 }
 
 export function ChatPane({
@@ -63,6 +68,9 @@ export function ChatPane({
   hermesAvailable = false,
   agentMode = false,
   onToggleAgentMode,
+  pocketbaseAvailable = false,
+  useDatabaseContext = false,
+  onToggleDatabaseContext,
 }: ChatPaneProps) {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -476,6 +484,29 @@ export function ChatPane({
             >
               <Bot size={13} />
               Agent mode {agentMode ? 'on' : 'off'}
+            </button>
+          </div>
+        )}
+        {/* Pocketbase backend toggle — only shown when a Pocketbase connection is configured.
+            On = include Pocketbase + deployment instructions (with the configured URL) in context. */}
+        {pocketbaseAvailable && onToggleDatabaseContext && (
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs text-monastery-text-muted">
+              {useDatabaseContext ? 'Building with Pocketbase backend' : 'No backend / database'}
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={useDatabaseContext}
+              onClick={() => onToggleDatabaseContext(!useDatabaseContext)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-colors ${
+                useDatabaseContext
+                  ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
+                  : 'bg-monastery-dark-surface text-monastery-text-secondary border-monastery-dark-border hover:border-monastery-pine'
+              }`}
+            >
+              <Database size={13} />
+              Pocketbase {useDatabaseContext ? 'on' : 'off'}
             </button>
           </div>
         )}

@@ -311,8 +311,8 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
                 <div className="flex items-center gap-2"><Database size={16} className="text-amber-400" /><span className="text-sm font-medium text-monastery-text-primary">Include Pocketbase Backend</span></div>
                 <button onClick={() => setIncludePocketbase(!includePocketbase)} className={`relative w-10 h-5 rounded-full transition-colors ${includePocketbase ? 'bg-monastery-pine' : 'bg-monastery-dark-border'}`}>
                   <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${includePocketbase ? 'left-5' : 'left-0.5'}`} /></button></div>
-              <p className="text-xs text-monastery-text-muted">{includePocketbase ? 'Adds Pocketbase (database, auth, file storage) as a service in docker-compose.yml.' : 'Enable if your app needs a database backend.'}</p>
-              {includePocketbase && !pocketbase && <p className="text-xs text-amber-400 flex items-center gap-1"><AlertTriangle size={12} /> Pocketbase not configured in Settings. Will use public Docker image.</p>}</div>
+              <p className="text-xs text-monastery-text-muted">{includePocketbase ? (pocketbase ? `Wires your configured Pocketbase (${pocketbase.base_url}) into the app as POCKETBASE_URL (build-time + runtime).` : 'Injects your configured Pocketbase URL into the app as POCKETBASE_URL.') : 'Enable if your app needs a database backend.'}</p>
+              {includePocketbase && !pocketbase && <p className="text-xs text-amber-400 flex items-center gap-1"><AlertTriangle size={12} /> No Pocketbase connection. Add one in Settings → Hosting Services first, or this will be skipped.</p>}</div>
             {/* Cloudflare Tunnel toggle */}
             <div className="p-3 rounded-lg border border-monastery-dark-border bg-monastery-dark-bg space-y-2">
               <div className="flex items-center justify-between">
@@ -375,6 +375,12 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
                   <p className="text-amber-300 flex items-start gap-1"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> Deployed to the platform's own host — to reach a VPS instead, pick a remote server above and redeploy.</p>
                 )}
                 {deployResult.deploy_triggered && <p className="text-monastery-text-secondary">Deployment triggered — building now.</p>}
+                {deployResult.pocketbase_url && (
+                  <p className="text-monastery-text-secondary flex items-start gap-1">
+                    <Database size={11} className="shrink-0 mt-0.5 text-amber-400" />
+                    Pocketbase wired in as <code className="px-1 rounded bg-monastery-dark-bg text-monastery-lantern break-all ml-1">POCKETBASE_URL={deployResult.pocketbase_url}</code>
+                  </p>
+                )}
                 {deployResult.tunnel_requested && (
                   deployResult.tunnel_deployed ? (
                     <div className="mt-1 pt-2 border-t border-green-400/20 space-y-1">
