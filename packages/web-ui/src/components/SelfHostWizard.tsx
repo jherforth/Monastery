@@ -159,9 +159,9 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
     if (!appId) { setFixError('No deployed app id to fetch logs for.'); return; }
     setFixingBuild(true); setFixError(null);
     try {
-      const { logs } = await fetchDeploymentLog(activePlatformConn.id, appId);
+      const { status, logs } = await fetchDeploymentLog(activePlatformConn.id, appId);
       if (!logs || !logs.trim()) {
-        setFixError('No build log available yet — wait for the build to fail, then retry.');
+        setFixError(`No build log returned (latest deployment status: ${status || 'unknown'}). If the build is still running, wait for it to finish/fail and retry.`);
         return;
       }
       onFixBuildError(logs, deployResult.app_name);

@@ -2714,14 +2714,28 @@ pub async fn get_deployment_log(
                 .send().await
                 .map_err(|e| ApiError::Internal(format!("Dokploy deployment.all failed: {}", e)))?;
             let data: serde_json::Value = resp.json().await.unwrap_or_default();
-            let list = data["result"]["data"]["json"].as_array().cloned().unwrap_or_default();
-            // Latest by createdAt (fall back to first).
-            let latest = list.iter().max_by(|a, b| {
-                a["createdAt"].as_str().unwrap_or("").cmp(b["createdAt"].as_str().unwrap_or(""))
-            }).or_else(|| list.first()).cloned().unwrap_or_default();
+            // Surface a tRPC error (bad input/auth) rather than silently treating it as "no logs".
+            if let Some(err) = data["error"]["json"]["message"].as_str()
+                .or_else(|| data["error"]["message"].as_str())
+            {
+                return Err(ApiError::Internal(format!("Dokploy deployment.all error: {}", err)));
+            }
+            // The tRPC response envelope varies (superjson `result.data.json` vs plain
+            // `result.data`); try each, same as the working server.all/project.all calls.
+            let list = data["result"]["data"]["json"].as_array()
+                .or_else(|| data["result"]["data"].as_array())
+                .or_else(|| data["result"].as_array())
+                .cloned().unwrap_or_default();
+            // findAllDeploymentsByApplicationId orders by createdAt desc, so the newest is first;
+            // fall back to max-by-createdAt in case the order ever changes.
+            let latest = list.first().cloned()
+                .or_else(|| list.iter().max_by(|a, b| {
+                    a["createdAt"].as_str().unwrap_or("").cmp(b["createdAt"].as_str().unwrap_or(""))
+                }).cloned())
+                .unwrap_or_default();
             let status = latest["status"].as_str().unwrap_or("unknown").to_string();
             let deployment_id = latest["deploymentId"].as_str().unwrap_or("").to_string();
-            let logs = if deployment_id.is_empty() {
+            let mut logs = if deployment_id.is_empty() {
                 String::new()
             } else {
                 let logs_input = serde_json::json!({ "json": { "deploymentId": deployment_id, "tail": 300 } }).to_string();
@@ -2732,11 +2746,20 @@ pub async fn get_deployment_log(
                 {
                     Ok(r) => {
                         let d: serde_json::Value = r.json().await.unwrap_or_default();
-                        d["result"]["data"]["json"].as_str().unwrap_or("").to_string()
+                        d["result"]["data"]["json"].as_str()
+                            .or_else(|| d["result"]["data"].as_str())
+                            .unwrap_or("").to_string()
                     }
                     Err(_) => String::new(),
                 }
             };
+            // If the log file is empty (build crashed before writing, or logs rotated), fall back
+            // to the deployment's recorded errorMessage so the LLM still has something to work with.
+            if logs.trim().is_empty() {
+                if let Some(err_msg) = latest["errorMessage"].as_str().filter(|s| !s.trim().is_empty()) {
+                    logs = format!("Deployment status: {}\nError: {}", status, err_msg);
+                }
+            }
             Ok(Json(serde_json::json!({ "status": status, "logs": tail_chars(&logs, 8000) })))
         }
         other => Err(ApiError::Config(format!("Deployment logs not supported for '{}'.", other))),
