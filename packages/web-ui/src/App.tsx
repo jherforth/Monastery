@@ -878,8 +878,13 @@ export default function App() {
   // Hand a failed deployment's build log to the connected LLM to fix (from the Self-Host Wizard).
   // Posts the log into chat as a fix request; the LLM's returned code blocks are applied to files,
   // after which the user can redeploy.
-  const handleFixBuildError = useCallback((logs: string, appName: string) => {
-    const prompt = `The deployment of "${appName}" failed during the build. Here is the build log:\n\n\`\`\`\n${logs}\n\`\`\`\n\nDiagnose the root cause and fix it directly in the project files (Dockerfile, package.json, build config, or source as appropriate). Apply the fixes as code blocks. Keep changes minimal and focused on making the build succeed.`;
+  const handleFixBuildError = useCallback((logs: string, appName: string, opts?: { fallback?: boolean; status?: string }) => {
+    const prompt = (opts?.fallback || !logs.trim())
+      // Fallback: the platform couldn't return the build log (e.g. Dokploy's readLogs is broken for
+      // remote-server deployments — it stores no serverId on the deployment row). The LLM still has
+      // the full project (Dockerfile + files) in context, so ask it to review proactively.
+      ? `The deployment of "${appName}" failed (status: ${opts?.status || 'error'}), but the build log could not be retrieved from the hosting platform (a known limitation reading logs from remote deploy servers). Without the log, carefully review THIS project's Dockerfile and build configuration for the most likely causes of a failed Docker build, and fix them. Check especially: files referenced by COPY/ADD that may not exist (e.g. package-lock.json, the build output/dist directory), the base image and the build/start commands, EXPOSE vs the port the server actually listens on, and the dependency-install steps. Apply concrete fixes as code blocks and briefly explain what you changed and why.`
+      : `The deployment of "${appName}" failed during the build. Here is the build log:\n\n\`\`\`\n${logs}\n\`\`\`\n\nDiagnose the root cause and fix it directly in the project files (Dockerfile, package.json, build config, or source as appropriate). Apply the fixes as code blocks. Keep changes minimal and focused on making the build succeed.`;
     handleSendMessage(prompt);
   }, [handleSendMessage]);
 

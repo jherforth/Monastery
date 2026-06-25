@@ -15,8 +15,10 @@ const STEPS = ['Platform', 'Connect', 'Configure', 'Deploy'] as const;
 interface SelfHostWizardProps {
   isOpen: boolean;
   onClose: () => void;
-  /** Hand a failed deployment's build log to the connected LLM to fix (posts into chat). */
-  onFixBuildError?: (logs: string, appName: string) => void;
+  /** Hand a failed deployment's build log to the connected LLM to fix (posts into chat).
+   *  When the log can't be retrieved, called with empty logs + { fallback: true } for a
+   *  proactive Dockerfile/config review. */
+  onFixBuildError?: (logs: string, appName: string, opts?: { fallback?: boolean; status?: string }) => void;
 }
 
 export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWizardProps) {
@@ -160,12 +162,20 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
     setFixingBuild(true); setFixError(null);
     try {
       const { status, logs, detail } = await fetchDeploymentLog(activePlatformConn.id, appId);
-      if (!logs || !logs.trim()) {
-        setFixError(`No build log returned (status: ${status || 'unknown'}). ${detail || 'If the build is still running, wait and retry.'}`);
+      if (logs && logs.trim()) {
+        onFixBuildError(logs, deployResult.app_name);
+        onClose(); // surface the chat where the LLM applies the fix
         return;
       }
-      onFixBuildError(logs, deployResult.app_name);
-      onClose(); // surface the chat where the LLM applies the fix
+      // No log text. If the build is still running, ask the user to wait rather than guessing.
+      if (status === 'running' || status === 'unknown') {
+        setFixError(`No build log yet (status: ${status}). If the build is still running, wait for it to finish and retry. ${detail || ''}`);
+        return;
+      }
+      // Build finished but the log isn't retrievable (e.g. Dokploy can't serve logs from a remote
+      // deploy server via the API). Fall back to a proactive Dockerfile/config review.
+      onFixBuildError('', deployResult.app_name, { fallback: true, status });
+      onClose();
     } catch (e: any) {
       setFixError(e.message || 'Failed to fetch build log');
     } finally { setFixingBuild(false); }
