@@ -9,6 +9,13 @@ export interface Message {
   /** True when the model stopped because it hit max_tokens (finish_reason="length"),
    *  meaning the response is incomplete and can be continued on user request. */
   truncated?: boolean;
+  /** How many times this message was auto-continued after hitting the output-token cap. */
+  autoContinueCount?: number;
+  /** True while an auto-continuation request is currently streaming into this message. */
+  continuing?: boolean;
+  /** Accumulated token usage across the initial response + any continuations (when the
+   *  endpoint reports it via stream_options.include_usage). */
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   /** Which backend produced this assistant message — shown as a small badge in the UI. */
   via?: 'hermes' | 'llm';
   /** Agent role label(s) active when a user message was sent (e.g. "🏗️ Architect") — shown as chips. */

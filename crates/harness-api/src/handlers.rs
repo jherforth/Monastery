@@ -238,6 +238,9 @@ pub async fn chat_stream(
                     harness_core::ChunkType::FinishReason => {
                         Ok(event.event("finish_reason"))
                     }
+                    harness_core::ChunkType::Usage => {
+                        Ok(event.event("usage"))
+                    }
                 }
             }
             Err(e) => {
@@ -3939,6 +3942,7 @@ pub async fn run_agent(
                     harness_core::ChunkType::Reasoning => Ok(event.event("reasoning")),
                     harness_core::ChunkType::Content => Ok(event),
                     harness_core::ChunkType::FinishReason => Ok(event.event("finish_reason")),
+                    harness_core::ChunkType::Usage => Ok(event.event("usage")),
                 }
             }
             Err(e) => {
@@ -4558,6 +4562,12 @@ pub async fn hermes_agent_run(
                             if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
                                 if !reason.is_empty() {
                                     yield Ok(Event::default().event("finish_reason").data(reason.to_string()));
+                                }
+                            }
+                            // Forward token usage if Hermes' upstream includes it (final chunk).
+                            if let Some(usage) = json.get("usage") {
+                                if usage.is_object() {
+                                    yield Ok(Event::default().event("usage").data(usage.to_string()));
                                 }
                             }
                         }

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, ChevronUp, Database } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, ChevronUp, Database, Loader2, Coins } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
@@ -43,6 +43,9 @@ interface ChatPaneProps {
   maxActiveRoles?: number;
   onStopGeneration?: () => void;
   onContinue?: (messageId: string) => void;
+  /** Whether truncated responses auto-continue (capped) instead of requiring a manual click. */
+  autoContinue?: boolean;
+  onToggleAutoContinue?: (on: boolean) => void;
   isGenerating?: boolean;
   /** Whether a default Hermes connection exists (enables the Agent mode toggle). */
   hermesAvailable?: boolean;
@@ -64,6 +67,8 @@ export function ChatPane({
   maxActiveRoles = 2,
   onStopGeneration,
   onContinue,
+  autoContinue = true,
+  onToggleAutoContinue,
   isGenerating = false,
   hermesAvailable = false,
   agentMode = false,
@@ -379,8 +384,27 @@ export function ChatPane({
                 <div className={`text-sm ${message.role === 'system' ? 'text-monastery-text-secondary' : ''}`}>
                   {renderContent(message.content)}
                 </div>
-                {/* Continue button when the model hit its output-token limit mid-response.
-                    Manual on purpose — each click is an explicit, user-authorized token spend. */}
+                {/* Auto-continuation status + token usage (when the endpoint reports usage). */}
+                {message.role === 'assistant' && (message.continuing || (message.autoContinueCount ?? 0) > 0 || message.usage?.total_tokens) && (
+                  <div className="mt-1.5 flex items-center flex-wrap gap-x-3 gap-y-1 text-[11px] text-monastery-text-muted">
+                    {message.continuing ? (
+                      <span className="flex items-center gap-1 text-monastery-lantern">
+                        <Loader2 size={11} className="animate-spin" /> Continuing… (auto-continuation {message.autoContinueCount})
+                      </span>
+                    ) : (message.autoContinueCount ?? 0) > 0 ? (
+                      <span className="flex items-center gap-1">
+                        <RotateCcw size={11} /> Auto-continued {message.autoContinueCount}×
+                      </span>
+                    ) : null}
+                    {message.usage?.total_tokens ? (
+                      <span className="flex items-center gap-1" title={`prompt ${message.usage.prompt_tokens ?? '?'} · completion ${message.usage.completion_tokens ?? '?'}`}>
+                        <Coins size={11} /> {message.usage.total_tokens.toLocaleString()} tokens
+                      </span>
+                    ) : null}
+                  </div>
+                )}
+                {/* Manual Continue button — appears when the response still hit the output-token
+                    cap after auto-continue is off or its limit was reached. */}
                 {message.role === 'assistant' && message.truncated && !isGenerating && onContinue && (
                   <div className="mt-2 flex items-center gap-2">
                     <button
@@ -389,7 +413,11 @@ export function ChatPane({
                     >
                       ⏵ Continue generating
                     </button>
-                    <span className="text-xs text-monastery-text-muted">Response hit the model's output-token limit</span>
+                    <span className="text-xs text-monastery-text-muted">
+                      {(message.autoContinueCount ?? 0) > 0
+                        ? 'Reached the auto-continue limit — continue manually if needed'
+                        : "Response hit the model's output-token limit"}
+                    </span>
                   </div>
                 )}
                 {/* Revert button on commit markers */}
@@ -507,6 +535,29 @@ export function ChatPane({
             >
               <Database size={13} />
               Pocketbase {useDatabaseContext ? 'on' : 'off'}
+            </button>
+          </div>
+        )}
+        {/* Auto-continue toggle — when on, responses cut off by the model's output-token cap
+            resume automatically (capped); when off, you get the manual Continue button. */}
+        {onToggleAutoContinue && (
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs text-monastery-text-muted">
+              {autoContinue ? 'Auto-continues cut-off responses (capped)' : 'Continue cut-off responses manually'}
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoContinue}
+              onClick={() => onToggleAutoContinue(!autoContinue)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-colors ${
+                autoContinue
+                  ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
+                  : 'bg-monastery-dark-surface text-monastery-text-secondary border-monastery-dark-border hover:border-monastery-pine'
+              }`}
+            >
+              <RotateCcw size={13} />
+              Auto-continue {autoContinue ? 'on' : 'off'}
             </button>
           </div>
         )}

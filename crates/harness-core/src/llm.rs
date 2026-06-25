@@ -25,6 +25,10 @@ pub enum ChunkType {
     /// Carries the finish_reason string ("stop", "length", etc.)
     /// Emitted once at the end of a streaming response.
     FinishReason,
+    /// Carries the token-usage object as a JSON string
+    /// (`{prompt_tokens, completion_tokens, total_tokens}`). Emitted once at the end when the
+    /// endpoint reports usage (requested via stream_options.include_usage).
+    Usage,
 }
 
 /// Unified LLM client supporting multiple endpoints
@@ -102,6 +106,9 @@ impl LLMClient {
                     }
                 }).collect::<Vec<_>>(),
                 "stream": true,
+                // Ask OpenAI-compatible endpoints to include a final usage chunk in the stream.
+                // Unknown fields are ignored by providers that don't support it, so this is safe.
+                "stream_options": { "include_usage": true },
             });
 
             // Determine effective max_tokens:
@@ -216,10 +223,21 @@ impl LLMClient {
                                         });
                                     }
                                 }
+                                // Usage arrives on a final chunk (with empty choices) when
+                                // stream_options.include_usage is set. Guard with is_object so a
+                                // null usage on intermediate chunks is ignored.
+                                if let Some(usage) = json.get("usage") {
+                                    if usage.is_object() {
+                                        chunks.push(StreamChunk {
+                                            chunk_type: ChunkType::Usage,
+                                            content: usage.to_string(),
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
-                    
+
                     Ok(chunks)
                 }
                 Err(e) => Err(Error::OpenAIWithMessage(format!("Stream read error: {}", e))),

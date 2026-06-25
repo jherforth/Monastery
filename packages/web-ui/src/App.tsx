@@ -40,6 +40,11 @@ export default function App() {
   // When on, the LLM system context includes Pocketbase + deployment instructions (with the
   // configured Pocketbase URL). Toggled by the user when building a DB-backed app.
   const [useDatabaseContext, setUseDatabaseContext] = useState(false);
+  // Auto-continue a response that hits the model's output-token cap (finish_reason="length"),
+  // up to MAX_AUTO_CONTINUE times, then fall back to the manual Continue button. Capped on
+  // purpose: unbounded auto-continue can burn cloud (e.g. DeepSeek) tokens on verbose models.
+  const [autoContinue, setAutoContinue] = useState(true);
+  const MAX_AUTO_CONTINUE = 5;
   // Active agent role(s) — a persistent "lens" applied to chat messages. Capped to keep focus.
   const MAX_ACTIVE_ROLES = 2;
   const [activeAgentIds, setActiveAgentIds] = useState<string[]>([]);
@@ -735,26 +740,87 @@ export default function App() {
       if (!reader) throw new Error('No response body');
 
       let finishReason = '';
+      let usage: Message['usage'] | undefined;
+      // Accumulate token usage across the initial response + any auto-continuations.
+      const mergeUsage = (raw: string) => {
+        try {
+          const u = JSON.parse(raw);
+          usage = {
+            prompt_tokens: (usage?.prompt_tokens || 0) + (u.prompt_tokens || 0),
+            completion_tokens: (usage?.completion_tokens || 0) + (u.completion_tokens || 0),
+            total_tokens: (usage?.total_tokens || 0) + (u.total_tokens || 0),
+          };
+        } catch { /* ignore malformed usage payloads */ }
+      };
       for await (const { eventType, data } of parseSSEStream(reader)) {
-        if (eventType === 'finish_reason') {
-          finishReason = data;
-        } else if (eventType === 'reasoning') {
-          reasoningContent += data;
-        } else {
-          fullContent += data;
-        }
+        if (eventType === 'finish_reason') finishReason = data;
+        else if (eventType === 'usage') mergeUsage(data);
+        else if (eventType === 'reasoning') reasoningContent += data;
+        else fullContent += data;
         setMessages(prev => prev.map(m =>
           m.id === aiMsgId
-            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined }
+            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined, usage }
             : m
         ));
       }
 
-      // If the model stopped because it hit its output-token cap, flag the message so the
-      // UI can offer a manual "Continue" button. We deliberately do NOT auto-continue:
-      // that spends the user's API tokens without consent and can loop on verbose models.
+      // Auto-continue when the model stopped at its output-token cap (finish_reason="length"),
+      // appending onto the SAME message bubble. Capped at MAX_AUTO_CONTINUE and abort-aware (the
+      // Stop button halts it), so a verbose model can't run away with the user's cloud tokens.
+      // When the cap is reached we leave `truncated` true so the manual Continue button takes over.
+      let autoCount = 0;
+      while (
+        finishReason === 'length' &&
+        autoContinue &&
+        autoCount < MAX_AUTO_CONTINUE &&
+        !controller.signal.aborted
+      ) {
+        autoCount++;
+        setMessages(prev => prev.map(m =>
+          m.id === aiMsgId ? { ...m, truncated: false, continuing: true, autoContinueCount: autoCount } : m
+        ));
+        finishReason = '';
+        const contMessages = [
+          ...chatMessages,
+          { role: 'assistant' as const, content: fullContent },
+          { role: 'user' as const, content: 'Continue exactly where you left off. Do not repeat any text you already wrote.' },
+        ];
+        let contRes: Response;
+        try {
+          contRes = useHermes
+            ? await fetch('/api/hermes/run', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: contMessages, model: modelId, project_path: currentProject?.name }),
+                signal: controller.signal,
+              })
+            : await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: contMessages }), signal: controller.signal,
+              });
+        } catch (e: any) {
+          if (e?.name === 'AbortError') break;
+          throw e;
+        }
+        if (!contRes.ok) break;
+        const contReader = contRes.body?.getReader();
+        if (!contReader) break;
+        for await (const { eventType, data } of parseSSEStream(contReader)) {
+          if (eventType === 'finish_reason') finishReason = data;
+          else if (eventType === 'usage') mergeUsage(data);
+          else if (eventType === 'reasoning') { /* ignore reasoning on continuation */ }
+          else fullContent += data;
+          setMessages(prev => prev.map(m =>
+            m.id === aiMsgId ? { ...m, content: fullContent, usage } : m
+          ));
+        }
+      }
+
+      // Final flags: still "truncated" only if it ended on "length" (cap reached, or auto-continue
+      // off) so the manual Continue button appears; clear the in-progress "continuing" status.
       setMessages(prev => prev.map(m =>
-        m.id === aiMsgId ? { ...m, truncated: finishReason === 'length' } : m
+        m.id === aiMsgId
+          ? { ...m, content: fullContent, truncated: finishReason === 'length', continuing: false, autoContinueCount: autoCount, usage }
+          : m
       ));
 
       if (fullContent || reasoningContent) {
@@ -767,8 +833,10 @@ export default function App() {
       
       setIsGenerating(false);
     } catch (err: any) {
-      // Don't show an error if the user intentionally stopped generation
+      // Don't show an error if the user intentionally stopped generation. Clear any in-progress
+      // auto-continuation status and leave the message resumable via the manual Continue button.
       if (err?.name === 'AbortError') {
+        setMessages(prev => prev.map(m => m.continuing ? { ...m, continuing: false, truncated: true } : m));
         setIsGenerating(false);
         return;
       }
@@ -783,7 +851,7 @@ export default function App() {
       }]);
       setIsGenerating(false);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, useDatabaseContext, pocketbaseConn?.base_url]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, useDatabaseContext, pocketbaseConn?.base_url, autoContinue]);
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
@@ -827,21 +895,29 @@ export default function App() {
 
       let fullContent = targetMsg.content;
       let finishReason = '';
+      let usage = targetMsg.usage;
+      const mergeUsage = (raw: string) => {
+        try {
+          const u = JSON.parse(raw);
+          usage = {
+            prompt_tokens: (usage?.prompt_tokens || 0) + (u.prompt_tokens || 0),
+            completion_tokens: (usage?.completion_tokens || 0) + (u.completion_tokens || 0),
+            total_tokens: (usage?.total_tokens || 0) + (u.total_tokens || 0),
+          };
+        } catch { /* ignore malformed usage payloads */ }
+      };
       for await (const { eventType, data } of parseSSEStream(reader)) {
-        if (eventType === 'finish_reason') {
-          finishReason = data;
-        } else if (eventType === 'reasoning') {
-          // ignore reasoning on continuation
-        } else {
-          fullContent += data;
-        }
+        if (eventType === 'finish_reason') finishReason = data;
+        else if (eventType === 'usage') mergeUsage(data);
+        else if (eventType === 'reasoning') { /* ignore reasoning on continuation */ }
+        else fullContent += data;
         setMessages(prev => prev.map(m =>
-          m.id === truncatedMsgId ? { ...m, content: fullContent } : m
+          m.id === truncatedMsgId ? { ...m, content: fullContent, usage } : m
         ));
       }
 
       setMessages(prev => prev.map(m =>
-        m.id === truncatedMsgId ? { ...m, content: fullContent, truncated: finishReason === 'length' } : m
+        m.id === truncatedMsgId ? { ...m, content: fullContent, truncated: finishReason === 'length', usage } : m
       ));
       if (currentSession?.id) {
         addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
@@ -967,6 +1043,8 @@ export default function App() {
               maxActiveRoles={MAX_ACTIVE_ROLES}
               onStopGeneration={handleStopGeneration}
               onContinue={handleContinueGeneration}
+              autoContinue={autoContinue}
+              onToggleAutoContinue={setAutoContinue}
               isGenerating={isGenerating}
               hermesAvailable={!!hermesConnection}
               agentMode={agentMode}
