@@ -2636,6 +2636,113 @@ async fn resolve_pocketbase_url(state: &AppState, req: &DeployRequest) -> Option
     row.map(|r| r.get::<String, _>(0).trim_end_matches('/').to_string())
 }
 
+/// Coolify stores a deployment's `logs` as a JSON-encoded string of `[{ "output": "...", ... }]`.
+/// Flatten it to plain text (or pass through if it's already text/an array).
+fn coolify_logs_to_text(v: &serde_json::Value) -> String {
+    let lines_from = |arr: &Vec<serde_json::Value>| {
+        arr.iter().filter_map(|e| e["output"].as_str().map(|s| s.to_string())).collect::<Vec<_>>().join("\n")
+    };
+    if let Some(s) = v.as_str() {
+        if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(s) {
+            return lines_from(&arr);
+        }
+        return s.to_string();
+    }
+    if let Some(arr) = v.as_array() {
+        return lines_from(arr);
+    }
+    String::new()
+}
+
+/// Char-safe tail of a string (keep the last `max` chars).
+fn tail_chars(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_string()
+    } else {
+        format!("…(truncated)…\n{}", chars[chars.len() - max..].iter().collect::<String>())
+    }
+}
+
+/// Fetch the latest deployment's status + build log for an app on a hosting connection, so the UI
+/// can hand a failed build to the connected LLM to fix. Query param: `?app=<app uuid/id>`.
+pub async fn get_deployment_log(
+    Path(id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let app = params.get("app").cloned().unwrap_or_default();
+    if app.is_empty() {
+        return Err(ApiError::Config("Missing 'app' query parameter".into()));
+    }
+    let row = sqlx::query("SELECT service_type, base_url, api_token FROM hosting_connections WHERE id = ?")
+        .bind(id.to_string())
+        .fetch_optional(&*state.db).await?;
+    let (service_type, base_url, api_token) = match row {
+        Some(r) => (r.get::<String, _>(0), r.get::<String, _>(1), r.get::<String, _>(2)),
+        None => return Err(ApiError::NotFound("Hosting connection not found".into())),
+    };
+    let base = base_url.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| ApiError::Internal(format!("Failed to build HTTP client: {}", e)))?;
+
+    match service_type.as_str() {
+        "coolify" => {
+            let resp = client
+                .get(format!("{}/api/v1/deployments/applications/{}?take=1", base, app))
+                .header("Authorization", format!("Bearer {}", api_token))
+                .send().await
+                .map_err(|e| ApiError::Internal(format!("Coolify deployments request failed: {}", e)))?;
+            let body: serde_json::Value = resp.json().await.unwrap_or_default();
+            // Response may be an array, or { deployments: [...] }.
+            let latest = body.as_array().and_then(|a| a.first())
+                .or_else(|| body["deployments"].as_array().and_then(|a| a.first()))
+                .cloned().unwrap_or_default();
+            let status = latest["status"].as_str().unwrap_or("unknown").to_string();
+            let logs = tail_chars(&coolify_logs_to_text(&latest["logs"]), 8000);
+            Ok(Json(serde_json::json!({ "status": status, "logs": logs })))
+        }
+        "dokploy" => {
+            let all_input = serde_json::json!({ "json": { "applicationId": app } }).to_string();
+            let resp = client
+                .get(format!("{}/api/trpc/deployment.all", base))
+                .header("x-api-key", &api_token)
+                .query(&[("input", all_input.as_str())])
+                .send().await
+                .map_err(|e| ApiError::Internal(format!("Dokploy deployment.all failed: {}", e)))?;
+            let data: serde_json::Value = resp.json().await.unwrap_or_default();
+            let list = data["result"]["data"]["json"].as_array().cloned().unwrap_or_default();
+            // Latest by createdAt (fall back to first).
+            let latest = list.iter().max_by(|a, b| {
+                a["createdAt"].as_str().unwrap_or("").cmp(b["createdAt"].as_str().unwrap_or(""))
+            }).or_else(|| list.first()).cloned().unwrap_or_default();
+            let status = latest["status"].as_str().unwrap_or("unknown").to_string();
+            let deployment_id = latest["deploymentId"].as_str().unwrap_or("").to_string();
+            let logs = if deployment_id.is_empty() {
+                String::new()
+            } else {
+                let logs_input = serde_json::json!({ "json": { "deploymentId": deployment_id, "tail": 300 } }).to_string();
+                match client.get(format!("{}/api/trpc/deployment.readLogs", base))
+                    .header("x-api-key", &api_token)
+                    .query(&[("input", logs_input.as_str())])
+                    .send().await
+                {
+                    Ok(r) => {
+                        let d: serde_json::Value = r.json().await.unwrap_or_default();
+                        d["result"]["data"]["json"].as_str().unwrap_or("").to_string()
+                    }
+                    Err(_) => String::new(),
+                }
+            };
+            Ok(Json(serde_json::json!({ "status": status, "logs": tail_chars(&logs, 8000) })))
+        }
+        other => Err(ApiError::Config(format!("Deployment logs not supported for '{}'.", other))),
+    }
+}
+
 /// Deploy a project to a connected hosting service
 pub async fn deploy_to_hosting(
     State(state): State<AppState>,

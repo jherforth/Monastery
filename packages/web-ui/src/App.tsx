@@ -875,6 +875,14 @@ export default function App() {
     handleSendMessage(prompt, undefined, { preferHermes: true });
   }, [currentProject?.id, getAgent, handleSendMessage]);
 
+  // Hand a failed deployment's build log to the connected LLM to fix (from the Self-Host Wizard).
+  // Posts the log into chat as a fix request; the LLM's returned code blocks are applied to files,
+  // after which the user can redeploy.
+  const handleFixBuildError = useCallback((logs: string, appName: string) => {
+    const prompt = `The deployment of "${appName}" failed during the build. Here is the build log:\n\n\`\`\`\n${logs}\n\`\`\`\n\nDiagnose the root cause and fix it directly in the project files (Dockerfile, package.json, build config, or source as appropriate). Apply the fixes as code blocks. Keep changes minimal and focused on making the build succeed.`;
+    handleSendMessage(prompt);
+  }, [handleSendMessage]);
+
   const handleStopGeneration = () => {
     abortRef.current?.abort();
     setIsGenerating(false);
@@ -908,7 +916,7 @@ export default function App() {
           }
         }}      />
       
-      <SelfHostWizard isOpen={isWizardOpen} onClose={() => setIsWizardOpen(false)} />
+      <SelfHostWizard isOpen={isWizardOpen} onClose={() => setIsWizardOpen(false)} onFixBuildError={handleFixBuildError} />
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}

@@ -102,6 +102,15 @@ export function useHostingServices() {
     return res.json();
   }, []);
 
+  const fetchDeploymentLog = useCallback(async (connectionId: string, appId: string): Promise<{ status: string; logs: string }> => {
+    const res = await fetch(`/api/hosting/connections/${connectionId}/deployment-log?app=${encodeURIComponent(appId)}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to fetch deployment log' }));
+      throw new Error(err.error || 'Failed to fetch deployment log');
+    }
+    return res.json();
+  }, []);
+
   const deployProject = useCallback(async (req: DeployRequest): Promise<DeployResult> => {
     const res = await fetch('/api/hosting/deploy', {
       method: 'POST',
@@ -148,6 +157,7 @@ export function useHostingServices() {
     deleteConnection,
     testConnection,
     listServers,
+    fetchDeploymentLog,
     deployProject,
     previewDeploy,
     refreshConnections: mutate,

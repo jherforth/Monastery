@@ -6,7 +6,7 @@ import { useAppStore } from '../store/useAppStore';
 import {
   Server, Database, CheckCircle2, AlertTriangle, Rocket, GitBranch,
   Loader2, Globe, Copy, Check, ChevronRight, ChevronLeft, Eye, EyeOff,
-  Terminal, Upload, XCircle, Cloud,
+  Terminal, Upload, XCircle, Cloud, Wrench,
 } from 'lucide-react';
 import { FilePreviewCard } from './FilePreviewCard';
 
@@ -15,10 +15,12 @@ const STEPS = ['Platform', 'Connect', 'Configure', 'Deploy'] as const;
 interface SelfHostWizardProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Hand a failed deployment's build log to the connected LLM to fix (posts into chat). */
+  onFixBuildError?: (logs: string, appName: string) => void;
 }
 
-export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
-  const { connections: hostingConns, deployProject, previewDeploy, connectService, listServers } = useHostingServices();
+export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWizardProps) {
+  const { connections: hostingConns, deployProject, previewDeploy, connectService, listServers, fetchDeploymentLog } = useHostingServices();
   const { connections: gitConns } = useGitForge();
   const currentProject = useAppStore(s => s.currentProject);
 
@@ -47,6 +49,8 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
   const [selectedServer, setSelectedServer] = useState<string>('');
   const [loadingServers, setLoadingServers] = useState(false);
   const [serversError, setServersError] = useState<string | null>(null);
+  const [fixingBuild, setFixingBuild] = useState(false);
+  const [fixError, setFixError] = useState<string | null>(null);
 
   const dokploy = hostingConns.find(c => c.service_type === 'dokploy');
   const coolify = hostingConns.find(c => c.service_type === 'coolify');
@@ -146,6 +150,25 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
       setDeployResult(result);
     } catch (e: any) { setDeployError(e.message || 'Deployment failed'); }
     finally { setDeploying(false); }
+  };
+
+  // Pull the latest deployment's build log and hand it to the connected LLM (in chat) to fix.
+  const handleFixBuild = async () => {
+    if (!activePlatformConn || !deployResult || !onFixBuildError) return;
+    const appId = deployResult.app_uuid || deployResult.app_id;
+    if (!appId) { setFixError('No deployed app id to fetch logs for.'); return; }
+    setFixingBuild(true); setFixError(null);
+    try {
+      const { logs } = await fetchDeploymentLog(activePlatformConn.id, appId);
+      if (!logs || !logs.trim()) {
+        setFixError('No build log available yet — wait for the build to fail, then retry.');
+        return;
+      }
+      onFixBuildError(logs, deployResult.app_name);
+      onClose(); // surface the chat where the LLM applies the fix
+    } catch (e: any) {
+      setFixError(e.message || 'Failed to fetch build log');
+    } finally { setFixingBuild(false); }
   };
 
   const copyToClipboard = (text: string, id: string) => {
@@ -375,6 +398,21 @@ export function SelfHostWizard({ isOpen, onClose }: SelfHostWizardProps) {
                   <p className="text-amber-300 flex items-start gap-1"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> Deployed to the platform's own host — to reach a VPS instead, pick a remote server above and redeploy.</p>
                 )}
                 {deployResult.deploy_triggered && <p className="text-monastery-text-secondary">Deployment triggered — building now.</p>}
+                {onFixBuildError && (deployResult.app_uuid || deployResult.app_id) && (
+                  <div className="mt-1 pt-2 border-t border-green-400/20 space-y-1">
+                    <p className="text-monastery-text-muted">Build failing on the platform? Pull the build log and let the AI fix it.</p>
+                    <button
+                      type="button"
+                      onClick={handleFixBuild}
+                      disabled={fixingBuild}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-monastery-dark-border bg-monastery-dark-surface text-monastery-text-secondary hover:border-monastery-pine hover:text-monastery-text-primary transition-colors disabled:opacity-50"
+                    >
+                      {fixingBuild ? <Loader2 size={13} className="animate-spin" /> : <Wrench size={13} />}
+                      {fixingBuild ? 'Fetching build log…' : 'Fix build error with AI'}
+                    </button>
+                    {fixError && <p className="text-amber-300 flex items-start gap-1"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> {fixError}</p>}
+                  </div>
+                )}
                 {deployResult.pocketbase_url && (
                   <p className="text-monastery-text-secondary flex items-start gap-1">
                     <Database size={11} className="shrink-0 mt-0.5 text-amber-400" />
