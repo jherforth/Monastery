@@ -2703,7 +2703,8 @@ pub async fn get_deployment_log(
                 .cloned().unwrap_or_default();
             let status = latest["status"].as_str().unwrap_or("unknown").to_string();
             let logs = tail_chars(&coolify_logs_to_text(&latest["logs"]), 8000);
-            Ok(Json(serde_json::json!({ "status": status, "logs": logs })))
+            let detail = format!("deployment_uuid={} | status={}", latest["deployment_uuid"].as_str().unwrap_or("(none)"), status);
+            Ok(Json(serde_json::json!({ "status": status, "logs": logs, "detail": detail })))
         }
         "dokploy" => {
             // Fetch the application itself — `application.one` embeds its `deployments`, validates
@@ -2742,9 +2743,11 @@ pub async fn get_deployment_log(
             let latest = list.first().cloned().unwrap_or_default();
             let status = latest["status"].as_str().unwrap_or("unknown").to_string();
             let deployment_id = latest["deploymentId"].as_str().unwrap_or("").to_string();
-            let mut logs = if deployment_id.is_empty() {
-                String::new()
-            } else {
+            // Read the deployment's log file. Capture any tRPC error instead of swallowing it —
+            // readLogs SSHes to the deployment's server (execAsyncRemote) and can fail there.
+            let mut logs = String::new();
+            let mut readlogs_err: Option<String> = None;
+            if !deployment_id.is_empty() {
                 let logs_input = serde_json::json!({ "json": { "deploymentId": deployment_id, "tail": 300 } }).to_string();
                 match client.get(format!("{}/api/trpc/deployment.readLogs", base))
                     .header("x-api-key", &api_token)
@@ -2753,21 +2756,40 @@ pub async fn get_deployment_log(
                 {
                     Ok(r) => {
                         let d: serde_json::Value = r.json().await.unwrap_or_default();
-                        d["result"]["data"]["json"].as_str()
-                            .or_else(|| d["result"]["data"].as_str())
-                            .unwrap_or("").to_string()
+                        if let Some(err) = d["error"]["json"]["message"].as_str()
+                            .or_else(|| d["error"]["message"].as_str())
+                        {
+                            readlogs_err = Some(err.to_string());
+                        } else {
+                            logs = d["result"]["data"]["json"].as_str()
+                                .or_else(|| d["result"]["data"].as_str())
+                                .unwrap_or("").to_string();
+                        }
                     }
-                    Err(_) => String::new(),
+                    Err(e) => readlogs_err = Some(e.to_string()),
                 }
-            };
-            // If the log file is empty (build crashed before writing, or logs rotated), fall back
-            // to the deployment's recorded errorMessage so the LLM still has something to work with.
+            }
+            // If the log file came back empty, fall back to the deployment's recorded errorMessage
+            // (real failure info, worth sending to the LLM).
             if logs.trim().is_empty() {
                 if let Some(err_msg) = latest["errorMessage"].as_str().filter(|s| !s.trim().is_empty()) {
                     logs = format!("Deployment status: {}\nError: {}", status, err_msg);
                 }
             }
-            Ok(Json(serde_json::json!({ "status": status, "logs": tail_chars(&logs, 8000) })))
+            // Always provide a diagnostic `detail` so a blank log isn't a dead end — it shows why
+            // (readLogs error, where the log lives, which server) directly in the UI.
+            let detail = format!(
+                "deploymentId={} | logPath={} | serverId={} | readLogsError={}",
+                deployment_id,
+                latest["logPath"].as_str().unwrap_or("(none)"),
+                latest["serverId"].as_str().unwrap_or("(local)"),
+                readlogs_err.as_deref().unwrap_or("none"),
+            );
+            Ok(Json(serde_json::json!({
+                "status": status,
+                "logs": tail_chars(&logs, 8000),
+                "detail": detail,
+            })))
         }
         other => Err(ApiError::Config(format!("Deployment logs not supported for '{}'.", other))),
     }

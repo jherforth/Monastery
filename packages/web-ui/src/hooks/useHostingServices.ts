@@ -102,7 +102,7 @@ export function useHostingServices() {
     return res.json();
   }, []);
 
-  const fetchDeploymentLog = useCallback(async (connectionId: string, appId: string): Promise<{ status: string; logs: string }> => {
+  const fetchDeploymentLog = useCallback(async (connectionId: string, appId: string): Promise<{ status: string; logs: string; detail?: string }> => {
     const res = await fetch(`/api/hosting/connections/${connectionId}/deployment-log?app=${encodeURIComponent(appId)}`);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Failed to fetch deployment log' }));
