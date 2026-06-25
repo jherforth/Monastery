@@ -2706,33 +2706,40 @@ pub async fn get_deployment_log(
             Ok(Json(serde_json::json!({ "status": status, "logs": logs })))
         }
         "dokploy" => {
-            let all_input = serde_json::json!({ "json": { "applicationId": app } }).to_string();
+            // Fetch the application itself — `application.one` embeds its `deployments`, validates
+            // the id (throws NOT_FOUND if stale), and is a single call. More reliable than
+            // `deployment.all`, which silently returns [] for a mismatched/absent applicationId.
+            let one_input = serde_json::json!({ "json": { "applicationId": app } }).to_string();
             let resp = client
-                .get(format!("{}/api/trpc/deployment.all", base))
+                .get(format!("{}/api/trpc/application.one", base))
                 .header("x-api-key", &api_token)
-                .query(&[("input", all_input.as_str())])
+                .query(&[("input", one_input.as_str())])
                 .send().await
-                .map_err(|e| ApiError::Internal(format!("Dokploy deployment.all failed: {}", e)))?;
+                .map_err(|e| ApiError::Internal(format!("Dokploy application.one failed: {}", e)))?;
             let data: serde_json::Value = resp.json().await.unwrap_or_default();
-            // Surface a tRPC error (bad input/auth) rather than silently treating it as "no logs".
+            // Surface a tRPC error (e.g. NOT_FOUND for a stale app id, or auth) so it's not
+            // mistaken for "no logs".
             if let Some(err) = data["error"]["json"]["message"].as_str()
                 .or_else(|| data["error"]["message"].as_str())
             {
-                return Err(ApiError::Internal(format!("Dokploy deployment.all error: {}", err)));
+                return Err(ApiError::Internal(format!("Dokploy application.one error: {} (app id sent: {})", err, app)));
             }
-            // The tRPC response envelope varies (superjson `result.data.json` vs plain
-            // `result.data`); try each, same as the working server.all/project.all calls.
-            let list = data["result"]["data"]["json"].as_array()
-                .or_else(|| data["result"]["data"].as_array())
-                .or_else(|| data["result"].as_array())
-                .cloned().unwrap_or_default();
-            // findAllDeploymentsByApplicationId orders by createdAt desc, so the newest is first;
-            // fall back to max-by-createdAt in case the order ever changes.
-            let latest = list.first().cloned()
-                .or_else(|| list.iter().max_by(|a, b| {
-                    a["createdAt"].as_str().unwrap_or("").cmp(b["createdAt"].as_str().unwrap_or(""))
-                }).cloned())
-                .unwrap_or_default();
+            // Envelope varies (superjson `result.data.json` vs plain `result.data`).
+            let appobj = if data["result"]["data"]["json"].is_object() {
+                &data["result"]["data"]["json"]
+            } else {
+                &data["result"]["data"]
+            };
+            let mut list = appobj["deployments"].as_array().cloned().unwrap_or_default();
+            // `deployments: true` has no orderBy, so sort newest-first ourselves.
+            list.sort_by(|a, b| b["createdAt"].as_str().unwrap_or("").cmp(a["createdAt"].as_str().unwrap_or("")));
+            if list.is_empty() {
+                return Ok(Json(serde_json::json!({
+                    "status": "no-deployments",
+                    "logs": format!("Dokploy has no deployment records for application '{}' (it was found, but no builds are recorded). Trigger a deploy, then retry.", app),
+                })));
+            }
+            let latest = list.first().cloned().unwrap_or_default();
             let status = latest["status"].as_str().unwrap_or("unknown").to_string();
             let deployment_id = latest["deploymentId"].as_str().unwrap_or("").to_string();
             let mut logs = if deployment_id.is_empty() {
