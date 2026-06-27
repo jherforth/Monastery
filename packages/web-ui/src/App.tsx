@@ -14,7 +14,7 @@ import { useAgents } from './hooks/useAgents';
 import { useHermesAgent } from './hooks/useHermesAgent';
 import { useHostingServices } from './hooks/useHostingServices';
 import { buildSkillInstructions } from './lib/skills';
-import { useWorkflow, type Stage } from './hooks/useWorkflow';
+import { useWorkflow, WORKFLOW_ROLE_IDS, type Stage } from './hooks/useWorkflow';
 import { WorkflowPanel } from './components/WorkflowPanel';
 import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
@@ -74,6 +74,13 @@ export default function App() {
   const pocketbaseConn = hostingConns.find((c: any) => c.service_type === 'pocketbase');
   // Staged coding workflow (SAW-inspired): task spec + stages + gates + evidence, stored locally.
   const workflow = useWorkflow(currentProject?.id);
+  // When a task is active, its stage roles are driven by the Workflow panel — drop any active
+  // stage-role chips so a now-hidden role can't keep silently injecting into context.
+  useEffect(() => {
+    if (workflow.activeTask) {
+      setActiveAgentIds(ids => ids.filter(id => !WORKFLOW_ROLE_IDS.includes(id)));
+    }
+  }, [workflow.activeTask?.id]);
 
   // Fetch available models whenever endpoints change so we always send the right model ID
   useEffect(() => {
@@ -1104,6 +1111,8 @@ export default function App() {
               onRunStage={(s: Stage) => runStage(s, false)}
               onHandToHermes={(s: Stage) => runStage(s, true)}
               hermesAvailable={!!hermesConnection}
+              onApplySkills={(ids) => { if (ids.includes('pocketbase')) setUseDatabaseContext(true); }}
+              templateCtx={{ pocketbaseConfigured: !!pocketbaseConn }}
             />
             <div className="flex-1 min-h-0">
             <ChatPane
@@ -1112,6 +1121,7 @@ export default function App() {
               activeAgentIds={activeAgentIds}
               onToggleAgent={toggleActiveAgent}
               maxActiveRoles={MAX_ACTIVE_ROLES}
+              hasActiveTask={!!workflow.activeTask}
               onStopGeneration={handleStopGeneration}
               onContinue={handleContinueGeneration}
               autoContinue={autoContinue}

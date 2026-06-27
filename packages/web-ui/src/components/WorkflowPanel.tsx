@@ -1,6 +1,9 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, Plus, Play, Bot, FlaskConical, CheckCircle2, XCircle, Loader2, ArrowRight } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Play, Bot, FlaskConical, CheckCircle2, XCircle, Loader2, ArrowRight, X } from 'lucide-react';
 import { useWorkflow, STAGES, specHasAcDod, latestVerify, type Stage } from '../hooks/useWorkflow';
+import { availableTemplates, getTemplate, type TaskTemplateContext } from '../lib/taskTemplates';
+
+const HINT_KEY = 'monastery.workflowHintSeen';
 
 interface WorkflowPanelProps {
   projectId?: string;
@@ -9,20 +12,47 @@ interface WorkflowPanelProps {
   onRunStage: (stage: Stage) => void;
   onHandToHermes: (stage: Stage) => void;
   hermesAvailable: boolean;
+  /** Enable skills suggested by a task template (e.g. Pocketbase). */
+  onApplySkills?: (skillIds: string[]) => void;
+  /** Context for filtering which templates are offered. */
+  templateCtx: TaskTemplateContext;
 }
 
 const STAGE_LABEL: Record<Stage, string> = {
   plan: '🏗️ Plan', implement: '💻 Implement', verify: '🧪 Verify', review: '🔍 Review', done: '✅ Done',
 };
 
-export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes, hermesAvailable }: WorkflowPanelProps) {
+export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes, hermesAvailable, onApplySkills, templateCtx }: WorkflowPanelProps) {
   const { tasks, activeTask, spec, setSpec, createTask, loadTask, patchTask, verify, recordExit, refresh } = workflow;
   const [open, setOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [templateId, setTemplateId] = useState('feature');
   const [busy, setBusy] = useState<string | null>(null);
   const [verifyOut, setVerifyOut] = useState<string | null>(null);
+  const [hintSeen, setHintSeen] = useState(() => {
+    try { return !!localStorage.getItem(HINT_KEY); } catch { return true; }
+  });
+  const dismissHint = () => {
+    try { localStorage.setItem(HINT_KEY, '1'); } catch { /* ignore */ }
+    setHintSeen(true);
+  };
 
   if (!projectId) return null;
+
+  const templates = availableTemplates(templateCtx);
+
+  const handleCreate = async () => {
+    const title = newTitle.trim();
+    if (!title) return;
+    setBusy('create');
+    try {
+      const tmpl = getTemplate(templateId);
+      const t = await createTask(title, undefined, tmpl?.spec(title));
+      await loadTask(t.id);
+      if (tmpl?.suggestedSkills?.length) onApplySkills?.(tmpl.suggestedSkills);
+      setNewTitle('');
+    } finally { setBusy(null); }
+  };
 
   const gateReady = specHasAcDod(spec);
   const verified = latestVerify(activeTask)?.status === 'complete';
@@ -65,6 +95,20 @@ export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes,
         )}
       </button>
 
+      {/* First-use hint — shown once, only when there are no tasks yet. */}
+      {!open && tasks.length === 0 && !hintSeen && (
+        <div className="mx-4 mb-2 flex items-start gap-2 rounded-lg border border-monastery-lantern/40 bg-monastery-lantern/10 px-3 py-2 text-[11px] text-monastery-text-secondary">
+          <span className="flex-1">
+            <span className="text-monastery-lantern font-medium">New — structured tasks.</span>{' '}
+            Drive coding as <b>Plan → Implement → Verify → Review</b> with a spec, gates, and a scoped
+            (token-frugal) context. Click <b>🛠 Workflow</b> above to start one.
+          </span>
+          <button onClick={dismissHint} className="shrink-0 hover:text-monastery-text-primary" title="Dismiss">
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       {open && (
         <div className="px-4 pb-3 space-y-3">
           {/* Task selector + create */}
@@ -80,13 +124,22 @@ export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes,
             <input
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
               placeholder="New task title"
               className="flex-1 min-w-[140px] bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1 text-xs"
             />
+            <select
+              value={templateId}
+              onChange={(e) => setTemplateId(e.target.value)}
+              title="Task template — seeds the spec"
+              className="bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1 text-xs"
+            >
+              {templates.map((t) => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+            </select>
             <button
               type="button"
               disabled={!newTitle.trim() || busy === 'create'}
-              onClick={async () => { setBusy('create'); try { const t = await createTask(newTitle.trim()); await loadTask(t.id); setNewTitle(''); } finally { setBusy(null); } }}
+              onClick={handleCreate}
               className="flex items-center gap-1 px-2 py-1 text-xs rounded-lg bg-monastery-lantern text-monastery-dark-bg font-medium disabled:opacity-50"
             >
               <Plus size={12} /> New

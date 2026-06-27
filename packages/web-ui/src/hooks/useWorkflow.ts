@@ -34,6 +34,11 @@ export interface VerifyResult {
 
 export const STAGES: Stage[] = ['plan', 'implement', 'verify', 'review', 'done'];
 
+/** Agent-role ids that map onto workflow stages (plan/implement/verify/review). When a task is
+ *  active these roles are driven by the workflow, so the ad-hoc chat chips for them are hidden to
+ *  avoid two parallel "pick a role" mechanisms. Extras (documenter, deployer) are not stages. */
+export const WORKFLOW_ROLE_IDS = ['architect', 'coder', 'tester', 'reviewer'];
+
 /** A spec is "ready" once it has at least one filled-in Acceptance Criteria and Definition of Done
  *  bullet — the Stop-the-Line gate before implementation may begin. */
 export function specHasAcDod(spec: string): boolean {
@@ -62,11 +67,11 @@ export function useWorkflow(projectId?: string) {
 
   const activeTask = (tasks || []).find((t) => t.id === activeTaskId) || null;
 
-  const createTask = useCallback(async (title: string, sessionId?: string) => {
-    const res: TaskMeta = await apiPost(`/api/projects/${projectId}/tasks`, { title, session_id: sessionId }, 'Failed to create task');
+  const createTask = useCallback(async (title: string, sessionId?: string, spec?: string) => {
+    const res: TaskMeta = await apiPost(`/api/projects/${projectId}/tasks`, { title, session_id: sessionId, spec }, 'Failed to create task');
     await mutate();
     setActiveTaskId(res.id);
-    setSpec('');
+    setSpec(spec || '');
     return res;
   }, [projectId, mutate]);
 

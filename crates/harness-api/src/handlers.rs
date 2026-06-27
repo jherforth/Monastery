@@ -2065,6 +2065,9 @@ pub struct CreateTaskRequest {
     pub title: String,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Optional pre-rendered spec.md (from a task template); falls back to a generic skeleton.
+    #[serde(default)]
+    pub spec: Option<String>,
 }
 
 /// POST /api/projects/:id/tasks — create a task (dir + task.json + spec.md template).
@@ -2091,10 +2094,10 @@ pub async fn create_task(
         updated_at: now,
     };
     write_task_meta(&task_dir, &meta)?;
-    let spec_template = format!(
+    let spec_template = req.spec.unwrap_or_else(|| format!(
         "# {}\n\n## Goal\n\n_What are we building and why?_\n\n## Acceptance Criteria\n\n- [ ] \n\n## Definition of Done\n\n- [ ] Build/tests pass\n\n## Affected Files\n\n- \n\n## Approach\n\n_Plan the implementation here._\n",
         req.title
-    );
+    ));
     std::fs::write(task_dir.join("spec.md"), spec_template)
         .map_err(|e| ApiError::Internal(format!("write spec.md: {}", e)))?;
     Ok(Json(meta))

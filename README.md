@@ -17,6 +17,7 @@ A self-hosted sanctuary for AI-assisted coding. Monastery is a fully self-hosted
 - **Lightweight**: Harness container <1GB RAM idle; works on low-power nodes.
 - **Homelab Native**: Deep integrations with Proxmox, Coolify, PocketBase, MQTT, etc.
 - **OpenAI-Compatible**: Works with Ollama, vLLM, llama.cpp, OpenAI, Groq, and more.
+- **Staged Coding Workflow**: Drive work as Plan → Implement → Verify → Review with a local spec, gates, evidence, and token-frugal scoped context. See [Coding Workflow](docs/WORKFLOW.md).
 
 <img width="1912" height="992" alt="Screenshot 2026-06-06 144116" src="https://github.com/user-attachments/assets/39267f69-9197-4c09-9033-54003a2c08e4" />
 

@@ -4,6 +4,7 @@ import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
 import { useAgents } from '../hooks/useAgents';
+import { WORKFLOW_ROLE_IDS } from '../hooks/useWorkflow';
 import { Spinner } from './Spinner';
 
 // Reasoning window — collapsible, scrollable, max ~12 rows
@@ -41,6 +42,9 @@ interface ChatPaneProps {
   onToggleAgent?: (agentId: string) => void;
   /** Max number of roles that can be active at once (for disabling extras). */
   maxActiveRoles?: number;
+  /** When a workflow task is active, the stage roles (plan/implement/verify/review) are driven by
+   *  the Workflow panel, so the chat hides those chips and shows only the extras (docs, deploy). */
+  hasActiveTask?: boolean;
   onStopGeneration?: () => void;
   onContinue?: (messageId: string) => void;
   /** Whether truncated responses auto-continue (capped) instead of requiring a manual click. */
@@ -65,6 +69,7 @@ export function ChatPane({
   activeAgentIds = [],
   onToggleAgent,
   maxActiveRoles = 2,
+  hasActiveTask = false,
   onStopGeneration,
   onContinue,
   autoContinue = true,
@@ -492,11 +497,18 @@ export function ChatPane({
                 <Bot size={12} /> Agent mode
               </button>
             )}
-            {/* Agent role chips — revealed only when Agent mode is on. Click to toggle (capped). */}
+            {/* Agent role chips — revealed only when Agent mode is on. Click to toggle (capped).
+                When a workflow task is active, the stage roles are driven by the Workflow panel, so
+                only the extras (Docs, Deploy) remain here as the quick ad-hoc lens. */}
             {agentMode && onToggleAgent && quickActions.length > 0 && (
               <>
                 <span className="h-4 w-px bg-monastery-dark-border mx-0.5" aria-hidden />
-                {quickActions.map(action => {
+                {hasActiveTask && (
+                  <span className="text-[10px] text-monastery-text-muted" title="Plan/Implement/Verify/Review are run from the Workflow panel while a task is active">
+                    Plan/Implement/Verify/Review → Workflow ·
+                  </span>
+                )}
+                {(hasActiveTask ? quickActions.filter(a => !WORKFLOW_ROLE_IDS.includes(a.agentId)) : quickActions).map(action => {
                   const active = activeAgentIds.includes(action.agentId);
                   const atCap = !active && activeAgentIds.length >= maxActiveRoles;
                   return (
