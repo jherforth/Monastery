@@ -13,6 +13,9 @@ import { useEndpoints } from './hooks/useEndpoints';
 import { useAgents } from './hooks/useAgents';
 import { useHermesAgent } from './hooks/useHermesAgent';
 import { useHostingServices } from './hooks/useHostingServices';
+import { buildSkillInstructions } from './lib/skills';
+import { useWorkflow, type Stage } from './hooks/useWorkflow';
+import { WorkflowPanel } from './components/WorkflowPanel';
 import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
 
@@ -45,6 +48,10 @@ export default function App() {
   // purpose: unbounded auto-continue can burn cloud (e.g. DeepSeek) tokens on verbose models.
   const [autoContinue, setAutoContinue] = useState(true);
   const MAX_AUTO_CONTINUE = 5;
+  // Context discipline: in large projects we don't dump the whole repo into every message. The
+  // "working set" is the subset of files (beyond the active file) currently included in context —
+  // seeded by a task spec's affected-files later, and grown when the model emits `@read <path>`.
+  const [workingSetPaths, setWorkingSetPaths] = useState<string[]>([]);
   // Active agent role(s) — a persistent "lens" applied to chat messages. Capped to keep focus.
   const MAX_ACTIVE_ROLES = 2;
   const [activeAgentIds, setActiveAgentIds] = useState<string[]>([]);
@@ -65,6 +72,8 @@ export default function App() {
   // injected into the LLM context and into deploys.
   const { connections: hostingConns } = useHostingServices();
   const pocketbaseConn = hostingConns.find((c: any) => c.service_type === 'pocketbase');
+  // Staged coding workflow (SAW-inspired): task spec + stages + gates + evidence, stored locally.
+  const workflow = useWorkflow(currentProject?.id);
 
   // Fetch available models whenever endpoints change so we always send the right model ID
   useEffect(() => {
@@ -644,43 +653,54 @@ export default function App() {
 - To create a NEW file, just use a path that doesn't exist yet.
 - You can write multiple files in a single response — each code block becomes a file.`);
 
-      // Pocketbase + deployment integration instructions — only when the user enables the
-      // "Pocketbase backend" toggle (and a Pocketbase connection is configured).
-      if (useDatabaseContext && pocketbaseConn?.base_url) {
-        const pbUrl = pocketbaseConn.base_url.replace(/\/$/, '');
-        contextParts.push(`BACKEND & DEPLOYMENT (Pocketbase):
-- This project is deployed via Monastery's Self-Host Wizard: its Dockerfile is built and the app is served. The shared Pocketbase backend (database + auth + file storage) is at: ${pbUrl}
-- Monastery injects \`POCKETBASE_URL=${pbUrl}\` into the deployed app as BOTH a build-time arg and a runtime env var.
-- Use the official \`pocketbase\` JS SDK (\`npm i pocketbase\`). Initialize it from the env, with the URL above as a fallback:
-  - Frontend (Vite/Angular/etc., baked at build time): \`new PocketBase(import.meta.env.VITE_POCKETBASE_URL || '${pbUrl}')\` (or framework-equivalent build-time env). If the framework only exposes prefixed vars (e.g. VITE_/NG_APP_), also reference \`${pbUrl}\` directly.
-  - Backend (Node/Express, runtime): \`new PocketBase(process.env.POCKETBASE_URL || '${pbUrl}')\`.
-- Common patterns: \`pb.collection('<name>').getList()\`, \`.create({...})\`, \`.update(id,{...})\`, \`.delete(id)\`; auth: \`pb.collection('users').authWithPassword(email, pass)\` / \`.create(...)\`.
-- Collections/schema must already exist in the Pocketbase admin UI — the app cannot create collections at runtime, so handle missing-collection errors gracefully and document any collections you assume.
-- The app (especially a browser frontend) must be able to REACH ${pbUrl} from where it runs; enable CORS in Pocketbase for the app's origin.`);
+      // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
+      // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.
+      buildSkillInstructions(
+        useDatabaseContext ? ['pocketbase'] : [],
+        { pocketbaseUrl: pocketbaseConn?.base_url, userMessage: content },
+      ).forEach(block => contextParts.push(block));
+
+      // Active task spec — the workflow "system of record", referenced instead of re-derived.
+      if (workflow.activeTask && workflow.spec.trim()) {
+        contextParts.push(`CURRENT TASK [${workflow.activeTask.stage.toUpperCase()}] — "${workflow.activeTask.title}"\nThis spec is the source of truth; work to its Acceptance Criteria and Definition of Done:\n\n${workflow.spec}`);
       }
-      
+
+      // The file tree (names only) is always cheap and tells the model what exists so it can
+      // request files by path.
       if (projectFiles.length > 0) {
         const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
         contextParts.push(`PROJECT FILE TREE:\n${fileList}`);
       }
-      
-      // Include ALL file contents so the LLM has full project visibility
-      const fileEntries = Object.entries(allFileContents);
-      if (fileEntries.length > 0) {
-        const fileContents = fileEntries
-          .filter(([, content]) => content.trim().length > 0)
-          .map(([path, content]) => {
-            const ext = path.split('.').pop() || '';
-            return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
-          })
-          .join('\n\n');
-        // Cap at ~60KB (~15K tokens). Sending the entire codebase (up to 400KB previously)
-        // consumed most of the model's context window before generating a single output token,
-        // causing responses to be cut off mid-way through large files.
-        const capped = fileContents.length > 60_000
-          ? fileContents.slice(0, 60_000) + '\n\n... [additional files truncated — ask to read a specific file for its full contents]'
-          : fileContents;
-        contextParts.push(`PROJECT FILE CONTENTS:\n${capped}`);
+
+      // Context discipline (the token win): small projects still send everything; large projects
+      // send ONLY the active file + the working set (files pulled in via the spec or `@read`),
+      // instead of dumping the whole repo into every turn and exhausting the context window.
+      const fmtFile = (path: string, content: string) => {
+        const ext = path.split('.').pop() || '';
+        return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
+      };
+      const fileEntries = Object.entries(allFileContents).filter(([, c]) => c.trim().length > 0);
+      const corpusSize = fileEntries.reduce((n, [, c]) => n + c.length, 0);
+      const SMALL_PROJECT_LIMIT = 24_000; // ~6K tokens — below this, just send it all.
+      if (fileEntries.length > 0 && corpusSize <= SMALL_PROJECT_LIMIT) {
+        const all = fileEntries.map(([p, c]) => fmtFile(p, c)).join('\n\n');
+        contextParts.push(`PROJECT FILE CONTENTS:\n${all}`);
+      } else if (fileEntries.length > 0) {
+        const include = new Set<string>();
+        if (currentFile) include.add(currentFile);
+        workingSetPaths.forEach(p => include.add(p));
+        // The task spec's affected files seed the working set — this is what lets the staged
+        // workflow pre-scope context so the model rarely needs to @read.
+        (workflow.activeTask?.affected_files || []).forEach(p => include.add(p));
+        const picked = fileEntries
+          .filter(([p]) => include.has(p))
+          // Prefer unsaved editor content for the active file.
+          .map(([p, c]) => (p === currentFile && editorContent ? [p, editorContent] as const : [p, c] as const));
+        const body = picked.map(([p, c]) => fmtFile(p, c)).join('\n\n');
+        contextParts.push(
+          `PROJECT FILE CONTENTS (scoped — large project, so only the active file and files in the working set are shown):\n${body || '(none yet)'}\n\n` +
+          `If you need a file from the tree that isn't shown above, output a line \`@read path/to/file\` (one per line) — Monastery will add it to the working set so it's available on your next turn.`,
+        );
       }
       const systemMessage = contextParts.length > 0 ? {
         role: 'system' as const,
@@ -830,7 +850,27 @@ export default function App() {
         applyAssistantOutput(fullContent);
       }
 
-      
+      // Context discipline: honor any `@read path` requests the model made (it asks for files it
+      // wasn't given in scoped mode). Add them to the working set so they're included next turn,
+      // and tell the user which files were pulled in.
+      const requested = [...fullContent.matchAll(/^\s*@read\s+(.+?)\s*$/gm)]
+        .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
+        .filter(p => p && !!allFileContents[p]);
+      if (requested.length > 0) {
+        setWorkingSetPaths(prev => Array.from(new Set([...prev, ...requested])));
+        setMessages(prev => [...prev, {
+          id: `ctx-${Date.now()}`,
+          role: 'system' as const,
+          content: `📎 Added to context: ${requested.join(', ')} — send your next message (or "continue") and these files will be included.`,
+          timestamp: Date.now(),
+        }]);
+      }
+
+      // If a Plan-stage response wrote the task spec, reload it so the panel + context pick it up.
+      if (workflow.activeTaskId && fullContent.includes(`tasks/${workflow.activeTaskId}/spec.md`)) {
+        workflow.loadTask(workflow.activeTaskId).catch(() => {});
+      }
+
       setIsGenerating(false);
     } catch (err: any) {
       // Don't show an error if the user intentionally stopped generation. Clear any in-progress
@@ -851,7 +891,7 @@ export default function App() {
       }]);
       setIsGenerating(false);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, useDatabaseContext, pocketbaseConn?.base_url, autoContinue]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, useDatabaseContext, pocketbaseConn?.base_url, autoContinue, workingSetPaths, workflow.activeTask, workflow.spec]);
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
@@ -964,6 +1004,28 @@ export default function App() {
     handleSendMessage(prompt);
   }, [handleSendMessage]);
 
+  // Run a workflow stage through the chat flow. Each stage acts as its role and works against the
+  // task spec (already in context). preferHermes hands the stage to the Hermes agent (hybrid mode).
+  const runStage = useCallback((stage: Stage, preferHermes = false) => {
+    const task = workflow.activeTask;
+    if (!task) return;
+    let prompt = '';
+    switch (stage) {
+      case 'plan':
+        prompt = `🏗️ Act as the Architect for the task "${task.title}". Here is the current spec:\n\n${workflow.spec || '(empty)'}\n\nProduce the COMPLETE updated specification — fill in Goal, concrete checkable Acceptance Criteria, a Definition of Done, the Affected Files (real paths from the project tree), and the Approach. Output it as a single fenced code block written to the spec file:\n\n\`\`\`md:.monastery/tasks/${task.id}/spec.md\n<full spec here>\n\`\`\``;
+        break;
+      case 'implement':
+        prompt = `💻 Act as the Coder for the task "${task.title}". Implement strictly per the spec (in context). Make minimal, focused edits to the affected files only. Output each changed/new file as a fenced code block with its path (e.g. \`\`\`ts:src/foo.ts).`;
+        break;
+      case 'review':
+        prompt = `🔍 Act as the Reviewer for the task "${task.title}". Review the current code against the Acceptance Criteria and Definition of Done in the spec. List any gaps, bugs, or anti-patterns. If it fully meets the bar, reply with "APPROVED" and a one-line rationale.`;
+        break;
+      default:
+        return; // 'verify' runs the build/test command (panel button); 'done' has no stage prompt
+    }
+    handleSendMessage(prompt, undefined, preferHermes ? { preferHermes: true } : undefined);
+  }, [workflow.activeTask, workflow.spec, handleSendMessage]);
+
   const handleStopGeneration = () => {
     abortRef.current?.abort();
     setIsGenerating(false);
@@ -1030,11 +1092,20 @@ export default function App() {
         {/* Main Content Area — Chat + Editor (+ Preview when open) */}
         <PanelGroup direction="horizontal" className="flex-1">
           {/* Chat Pane — always visible */}
-          <Panel 
+          <Panel
             defaultSize={sidebarCollapsed ? (previewCollapsed ? 100 : paneLayout.chat) : paneLayout.chat}
             minSize={20}
             onResize={(size) => updatePaneLayout({ ...paneLayout, chat: size })}
           >
+           <div className="h-full flex flex-col">
+            <WorkflowPanel
+              projectId={currentProject?.id}
+              workflow={workflow}
+              onRunStage={(s: Stage) => runStage(s, false)}
+              onHandToHermes={(s: Stage) => runStage(s, true)}
+              hermesAvailable={!!hermesConnection}
+            />
+            <div className="flex-1 min-h-0">
             <ChatPane
               messages={messages}
               onSendMessage={handleSendMessage}
@@ -1055,6 +1126,8 @@ export default function App() {
               useDatabaseContext={useDatabaseContext}
               onToggleDatabaseContext={setUseDatabaseContext}
             />
+            </div>
+           </div>
           </Panel>
 
           {/* Code Editor — only visible when sidebar is open */}

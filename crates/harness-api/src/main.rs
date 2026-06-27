@@ -87,6 +87,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:id/files/upload", post(handlers::upload_project_file))
         .route("/api/projects/:id/files/move", post(handlers::move_project_file))
         .route("/api/projects/:id/shell", post(handlers::project_shell))
+        .route("/api/projects/:id/search", get(handlers::search_project))
+        // Staged coding workflow — local task store (.monastery/tasks)
+        .route("/api/projects/:id/tasks", get(handlers::list_tasks))
+        .route("/api/projects/:id/tasks", post(handlers::create_task))
+        .route("/api/projects/:id/tasks/:task_id", get(handlers::get_task))
+        .route("/api/projects/:id/tasks/:task_id", patch(handlers::update_task))
+        .route("/api/projects/:id/tasks/:task_id/verify", post(handlers::verify_task))
         .route("/api/projects/:id/preview/*path", get(handlers::project_preview))
         // Session routes
         .route("/api/projects/:project_id/sessions", get(handlers::list_sessions))

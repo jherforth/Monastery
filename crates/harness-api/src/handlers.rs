@@ -1980,6 +1980,304 @@ pub async fn project_shell(
     })))
 }
 
+// ---------------------------------------------------------------------------
+// Staged coding workflow — local task store under <project>/.monastery/tasks/
+// A task is the SAW-style "system of record": a human-readable spec.md (goal + acceptance criteria
+// + definition of done + affected files) plus task.json (stage + exit-state chain) plus an
+// evidence/ folder. Kept as plain files in the repo so it's transparent and version-controlled.
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct ExitState {
+    pub stage: String,        // plan | implement | verify | review
+    pub status: String,       // complete | failed | in_progress
+    pub exit_state: String,   // human marker, e.g. "Ready for Verify"
+    #[serde(default)]
+    pub evidence: Option<String>,
+    pub at: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct TaskMeta {
+    pub id: String,
+    pub title: String,
+    pub stage: String,        // plan | implement | verify | review | done
+    #[serde(default)]
+    pub affected_files: Vec<String>,
+    #[serde(default)]
+    pub exit_states: Vec<ExitState>,
+    #[serde(default)]
+    pub verify_command: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Resolve a project's on-disk directory (data_dir/<name>) from its id.
+async fn resolve_project_dir(state: &AppState, project_id: uuid::Uuid) -> Result<std::path::PathBuf, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db).await?;
+    match row {
+        Some(r) => Ok(state.config.data_dir.join(r.get::<String, _>(0))),
+        None => Err(ApiError::NotFound("Project not found".into())),
+    }
+}
+
+fn tasks_dir(project_dir: &std::path::Path) -> std::path::PathBuf {
+    project_dir.join(".monastery").join("tasks")
+}
+
+fn read_task_meta(task_dir: &std::path::Path) -> Option<TaskMeta> {
+    serde_json::from_str(&std::fs::read_to_string(task_dir.join("task.json")).ok()?).ok()
+}
+
+fn write_task_meta(task_dir: &std::path::Path, meta: &TaskMeta) -> Result<(), ApiError> {
+    let s = serde_json::to_string_pretty(meta).map_err(|e| ApiError::Internal(e.to_string()))?;
+    std::fs::write(task_dir.join("task.json"), s)
+        .map_err(|e| ApiError::Internal(format!("write task.json: {}", e)))
+}
+
+/// GET /api/projects/:id/tasks — list task summaries (newest first).
+pub async fn list_tasks(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<TaskMeta>>, ApiError> {
+    let dir = tasks_dir(&resolve_project_dir(&state, project_id).await?);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if e.path().is_dir() {
+                if let Some(meta) = read_task_meta(&e.path()) {
+                    out.push(meta);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub struct CreateTaskRequest {
+    pub title: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
+/// POST /api/projects/:id/tasks — create a task (dir + task.json + spec.md template).
+pub async fn create_task(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<CreateTaskRequest>,
+) -> Result<Json<TaskMeta>, ApiError> {
+    let dir = tasks_dir(&resolve_project_dir(&state, project_id).await?);
+    let id = uuid::Uuid::new_v4().to_string();
+    let task_dir = dir.join(&id);
+    std::fs::create_dir_all(task_dir.join("evidence"))
+        .map_err(|e| ApiError::Internal(format!("create task dir: {}", e)))?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let meta = TaskMeta {
+        id: id.clone(),
+        title: req.title.clone(),
+        stage: "plan".into(),
+        affected_files: vec![],
+        exit_states: vec![],
+        verify_command: None,
+        session_id: req.session_id,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    write_task_meta(&task_dir, &meta)?;
+    let spec_template = format!(
+        "# {}\n\n## Goal\n\n_What are we building and why?_\n\n## Acceptance Criteria\n\n- [ ] \n\n## Definition of Done\n\n- [ ] Build/tests pass\n\n## Affected Files\n\n- \n\n## Approach\n\n_Plan the implementation here._\n",
+        req.title
+    );
+    std::fs::write(task_dir.join("spec.md"), spec_template)
+        .map_err(|e| ApiError::Internal(format!("write spec.md: {}", e)))?;
+    Ok(Json(meta))
+}
+
+/// GET /api/projects/:id/tasks/:taskId — task meta + spec.md content.
+pub async fn get_task(
+    Path((project_id, task_id)): Path<(uuid::Uuid, String)>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let task_dir = tasks_dir(&resolve_project_dir(&state, project_id).await?).join(&task_id);
+    let meta = read_task_meta(&task_dir).ok_or_else(|| ApiError::NotFound("Task not found".into()))?;
+    let spec = std::fs::read_to_string(task_dir.join("spec.md")).unwrap_or_default();
+    Ok(Json(serde_json::json!({ "meta": meta, "spec": spec })))
+}
+
+#[derive(Deserialize)]
+pub struct UpdateTaskRequest {
+    #[serde(default)] pub title: Option<String>,
+    #[serde(default)] pub stage: Option<String>,
+    #[serde(default)] pub spec: Option<String>,
+    #[serde(default)] pub affected_files: Option<Vec<String>>,
+    #[serde(default)] pub verify_command: Option<String>,
+    /// Append an exit state to the chain of custody.
+    #[serde(default)] pub exit_state: Option<ExitState>,
+}
+
+/// PATCH /api/projects/:id/tasks/:taskId — update meta fields and/or spec.md.
+pub async fn update_task(
+    Path((project_id, task_id)): Path<(uuid::Uuid, String)>,
+    State(state): State<AppState>,
+    Json(req): Json<UpdateTaskRequest>,
+) -> Result<Json<TaskMeta>, ApiError> {
+    let task_dir = tasks_dir(&resolve_project_dir(&state, project_id).await?).join(&task_id);
+    let mut meta = read_task_meta(&task_dir).ok_or_else(|| ApiError::NotFound("Task not found".into()))?;
+    if let Some(t) = req.title { meta.title = t; }
+    if let Some(s) = req.stage { meta.stage = s; }
+    if let Some(f) = req.affected_files { meta.affected_files = f; }
+    if let Some(v) = req.verify_command { meta.verify_command = Some(v); }
+    if let Some(es) = req.exit_state { meta.exit_states.push(es); }
+    meta.updated_at = chrono::Utc::now().to_rfc3339();
+    write_task_meta(&task_dir, &meta)?;
+    if let Some(spec) = req.spec {
+        std::fs::write(task_dir.join("spec.md"), spec)
+            .map_err(|e| ApiError::Internal(format!("write spec.md: {}", e)))?;
+    }
+    Ok(Json(meta))
+}
+
+#[derive(Deserialize)]
+pub struct VerifyRequest {
+    /// Defaults to the task's verify_command, else "npm run build".
+    #[serde(default)] pub command: Option<String>,
+}
+
+/// POST /api/projects/:id/tasks/:taskId/verify — run the verify command in the project, capture
+/// the output as evidence, and record a verify exit state. This is the "evidence-based handoff".
+pub async fn verify_task(
+    Path((project_id, task_id)): Path<(uuid::Uuid, String)>,
+    State(state): State<AppState>,
+    Json(req): Json<VerifyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_dir = resolve_project_dir(&state, project_id).await?;
+    let task_dir = tasks_dir(&project_dir).join(&task_id);
+    let mut meta = read_task_meta(&task_dir).ok_or_else(|| ApiError::NotFound("Task not found".into()))?;
+    let command = req.command.or_else(|| meta.verify_command.clone())
+        .unwrap_or_else(|| "npm run build".to_string());
+    // Safety allowlist (broader than project_shell — build/test tooling only).
+    let safe = ["npm", "npx", "node", "pnpm", "yarn", "cargo", "python", "python3", "pytest", "go", "make", "tsc", "jest", "vitest"];
+    let cl = command.trim().to_lowercase();
+    if !safe.iter().any(|p| cl.starts_with(p)) {
+        return Err(ApiError::Config(format!(
+            "Verify command not allowed: '{}'. Allowed prefixes: {}", command, safe.join(", ")
+        )));
+    }
+    let output = std::process::Command::new("sh")
+        .arg("-c").arg(&command)
+        .current_dir(&project_dir)
+        .output()
+        .map_err(|e| ApiError::Internal(format!("verify exec failed: {}", e)))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let code = output.status.code().unwrap_or(-1);
+    let passed = output.status.success();
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+    let log_name = format!("verify-{}.log", ts);
+    let log_body = format!(
+        "$ {}\nexit code: {}\n\n=== stdout ===\n{}\n=== stderr ===\n{}\n",
+        command, code, stdout, stderr
+    );
+    let _ = std::fs::write(task_dir.join("evidence").join(&log_name), &log_body);
+    meta.exit_states.push(ExitState {
+        stage: "verify".into(),
+        status: if passed { "complete".into() } else { "failed".into() },
+        exit_state: if passed { "Verified".into() } else { "Verify failed — back to Implement".into() },
+        evidence: Some(format!("evidence/{}", log_name)),
+        at: chrono::Utc::now().to_rfc3339(),
+    });
+    meta.updated_at = chrono::Utc::now().to_rfc3339();
+    write_task_meta(&task_dir, &meta)?;
+    Ok(Json(serde_json::json!({
+        "passed": passed,
+        "exit_code": code,
+        "command": command,
+        "evidence": format!("evidence/{}", log_name),
+        "log": tail_chars(&log_body, 8000),
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct ProjectSearchParams {
+    pub q: String,
+    #[serde(default)] pub max: Option<usize>,
+}
+
+/// GET /api/projects/:id/search?q=... — pattern discovery ("Search First, Reuse Always"). Uses
+/// ripgrep when available, else a lightweight recursive walk. Feeds the Implement stage existing
+/// code to reuse instead of regenerating it.
+pub async fn search_project(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Query(params): Query<ProjectSearchParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_dir = resolve_project_dir(&state, project_id).await?;
+    let q = params.q.trim().to_string();
+    if q.is_empty() {
+        return Err(ApiError::Config("Missing search query 'q'".into()));
+    }
+    let max = params.max.unwrap_or(40);
+    let mut matches: Vec<serde_json::Value> = Vec::new();
+
+    let rg = std::process::Command::new("rg")
+        .args(["--line-number", "--no-heading", "--color", "never", "--max-count", "5", "-i", &q])
+        .current_dir(&project_dir)
+        .output();
+    let used_rg = match rg {
+        Ok(out) if !out.stdout.is_empty() => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines().take(max) {
+                // path:line:content
+                let mut parts = line.splitn(3, ':');
+                if let (Some(path), Some(lineno), Some(content)) = (parts.next(), parts.next(), parts.next()) {
+                    matches.push(serde_json::json!({
+                        "path": path.replace('\\', "/"),
+                        "line": lineno.parse::<u64>().unwrap_or(0),
+                        "text": content.trim(),
+                    }));
+                }
+            }
+            true
+        }
+        _ => false,
+    };
+
+    if !used_rg {
+        fn walk(dir: &std::path::Path, base: &std::path::Path, ql: &str, max: usize, out: &mut Vec<serde_json::Value>) {
+            if out.len() >= max { return; }
+            let skip = ["node_modules", ".git", "target", "dist", "build", ".monastery"];
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for e in entries.flatten() {
+                    if out.len() >= max { return; }
+                    let p = e.path();
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if p.is_dir() {
+                        if !skip.contains(&name.as_str()) { walk(&p, base, ql, max, out); }
+                    } else if let Ok(content) = std::fs::read_to_string(&p) {
+                        for (i, line) in content.lines().enumerate() {
+                            if line.to_lowercase().contains(ql) {
+                                let rel = p.strip_prefix(base).unwrap_or(p.as_path()).to_string_lossy().replace('\\', "/");
+                                out.push(serde_json::json!({ "path": rel, "line": i as u64 + 1, "text": line.trim() }));
+                                break; // one hit per file in the fallback
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        walk(&project_dir, &project_dir, &q.to_lowercase(), max, &mut matches);
+    }
+
+    Ok(Json(serde_json::json!({ "query": q, "matches": matches })))
+}
+
 /// Read all project files and return their contents
 pub async fn read_all_project_files(
     Path(project_id): Path<uuid::Uuid>,
