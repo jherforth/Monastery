@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, ChevronUp, Database, Loader2, Coins } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, Database, Loader2, Coins } from 'lucide-react';
 import { Message, Attachment } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
@@ -79,12 +79,18 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [showQuickActions, setShowQuickActions] = useState(true);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Shared compact-pill styling for the inline toolbar (toggles + agent role chips).
+  const pill = (active: boolean) =>
+    `flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md border transition-colors ${
+      active
+        ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
+        : 'bg-monastery-dark-surface text-monastery-text-secondary border-monastery-dark-border hover:border-monastery-pine'
+    }`;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { activeEndpoint, theme } = useAppStore();
   const { restoreSnapshot } = useSnapshots();
-  const { quickActions, getAgent } = useAgents();
+  const { quickActions } = useAgents();
   const [revertingId, setRevertingId] = useState<string | null>(null);
 
   const handleRevert = async (snapshotId: string) => {
@@ -450,140 +456,74 @@ export function ChatPane({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Agent role selector — multi-select (capped). Selecting a role applies it as a silent
-          lens over your next messages (sent to Hermes); it does not fire a canned prompt. */}
-      {onToggleAgent && quickActions.length > 0 && (
-        <div className="px-4 pb-1">
-          <button
-            onClick={() => setShowQuickActions(!showQuickActions)}
-            className="flex items-center gap-1 text-xs text-monastery-text-muted hover:text-monastery-text-secondary transition-colors mb-1"
-          >
-            <Bot size={12} />
-            Agent roles
-            {activeAgentIds.length > 0 && <span className="text-monastery-lantern font-medium">{activeAgentIds.length}</span>}
-            {showQuickActions ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
-          </button>
-          {showQuickActions && (
-            <div className="flex flex-wrap gap-1.5">
-              {quickActions.map(action => {
-                const active = activeAgentIds.includes(action.agentId);
-                const atCap = !active && activeAgentIds.length >= maxActiveRoles;
-                return (
-                  <button
-                    key={action.agentId}
-                    onClick={() => onToggleAgent(action.agentId)}
-                    disabled={atCap}
-                    title={atCap ? `Max ${maxActiveRoles} roles — remove one first` : undefined}
-                    aria-pressed={active}
-                    className={`px-2 py-1 text-xs rounded-lg border transition-colors disabled:opacity-40 ${
-                      active
-                        ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
-                        : 'bg-monastery-dark-surface border-monastery-dark-border text-monastery-text-secondary hover:text-monastery-text-primary hover:border-monastery-pine'
-                    }`}
-                  >
-                    {action.label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Input */}
       <form onSubmit={handleSubmit} className="border-t border-monastery-dark-border p-4">
-        {/* Agent mode toggle — only shown when a Hermes connection is configured.
-            On = route messages to the Hermes agent; off = standard LLM chat. */}
-        {hermesAvailable && onToggleAgentMode && (
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs text-monastery-text-muted">
-              {agentMode ? 'Routing through Hermes agent' : 'Standard LLM chat'}
-            </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={agentMode}
-              onClick={() => onToggleAgentMode(!agentMode)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-colors ${
-                agentMode
-                  ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
-                  : 'bg-monastery-dark-surface text-monastery-text-secondary border-monastery-dark-border hover:border-monastery-pine'
-              }`}
-            >
-              <Bot size={13} />
-              Agent mode {agentMode ? 'on' : 'off'}
-            </button>
-          </div>
-        )}
-        {/* Pocketbase backend toggle — only shown when a Pocketbase connection is configured.
-            On = include Pocketbase + deployment instructions (with the configured URL) in context. */}
-        {pocketbaseAvailable && onToggleDatabaseContext && (
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs text-monastery-text-muted">
-              {useDatabaseContext ? 'Building with Pocketbase backend' : 'No backend / database'}
-            </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={useDatabaseContext}
-              onClick={() => onToggleDatabaseContext(!useDatabaseContext)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-colors ${
-                useDatabaseContext
-                  ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
-                  : 'bg-monastery-dark-surface text-monastery-text-secondary border-monastery-dark-border hover:border-monastery-pine'
-              }`}
-            >
-              <Database size={13} />
-              Pocketbase {useDatabaseContext ? 'on' : 'off'}
-            </button>
-          </div>
-        )}
-        {/* Auto-continue toggle — when on, responses cut off by the model's output-token cap
-            resume automatically (capped); when off, you get the manual Continue button. */}
-        {onToggleAutoContinue && (
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs text-monastery-text-muted">
-              {autoContinue ? 'Auto-continues cut-off responses (capped)' : 'Continue cut-off responses manually'}
-            </span>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autoContinue}
-              onClick={() => onToggleAutoContinue(!autoContinue)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border transition-colors ${
-                autoContinue
-                  ? 'bg-monastery-lantern text-monastery-dark-bg border-monastery-lantern font-medium'
-                  : 'bg-monastery-dark-surface text-monastery-text-secondary border-monastery-dark-border hover:border-monastery-pine'
-              }`}
-            >
-              <RotateCcw size={13} />
-              Auto-continue {autoContinue ? 'on' : 'off'}
-            </button>
-          </div>
-        )}
-        {/* Active agent role chips — the lens applied to your next message */}
-        {activeAgentIds.length > 0 && (
-          <div className="flex items-center flex-wrap gap-1.5 mb-3">
-            <span className="text-[10px] text-monastery-text-muted">Acting as:</span>
-            {activeAgentIds.map(id => {
-              const a = getAgent(id);
-              if (!a) return null;
-              return (
-                <span key={id} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-monastery-lantern/15 text-monastery-lantern">
-                  {a.icon} {a.name}
-                  <button type="button" onClick={() => onToggleAgent?.(id)} className="hover:opacity-70" title={`Remove ${a.name}`}>
-                    <X size={9} />
+        {/* Compact toolbar — all toggles inline on one row (left-aligned). Agent mode sits at the
+            right; when it's on, the agent role chips are revealed inline after it. */}
+        {(onToggleAutoContinue || (pocketbaseAvailable && onToggleDatabaseContext) || (hermesAvailable && onToggleAgentMode)) && (
+          <div className="flex items-center flex-wrap gap-1.5 mb-2">
+            {onToggleAutoContinue && (
+              <button
+                type="button" role="switch" aria-checked={autoContinue}
+                onClick={() => onToggleAutoContinue(!autoContinue)}
+                title={autoContinue ? 'Auto-continues responses cut off by the token limit (capped)' : 'Continue cut-off responses manually'}
+                className={pill(autoContinue)}
+              >
+                <RotateCcw size={12} /> Auto-continue
+              </button>
+            )}
+            {pocketbaseAvailable && onToggleDatabaseContext && (
+              <button
+                type="button" role="switch" aria-checked={useDatabaseContext}
+                onClick={() => onToggleDatabaseContext(!useDatabaseContext)}
+                title={useDatabaseContext ? 'Including Pocketbase backend + deploy instructions in context' : 'No backend / database context'}
+                className={pill(useDatabaseContext)}
+              >
+                <Database size={12} /> Pocketbase
+              </button>
+            )}
+            {hermesAvailable && onToggleAgentMode && (
+              <button
+                type="button" role="switch" aria-checked={agentMode}
+                onClick={() => onToggleAgentMode(!agentMode)}
+                title={agentMode ? 'Routing through the Hermes agent — select role(s) at right' : 'Standard LLM chat'}
+                className={pill(agentMode)}
+              >
+                <Bot size={12} /> Agent mode
+              </button>
+            )}
+            {/* Agent role chips — revealed only when Agent mode is on. Click to toggle (capped). */}
+            {agentMode && onToggleAgent && quickActions.length > 0 && (
+              <>
+                <span className="h-4 w-px bg-monastery-dark-border mx-0.5" aria-hidden />
+                {quickActions.map(action => {
+                  const active = activeAgentIds.includes(action.agentId);
+                  const atCap = !active && activeAgentIds.length >= maxActiveRoles;
+                  return (
+                    <button
+                      key={action.agentId}
+                      type="button"
+                      onClick={() => onToggleAgent(action.agentId)}
+                      disabled={atCap}
+                      aria-pressed={active}
+                      title={atCap ? `Max ${maxActiveRoles} roles — remove one first` : undefined}
+                      className={`${pill(active)} disabled:opacity-40`}
+                    >
+                      {action.label}
+                    </button>
+                  );
+                })}
+                {activeAgentIds.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => activeAgentIds.forEach(id => onToggleAgent(id))}
+                    className="text-[10px] text-monastery-text-muted hover:text-monastery-text-primary underline"
+                  >
+                    Clear
                   </button>
-                </span>
-              );
-            })}
-            <button
-              type="button"
-              onClick={() => activeAgentIds.forEach(id => onToggleAgent?.(id))}
-              className="text-[10px] text-monastery-text-muted hover:text-monastery-text-primary underline"
-            >
-              Clear
-            </button>
+                )}
+              </>
+            )}
           </div>
         )}
         {attachments.length > 0 && (

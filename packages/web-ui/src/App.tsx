@@ -1048,7 +1048,9 @@ export default function App() {
               isGenerating={isGenerating}
               hermesAvailable={!!hermesConnection}
               agentMode={agentMode}
-              onToggleAgentMode={setAgentMode}
+              // Roles live under Agent mode in the UI; clear them when it's switched off so an
+              // active role can't keep silently injecting once its chips are hidden.
+              onToggleAgentMode={(on) => { setAgentMode(on); if (!on) setActiveAgentIds([]); }}
               pocketbaseAvailable={!!pocketbaseConn}
               useDatabaseContext={useDatabaseContext}
               onToggleDatabaseContext={setUseDatabaseContext}
