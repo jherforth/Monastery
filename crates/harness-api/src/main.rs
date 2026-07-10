@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/endpoints/:id/test", post(handlers::test_endpoint))
         .route("/api/projects", get(handlers::list_projects))
         .route("/api/projects", post(handlers::create_project))
-        .route("/api/projects/:id", get(handlers::get_project))
+        .route("/api/projects/:id", get(handlers::get_project).delete(handlers::delete_project))
         .route("/api/projects/:id/files", get(handlers::list_project_files))
         .route("/api/projects/:id/files/read", get(handlers::read_project_file))
         .route("/api/projects/:id/files/read-all", get(handlers::read_all_project_files))
@@ -106,6 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Snapshot routes
         .route("/api/projects/:project_id/snapshots", get(handlers::list_snapshots))
         .route("/api/projects/:project_id/snapshots", post(handlers::create_snapshot))
+        .route("/api/projects/:project_id/snapshots/checkpoint", post(handlers::create_checkpoint_snapshot))
         .route("/api/projects/:project_id/snapshots/:snapshot_id", get(handlers::get_snapshot))
         .route("/api/projects/:project_id/snapshots/:snapshot_id", delete(handlers::delete_snapshot))
         .route("/api/projects/:project_id/snapshots/:snapshot_id/restore", post(handlers::restore_snapshot))

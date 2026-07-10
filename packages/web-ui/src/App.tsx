@@ -478,7 +478,9 @@ export default function App() {
     if (!currentProject?.id) return;
 
     type WriteResult = { path: string; ok: boolean; error?: string };
-    const writes: Promise<WriteResult | void>[] = [];
+    // Collect everything to apply first — the fetches only fire AFTER the safety
+    // checkpoint below, so a bad response can't destroy un-snapshotted work.
+    const fileWrites: Array<{ path: string; content: string }> = [];
     const modifiedFiles: string[] = [];
 
     // --- Code block parser ---
@@ -530,27 +532,7 @@ export default function App() {
         if (!cleanCode.trim()) continue; // skip empty blocks
 
         modifiedFiles.push(filePath);
-
-        writes.push(
-          fetch(`/api/projects/${currentProject.id}/files/write`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: filePath, content: cleanCode }),
-          }).then(async r => {
-            if (!r.ok) {
-              const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-              const msg = typeof err === 'object' && err !== null && 'error' in err
-                ? String(err.error) : `HTTP ${r.status}`;
-              console.error(`Failed to write ${filePath}: ${msg}`);
-              return { path: filePath, ok: false, error: msg };
-            }
-            console.log(`Wrote ${filePath} (${cleanCode.length} bytes)`);
-            return { path: filePath, ok: true };
-          }).catch(e => {
-            console.error(`Write error for ${filePath}:`, e);
-            return { path: filePath, ok: false, error: String(e) };
-          })
-        );
+        fileWrites.push({ path: filePath, content: cleanCode });
       }
     }
 
@@ -563,7 +545,46 @@ export default function App() {
       if (cmd) shellCommands.push(cmd);
     }
 
-    if (shellCommands.length > 0 && currentProject.id) {
+    if (fileWrites.length === 0 && shellCommands.length === 0) return;
+
+    (async () => {
+      // Safety checkpoint: snapshot the project's on-disk state BEFORE applying anything,
+      // so even the first AI edit in a session is revertible (Git menu → snapshots).
+      // A checkpoint failure logs a warning but doesn't block the apply.
+      let checkpointed = false;
+      try {
+        const cpRes = await fetch(`/api/projects/${currentProject.id}/snapshots/checkpoint`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Auto: before AI edit' }),
+        });
+        const cp = cpRes.ok ? await cpRes.json().catch(() => null) : null;
+        checkpointed = !!cp?.snapshot_id;
+      } catch (e) {
+        console.warn('Safety checkpoint failed:', e);
+      }
+
+      const writes: Promise<WriteResult | void>[] = fileWrites.map(({ path: filePath, content: cleanCode }) =>
+        fetch(`/api/projects/${currentProject.id}/files/write`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: filePath, content: cleanCode }),
+        }).then(async r => {
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+            const msg = typeof err === 'object' && err !== null && 'error' in err
+              ? String(err.error) : `HTTP ${r.status}`;
+            console.error(`Failed to write ${filePath}: ${msg}`);
+            return { path: filePath, ok: false, error: msg };
+          }
+          console.log(`Wrote ${filePath} (${cleanCode.length} bytes)`);
+          return { path: filePath, ok: true };
+        }).catch(e => {
+          console.error(`Write error for ${filePath}:`, e);
+          return { path: filePath, ok: false, error: String(e) };
+        })
+      );
+
       for (const cmd of shellCommands) {
         writes.push(
           fetch(`/api/projects/${currentProject.id}/shell`, {
@@ -576,9 +597,7 @@ export default function App() {
           }).catch(e => console.error(`Shell error:`, e))
         );
       }
-    }
 
-    if (writes.length > 0) {
       Promise.all(writes).then((results) => {
         // Refresh open file if it was modified
         if (currentFile) {
@@ -598,6 +617,9 @@ export default function App() {
           let note = '';
           if (okFiles.length > 0) {
             note += `✅ Wrote **${okFiles.length}** file${okFiles.length > 1 ? 's' : ''}: ${okFiles.map(f => `\`${f}\``).join(', ')}`;
+            note += checkpointed
+              ? '\n\n🛟 Safety snapshot saved beforehand — revert anytime from the Git menu.'
+              : '\n\n⚠️ Safety snapshot could not be created before these changes.';
           }
           if (failFiles.length > 0) {
             note += (note ? '\n\n' : '') + `❌ Failed **${failFiles.length}** file${failFiles.length > 1 ? 's' : ''}: ${failFiles.map(f => `\`${f.path}\` (${f.error})`).join(', ')}`;
@@ -612,7 +634,7 @@ export default function App() {
           }
         }
       });
-    }
+    })();
   }, [currentProject?.id, currentFile, updateTabContentByPath]);
 
   const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { preferHermes?: boolean }) => {

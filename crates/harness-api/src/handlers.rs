@@ -863,6 +863,61 @@ pub struct CreateSnapshotBody {
     pub files: Vec<harness_core::snapshot::SnapshotFileInput>,
 }
 
+/// Create a safety checkpoint snapshot from the project's CURRENT on-disk state.
+/// Unlike create_snapshot (which takes file contents in the request), this reads the
+/// project directory server-side — the UI calls it right before applying LLM output so
+/// even the very first AI edit in a project can be reverted.
+#[derive(Debug, Deserialize)]
+pub struct CheckpointBody {
+    pub name: Option<String>,
+}
+
+pub async fn create_checkpoint_snapshot(
+    Path(project_id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<CheckpointBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    let project_path = state.config.data_dir.join(&project_name);
+    let mut files = Vec::new();
+    if project_path.exists() {
+        read_files_for_snapshot(&project_path, &project_path, &mut files);
+    }
+    // Nothing on disk yet (brand-new project) — nothing to protect, skip the snapshot.
+    if files.is_empty() {
+        return Ok(Json(serde_json::json!({ "snapshot_id": null, "file_count": 0 })));
+    }
+
+    let file_count = files.len();
+    let request = CreateSnapshotRequest {
+        project_id,
+        name: Some(req.name.unwrap_or_else(|| "Auto: before AI edit".to_string())),
+        description: Some("Safety checkpoint taken automatically before applying AI changes".into()),
+        created_by: Some("Monastery".into()),
+        trigger: SnapshotTrigger::BeforeChange,
+        files,
+        parent_snapshot_id: None,
+    };
+    let response = state.snapshot_service
+        .create_snapshot(request)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "snapshot_id": response.snapshot.id.to_string(),
+        "file_count": file_count,
+    })))
+}
+
 /// Get a specific snapshot with its files
 pub async fn get_snapshot(
     Path((project_id, snapshot_id)): Path<(Uuid, Uuid)>,
@@ -1714,6 +1769,15 @@ pub async fn git_clone(
     });
     let target_path = state.config.data_dir.join(&project_name);
 
+    // A non-empty target means this repo/branch was already cloned — git would fail with a
+    // cryptic error. Tell the user the actual fix (delete the existing project to start fresh).
+    if target_path.exists() && std::fs::read_dir(&target_path).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Err(ApiError::Config(format!(
+            "Project '{}' already exists locally. Delete that project (project menu → trash icon) to wipe the local copy, then clone again.",
+            project_name
+        )));
+    }
+
     tokio::fs::create_dir_all(&target_path).await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -1747,6 +1811,59 @@ pub async fn git_clone(
         "project_name": project_name,
         "project_path": target_path.to_str(),
     })))
+}
+
+/// Delete a project: removes its database records (sessions, messages, snapshots) AND
+/// wipes its directory from the data dir. This is what lets a user abandon a broken
+/// state entirely and re-clone a git repo/branch fresh — a clone into an existing
+/// directory fails, so the local copy must be removable.
+pub async fn delete_project(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+    let project_name = match row {
+        Some(r) => r.get::<String, _>(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+
+    // Wipe the project directory. Guard against path escape: the resolved dir must live
+    // directly inside data_dir (project names are single path segments).
+    let project_path = state.config.data_dir.join(&project_name);
+    if project_path.exists() {
+        let canonical = project_path.canonicalize()
+            .map_err(|e| ApiError::Internal(format!("Failed to resolve project dir: {}", e)))?;
+        let canonical_base = state.config.data_dir.canonicalize()
+            .map_err(|e| ApiError::Internal(format!("Failed to resolve data dir: {}", e)))?;
+        if canonical.parent() != Some(canonical_base.as_path()) {
+            return Err(ApiError::Config("Refusing to delete: project dir is not directly inside the data dir".into()));
+        }
+        tokio::fs::remove_dir_all(&canonical).await
+            .map_err(|e| ApiError::Internal(format!("Failed to delete project directory: {}", e)))?;
+    }
+
+    // Delete DB records explicitly (SQLite FK cascades only fire with foreign_keys pragma on).
+    let pid = project_id.to_string();
+    sqlx::query("DELETE FROM snapshot_files WHERE snapshot_id IN (SELECT id FROM snapshots WHERE project_id = ?)")
+        .bind(&pid).execute(&*state.db).await?;
+    sqlx::query("DELETE FROM snapshot_tags WHERE snapshot_id IN (SELECT id FROM snapshots WHERE project_id = ?)")
+        .bind(&pid).execute(&*state.db).await?;
+    sqlx::query("DELETE FROM snapshots WHERE project_id = ?")
+        .bind(&pid).execute(&*state.db).await?;
+    sqlx::query("DELETE FROM session_messages WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)")
+        .bind(&pid).execute(&*state.db).await?;
+    sqlx::query("DELETE FROM sessions WHERE project_id = ?")
+        .bind(&pid).execute(&*state.db).await?;
+    sqlx::query("DELETE FROM project_files WHERE project_id = ?")
+        .bind(&pid).execute(&*state.db).await?;
+    sqlx::query("DELETE FROM projects WHERE id = ?")
+        .bind(&pid).execute(&*state.db).await?;
+
+    Ok(Json(serde_json::json!({ "success": true, "deleted": project_name })))
 }
 
 /// List files in a project directory

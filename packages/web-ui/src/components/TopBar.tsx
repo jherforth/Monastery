@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus } from 'lucide-react';
+import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus, Trash2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
@@ -42,6 +42,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const [committing, setCommitting] = useState(false);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const lastRestoredSnapshotId = useAppStore(s => s.lastRestoredSnapshotId);
   const setLastRestoredSnapshotId = useAppStore(s => s.setLastRestoredSnapshotId);
   const { gitStatus } = useGitForge(currentProject?.id);
@@ -67,6 +68,31 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       console.error('Restore failed:', e);
     } finally {
       setRestoringId(null);
+    }
+  };
+
+  // Delete a project: wipes the local directory (so a git repo/branch can be re-cloned
+  // fresh) plus its sessions and snapshots. Asks for explicit confirmation first.
+  const handleDeleteProject = async (proj: { id: string; name: string }) => {
+    const confirmed = window.confirm(
+      `Delete project "${proj.name}"?\n\nThis permanently removes its local files, chat sessions, and snapshots. ` +
+      `Anything pushed to a git remote is unaffected — you can clone it again afterwards.`
+    );
+    if (!confirmed) return;
+    setDeletingProjectId(proj.id);
+    try {
+      const res = await fetch(`/api/projects/${proj.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to delete project: ${err.error || res.statusText}`);
+        return;
+      }
+      if (currentProject?.id === proj.id) setCurrentProject(null);
+      onRefreshProjects?.();
+    } catch (e: any) {
+      alert(`Failed to delete project: ${e?.message || e}`);
+    } finally {
+      setDeletingProjectId(null);
     }
   };
 
@@ -181,37 +207,50 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                       <div className="px-3 py-2 text-xs text-monastery-text-muted">No projects yet — create one below.</div>
                     )}
                     {availableProjects.map((proj) => (
-                      <button
+                      <div
                         key={proj.id}
-                        onClick={() => {
-                          setCurrentProject({
-                            id: proj.id,
-                            name: proj.name,
-                            path: '',
-                            lastOpened: Date.now(),
-                            files: [],
-                          });
-                          setProjectDropdownOpen(false);
-                        }}
-                        className={`w-full text-left px-3 py-2 text-sm transition-colors ${
+                        className={`group flex items-start w-full transition-colors ${
                           currentProject?.id === proj.id
                             ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
                             : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
                         }`}
                       >
-                        <div className="flex items-center gap-2">
-                          <FolderGit2 size={14} className="text-monastery-text-muted shrink-0" />
-                          <span className="truncate">{proj.name}</span>
-                          {currentProject?.id === proj.id && (
-                            <span className="ml-auto w-2 h-2 rounded-full bg-status-success shrink-0" />
-                          )}
-                        </div>
-                        {proj.description && (
-                          <div className="text-xs text-monastery-text-muted mt-0.5 truncate pl-6">
-                            {proj.description}
+                        <button
+                          onClick={() => {
+                            setCurrentProject({
+                              id: proj.id,
+                              name: proj.name,
+                              path: '',
+                              lastOpened: Date.now(),
+                              files: [],
+                            });
+                            setProjectDropdownOpen(false);
+                          }}
+                          className="flex-1 min-w-0 text-left px-3 py-2 text-sm"
+                        >
+                          <div className="flex items-center gap-2">
+                            <FolderGit2 size={14} className="text-monastery-text-muted shrink-0" />
+                            <span className="truncate">{proj.name}</span>
+                            {currentProject?.id === proj.id && (
+                              <span className="ml-auto w-2 h-2 rounded-full bg-status-success shrink-0" />
+                            )}
                           </div>
-                        )}
-                      </button>
+                          {proj.description && (
+                            <div className="text-xs text-monastery-text-muted mt-0.5 truncate pl-6">
+                              {proj.description}
+                            </div>
+                          )}
+                        </button>
+                        {/* Delete: wipes local files so a repo/branch can be re-cloned fresh */}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleDeleteProject(proj); }}
+                          disabled={deletingProjectId === proj.id}
+                          className="p-2 mt-1 mr-1 rounded text-monastery-text-muted opacity-0 group-hover:opacity-100 hover:text-status-error hover:bg-monastery-dark-surface transition-all disabled:opacity-50 shrink-0"
+                          title={`Delete "${proj.name}" (local files, sessions, and snapshots)`}
+                        >
+                          <Trash2 size={13} className={deletingProjectId === proj.id ? 'animate-pulse' : ''} />
+                        </button>
+                      </div>
                     ))}
                     <div className="border-t border-monastery-dark-border mt-1 pt-1">
                       <button
