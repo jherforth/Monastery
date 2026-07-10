@@ -24,6 +24,9 @@ export default function App() {
   
   // Multi-tab editor state
   interface EditorTab { path: string; content: string; isDirty: boolean; }
+  // Binary image formats get an image viewer instead of Monaco (SVG stays editable text).
+  const isImagePath = (p: string) =>
+    ['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'avif'].includes(p.split('.').pop()?.toLowerCase() || '');
   const [openTabs, setOpenTabs] = useState<EditorTab[]>([]);
   const [activeTabIndex, setActiveTabIndex] = useState(0);
   const activeTab = openTabs[activeTabIndex];
@@ -339,13 +342,21 @@ export default function App() {
 
     const reader = new FileReader();
     reader.onload = async (event) => {
-      const content = event.target?.result as string;
+      let content = event.target?.result as string;
       if (!content) return;
+      // Binary uploads (images etc.): FileReader gives a data URL — strip the
+      // "data:<mime>;base64," prefix and tell the backend to decode, so real bytes
+      // land on disk instead of the data-URL text (which broke previews).
+      const encoding = isText ? undefined : 'base64';
+      if (!isText) {
+        const comma = content.indexOf(',');
+        content = comma >= 0 ? content.slice(comma + 1) : content;
+      }
       try {
         const res = await fetch(`/api/projects/${currentProject.id}/files/write`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, content }),
+          body: JSON.stringify({ path: filePath, content, ...(encoding ? { encoding } : {}) }),
         });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
@@ -398,6 +409,15 @@ export default function App() {
     const existingIdx = openTabs.findIndex(t => t.path === path);
     if (existingIdx >= 0) {
       setActiveTabIndex(existingIdx);
+      return;
+    }
+    // Images: no text content to fetch (binary on disk) — the tab renders an <img> viewer.
+    if (isImagePath(path)) {
+      setOpenTabs(prev => {
+        const updated = [...prev, { path, content: '', isDirty: false }];
+        setActiveTabIndex(updated.length - 1);
+        return updated;
+      });
       return;
     }
     // Fetch file content and add as new tab
@@ -1300,7 +1320,7 @@ export default function App() {
                       >
                         Add Tests
                       </button>
-                      {currentFile && (
+                      {currentFile && !isImagePath(currentFile) && (
                         <button
                           onClick={async () => {
                             if (!currentProject?.id || !currentFile) return;
@@ -1323,13 +1343,24 @@ export default function App() {
                     </div>
                   </div>
                   
-                  {/* Editor */}
+                  {/* Editor — image files get a viewer (served via the preview route, which also
+                      self-heals legacy data-URL uploads); everything else gets Monaco. */}
                   <div className="flex-1 overflow-hidden">
-                    <CodeEditor
-                      value={editorContent}
-                      language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
-                      onChange={updateTabContent}
-                    />
+                    {currentFile && isImagePath(currentFile) && currentProject?.id ? (
+                      <div className="h-full w-full flex items-center justify-center bg-monastery-dark-bg overflow-auto p-4">
+                        <img
+                          src={`/api/projects/${currentProject.id}/preview/${currentFile}`}
+                          alt={currentFile}
+                          className="max-w-full max-h-full object-contain rounded border border-monastery-dark-border bg-white/5"
+                        />
+                      </div>
+                    ) : (
+                      <CodeEditor
+                        value={editorContent}
+                        language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
+                        onChange={updateTabContent}
+                      />
+                    )}
                   </div>
                 </div>
               </Panel>

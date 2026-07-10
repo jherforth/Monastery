@@ -1815,6 +1815,10 @@ pub async fn read_project_file(
 pub struct WriteFileRequest {
     pub path: String,
     pub content: String,
+    /// "base64" = content is base64-encoded binary (e.g. an uploaded image) and must be
+    /// decoded to raw bytes before writing. Absent/other = plain text.
+    #[serde(default)]
+    pub encoding: Option<String>,
 }
 
 pub async fn write_project_file(
@@ -1867,8 +1871,17 @@ pub async fn write_project_file(
         return Err(ApiError::Config("Path traversal not allowed".into()));
     }
 
-    std::fs::write(&full_path, &req.content)
-        .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
+    if req.encoding.as_deref() == Some("base64") {
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(req.content.trim())
+            .map_err(|e| ApiError::Config(format!("Invalid base64 content: {}", e)))?;
+        std::fs::write(&full_path, bytes)
+            .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
+    } else {
+        std::fs::write(&full_path, &req.content)
+            .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
+    }
 
     Ok(Json(serde_json::json!({ "success": true, "path": req.path })))
 }
@@ -1896,24 +1909,54 @@ pub async fn project_preview(
     match file_path.canonicalize() {
         Ok(resolved) if resolved.starts_with(&base) => {
             match tokio::fs::read(&resolved).await {
-                Ok(content) => {
-                    let mime = if path.ends_with(".html") || path.ends_with(".htm") {
+                Ok(mut content) => {
+                    let lower = path.to_lowercase();
+                    let mime = if lower.ends_with(".html") || lower.ends_with(".htm") {
                         "text/html"
-                    } else if path.ends_with(".css") {
+                    } else if lower.ends_with(".css") {
                         "text/css"
-                    } else if path.ends_with(".js") {
+                    } else if lower.ends_with(".js") {
                         "application/javascript"
-                    } else if path.ends_with(".json") {
+                    } else if lower.ends_with(".json") {
                         "application/json"
-                    } else if path.ends_with(".svg") {
+                    } else if lower.ends_with(".svg") {
                         "image/svg+xml"
-                    } else if path.ends_with(".png") {
+                    } else if lower.ends_with(".png") {
                         "image/png"
-                    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+                    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
                         "image/jpeg"
+                    } else if lower.ends_with(".gif") {
+                        "image/gif"
+                    } else if lower.ends_with(".webp") {
+                        "image/webp"
+                    } else if lower.ends_with(".ico") {
+                        "image/x-icon"
+                    } else if lower.ends_with(".bmp") {
+                        "image/bmp"
+                    } else if lower.ends_with(".avif") {
+                        "image/avif"
+                    } else if lower.ends_with(".woff2") {
+                        "font/woff2"
+                    } else if lower.ends_with(".woff") {
+                        "font/woff"
                     } else {
                         "text/plain"
                     };
+                    // Self-heal binary files uploaded before base64 decoding existed: they were
+                    // stored as the literal data-URL text ("data:image/png;base64,...."). Decode
+                    // to real bytes and persist so the file is fixed for good, not just this GET.
+                    if mime.starts_with("image/") && content.starts_with(b"data:") {
+                        if let Some(idx) = content.iter().position(|&b| b == b',') {
+                            use base64::Engine as _;
+                            let payload = &content[idx + 1..];
+                            if let Ok(decoded) = base64::engine::general_purpose::STANDARD
+                                .decode(payload.strip_suffix(b"\n").unwrap_or(payload))
+                            {
+                                let _ = tokio::fs::write(&resolved, &decoded).await;
+                                content = decoded;
+                            }
+                        }
+                    }
                     Ok((
                         [(axum::http::header::CONTENT_TYPE, mime)],
                         content,
@@ -2326,6 +2369,13 @@ fn read_files_recursive(
             if path.is_dir() {
                 read_files_recursive(base, &path, files, depth + 1);
             } else {
+                // Skip images/fonts outright: real binaries would fail read_to_string anyway,
+                // but files uploaded before base64 decoding existed are data-URL *text* and
+                // would dump megabytes of base64 into the LLM context.
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "bmp" | "avif" | "woff" | "woff2" | "ttf" | "otf" | "eot" | "pdf" | "zip" | "gz" | "tar" | "mp3" | "mp4" | "wav" | "ogg" | "webm") {
+                    continue;
+                }
                 // Read text files only (skip binaries)
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     // Limit file size to ~200KB per file (most source files are under this)
