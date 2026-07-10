@@ -345,7 +345,18 @@ export function ChatPane({
             </div>
           </div>
         ) : (
-          messages.map((message) => (
+          messages.map((message) => {
+            // Compact timestamp: time-of-day for today's messages, date + time for older ones.
+            // Hidden when the timestamp is missing/unparseable (e.g. a malformed session row).
+            const ts = new Date(message.timestamp);
+            const hasTime = Number.isFinite(ts.getTime());
+            const isToday = hasTime && ts.toDateString() === new Date().toDateString();
+            const timeLabel = !hasTime
+              ? null
+              : isToday
+              ? ts.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+              : ts.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+            return (
             <div
               key={message.id}
               className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
@@ -442,9 +453,25 @@ export function ChatPane({
                     {revertingId === message.model ? 'Reverting...' : 'Revert to this snapshot'}
                   </button>
                 )}
+                {/* Timestamp footer on every message */}
+                {timeLabel && (
+                  <div
+                    className={`mt-1 text-[10px] leading-none ${
+                      message.role === 'user'
+                        ? 'text-white/50 text-right'
+                        : message.role === 'system'
+                        ? 'text-monastery-text-muted text-center'
+                        : 'text-monastery-text-muted'
+                    }`}
+                    title={ts.toLocaleString()}
+                  >
+                    {timeLabel}
+                  </div>
+                )}
               </div>
             </div>
-          ))
+            );
+          })
         )}
         
         {isGenerating && (
