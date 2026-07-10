@@ -48,6 +48,10 @@ export default function App() {
   // purpose: unbounded auto-continue can burn cloud (e.g. DeepSeek) tokens on verbose models.
   const [autoContinue, setAutoContinue] = useState(true);
   const MAX_AUTO_CONTINUE = 5;
+  // Same idea, separate cap: rounds where the model asked for files via `@read` and got them
+  // auto-fed back in. Kept small and distinct from MAX_AUTO_CONTINUE since each round is a full
+  // extra request (not just an appended chunk).
+  const MAX_AUTO_READ_ROUNDS = 3;
   // Context discipline: in large projects we don't dump the whole repo into every message. The
   // "working set" is the subset of files (beyond the active file) currently included in context —
   // seeded by a task spec's affected-files later, and grown when the model emits `@read <path>`.
@@ -858,23 +862,99 @@ export default function App() {
       }
 
       // Context discipline: honor any `@read path` requests the model made (it asks for files it
-      // wasn't given in scoped mode). Add them to the working set so they're included next turn,
-      // and tell the user which files were pulled in.
-      const requested = [...fullContent.matchAll(/^\s*@read\s+(.+?)\s*$/gm)]
-        .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
-        .filter(p => p && !!allFileContents[p]);
-      if (requested.length > 0) {
+      // wasn't given in scoped mode). Add them to the working set, feed their contents straight
+      // back in, and let the model pick up where it left off — up to MAX_AUTO_READ_ROUNDS times —
+      // instead of leaving the user to type "continue" themselves. Mirrors the token-cap
+      // auto-continue above: same autoContinue toggle, same "never loop forever" guarantee.
+      let pendingContent = fullContent;
+      let pendingChatMessages = chatMessages;
+      let readRounds = 0;
+      while (!controller.signal.aborted) {
+        const requested = [...pendingContent.matchAll(/^\s*@read\s+(.+?)\s*$/gm)]
+          .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
+          .filter(p => p && !!allFileContents[p]);
+        if (requested.length === 0) break;
+
         setWorkingSetPaths(prev => Array.from(new Set([...prev, ...requested])));
+
+        if (!autoContinue || readRounds >= MAX_AUTO_READ_ROUNDS) {
+          setMessages(prev => [...prev, {
+            id: `ctx-${Date.now()}`,
+            role: 'system' as const,
+            content: `📎 Added to context: ${requested.join(', ')} — send your next message (or "continue") and these files will be included.`,
+            timestamp: Date.now(),
+          }]);
+          break;
+        }
+
+        readRounds++;
         setMessages(prev => [...prev, {
           id: `ctx-${Date.now()}`,
           role: 'system' as const,
-          content: `📎 Added to context: ${requested.join(', ')} — send your next message (or "continue") and these files will be included.`,
+          content: `📎 Added to context: ${requested.join(', ')} — continuing automatically…`,
           timestamp: Date.now(),
         }]);
+
+        const filesBlock = requested.map(p => fmtFile(p, allFileContents[p])).join('\n\n');
+        pendingChatMessages = [
+          ...pendingChatMessages,
+          { role: 'assistant' as const, content: pendingContent },
+          { role: 'user' as const, content: `Here are the file(s) you requested:\n\n${filesBlock}\n\nContinue the task using this context.` },
+        ];
+
+        const roundMsgId = `${aiMsgId}-read${readRounds}`;
+        setMessages(prev => [...prev, { id: roundMsgId, role: 'assistant' as const, content: '', timestamp: Date.now(), via: useHermes ? 'hermes' : 'llm' }]);
+
+        let roundContent = '';
+        let roundFinishReason = '';
+        let roundUsage: Message['usage'] | undefined;
+        try {
+          const roundRes = useHermes
+            ? await fetch('/api/hermes/run', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: pendingChatMessages, model: modelId, project_path: currentProject?.name }),
+                signal: controller.signal,
+              })
+            : await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: pendingChatMessages }), signal: controller.signal,
+              });
+          if (!roundRes.ok) break;
+          const roundReader = roundRes.body?.getReader();
+          if (!roundReader) break;
+          for await (const { eventType, data } of parseSSEStream(roundReader)) {
+            if (eventType === 'finish_reason') roundFinishReason = data;
+            else if (eventType === 'usage') {
+              try {
+                const u = JSON.parse(data);
+                roundUsage = {
+                  prompt_tokens: (roundUsage?.prompt_tokens || 0) + (u.prompt_tokens || 0),
+                  completion_tokens: (roundUsage?.completion_tokens || 0) + (u.completion_tokens || 0),
+                  total_tokens: (roundUsage?.total_tokens || 0) + (u.total_tokens || 0),
+                };
+              } catch { /* ignore malformed usage payloads */ }
+            }
+            else if (eventType === 'reasoning') { /* ignore reasoning on auto-read rounds */ }
+            else roundContent += data;
+            setMessages(prev => prev.map(m => m.id === roundMsgId ? { ...m, content: roundContent, usage: roundUsage } : m));
+          }
+        } catch (e: any) {
+          if (e?.name === 'AbortError') break;
+          throw e;
+        }
+
+        setMessages(prev => prev.map(m =>
+          m.id === roundMsgId ? { ...m, content: roundContent, truncated: roundFinishReason === 'length', usage: roundUsage } : m
+        ));
+        if (roundContent) {
+          if (sessionId) addMessage({ role: 'assistant', content: roundContent }).catch(console.error);
+          applyAssistantOutput(roundContent);
+        }
+        pendingContent = roundContent;
       }
 
       // If a Plan-stage response wrote the task spec, reload it so the panel + context pick it up.
-      if (workflow.activeTaskId && fullContent.includes(`tasks/${workflow.activeTaskId}/spec.md`)) {
+      if (workflow.activeTaskId && pendingContent.includes(`tasks/${workflow.activeTaskId}/spec.md`)) {
         workflow.loadTask(workflow.activeTaskId).catch(() => {});
       }
 
