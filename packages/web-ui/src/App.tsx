@@ -370,6 +370,11 @@ export default function App() {
       if (!isText) {
         const comma = content.indexOf(',');
         content = comma >= 0 ? content.slice(comma + 1) : content;
+      } else {
+        // Normalize Windows line endings on text uploads. CRLF otherwise flows into the
+        // LLM context, gets echoed back by the model, and a raw \r in an SSE data field
+        // panics axum's encoder (the server runs Linux; LF is right on disk anyway).
+        content = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       }
       try {
         const res = await fetch(`/api/projects/${currentProject.id}/files/write`, {

@@ -15,6 +15,14 @@ use harness_core::{
     CreateSnapshotRequest, RestoreSnapshotRequest, SnapshotTrigger,
 };
 
+/// Make a string safe for an SSE data field. axum's `Event::data` splits `\n` into multiple
+/// `data:` lines, but PANICS on `\r` (assertion in sse.rs) — and model output can contain
+/// CRLF (e.g. DeepSeek echoing a Windows-authored file from context), which killed the
+/// tokio worker mid-stream. Normalize all CR variants to plain `\n`.
+fn sse_safe(s: impl AsRef<str>) -> String {
+    s.as_ref().replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// Health check endpoint
 pub async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({
@@ -227,7 +235,7 @@ pub async fn chat_stream(
     let event_stream = stream.map(|result| {
         match result {
             Ok(chunk) => {
-                let event = axum::response::sse::Event::default().data(chunk.content);
+                let event = axum::response::sse::Event::default().data(sse_safe(chunk.content));
                 match chunk.chunk_type {
                     harness_core::ChunkType::Reasoning => {
                         Ok(event.event("reasoning"))
@@ -4405,7 +4413,7 @@ pub async fn run_agent(
     let event_stream = stream.map(|result| {
         match result {
             Ok(chunk) => {
-                let event = axum::response::sse::Event::default().data(chunk.content);
+                let event = axum::response::sse::Event::default().data(sse_safe(chunk.content));
                 match chunk.chunk_type {
                     harness_core::ChunkType::Reasoning => Ok(event.event("reasoning")),
                     harness_core::ChunkType::Content => Ok(event),
@@ -5005,12 +5013,12 @@ pub async fn hermes_agent_run(
                             let delta = &json["choices"][0]["delta"];
                             if let Some(r) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
                                 if !r.is_empty() {
-                                    yield Ok::<_, std::convert::Infallible>(Event::default().event("reasoning").data(r.to_string()));
+                                    yield Ok::<_, std::convert::Infallible>(Event::default().event("reasoning").data(sse_safe(r)));
                                 }
                             }
                             if let Some(c) = delta["content"].as_str() {
                                 if !c.is_empty() {
-                                    yield Ok(Event::default().data(c.to_string()));
+                                    yield Ok(Event::default().data(sse_safe(c)));
                                 }
                             }
                             // Hermes is an autonomous agent: it may emit tool calls rather than
@@ -5044,7 +5052,7 @@ pub async fn hermes_agent_run(
                 Err(e) => {
                     // Surface the interruption inline (as content) so the user keeps whatever
                     // streamed so far plus a clear note, instead of the whole turn erroring out.
-                    yield Ok(Event::default().data(format!("\n\n⚠️ Hermes stream interrupted: {}", e)));
+                    yield Ok(Event::default().data(sse_safe(format!("\n\n⚠️ Hermes stream interrupted: {}", e))));
                     break;
                 }
             }
