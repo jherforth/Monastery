@@ -19,6 +19,25 @@ import { WorkflowPanel } from './components/WorkflowPanel';
 import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
 
+// Format one file for the PROJECT FILE CONTENTS context block.
+const fmtFile = (path: string, content: string) => {
+  const ext = path.split('.').pop() || '';
+  return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
+};
+
+// Replace fenced code blocks in OLDER assistant messages with short placeholders before
+// sending history to the LLM. Without this, history accumulates multiple stale versions of
+// each file that compete with the current PROJECT FILE CONTENTS in the system message —
+// models routinely copy from their own outdated output and "overwrite" newer work.
+// (The in-flight response being continued is never stripped — the model needs its own text.)
+const stripHistoryCodeBlocks = (text: string): string =>
+  text.replace(/```([^\n]*)\n[\s\S]*?```/g, (_m, info) => {
+    const path = String(info).includes(':') ? String(info).split(':').slice(1).join(':').trim() : '';
+    return path
+      ? `[previous version of \`${path}\` omitted — the CURRENT contents are in PROJECT FILE CONTENTS]`
+      : '[code block omitted]';
+  });
+
 export default function App() {
   const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
   
@@ -488,14 +507,14 @@ export default function App() {
     const pattern1 = /```(\w*)\s*:\s*(\S+)\s*\n([\s\S]*?)\n```/gm;
     // Pattern 2: file path on line immediately before code block
     const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)\n```/gm;
-    // Pattern 3: natural language "create/update file X" followed by code block
-    const pattern3 = /(?:create|update|modify|edit|write|add|generate)\s+(?:a\s+)?(?:new\s+)?(?:file\s+)?(?:called\s+)?[`'"]*([\/\w\-\.]+\.\w+)[`'"]*:?\s*\n+```(\w*)\n([\s\S]*?)\n```/gi;
+    // (Former pattern 3 — prose like "update index.html" followed by ANY code block — was
+    // removed: it routinely matched explanatory snippets and replaced whole files with them.)
     // Pattern 4: file comment on first line inside code block
     const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)\n```/gi;
     // Pattern 5: ### filename heading or **filename** followed by code block
     const pattern5 = /(?:^|\n)(?:#{1,3}\s*|(?:\*\*)(.+?)(?:\*\*)\s*\n)(?:File:?\s*)?([\/\w\-\.]+\.\w+)\s*\n+```(\w*)\n([\s\S]*?)\n```/gmi;
 
-    const allPatterns = [pattern1, pattern2, pattern3, pattern4, pattern5];
+    const allPatterns = [pattern1, pattern2, pattern4, pattern5];
     const seenPaths = new Set<string>();
 
     for (const pattern of allPatterns) {
@@ -610,6 +629,23 @@ export default function App() {
         fetch(`/api/projects/${currentProject.id}/files`)
           .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
 
+        // Keep the LLM's context fresh: fold successful writes into allFileContents so the
+        // next turn's PROJECT FILE CONTENTS matches the disk. (This map previously went stale
+        // after the first AI edit, making the model regenerate from outdated file state.)
+        const okPaths = new Set(results.filter((r): r is WriteResult => !!r && r.ok).map(r => r.path));
+        if (okPaths.size > 0) {
+          setAllFileContents(prev => {
+            const next = { ...prev };
+            for (const w of fileWrites) if (okPaths.has(w.path)) next[w.path] = w.content;
+            return next;
+          });
+        }
+        // Shell commands can touch arbitrary files — re-read everything to be safe.
+        if (shellCommands.length > 0) {
+          fetch(`/api/projects/${currentProject.id}/files/read-all`)
+            .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
+        }
+
         // Feedback: add a system note showing which files were written
         const okFiles = results.filter((r): r is WriteResult => !!r && r.ok).map(r => r.path);
         const failFiles = results.filter((r): r is WriteResult => !!r && !r.ok);
@@ -636,6 +672,85 @@ export default function App() {
       });
     })();
   }, [currentProject?.id, currentFile, updateTabContentByPath]);
+
+  // Build the per-request system context: agent roles, editing rules, skills, task spec,
+  // file tree, and file contents. Shared by handleSendMessage AND the manual Continue path,
+  // so every request that can write files carries the same project grounding.
+  const buildSystemContext = useCallback((userMessageContent: string): string | null => {
+    const contextParts: string[] = [];
+    // Inject the active agent role(s) silently as a leading system instruction.
+    const activeAgents = activeAgentIds
+      .map(id => getAgent(id))
+      .filter((a): a is NonNullable<typeof a> => !!a);
+    if (activeAgents.length === 1) {
+      const a = activeAgents[0];
+      contextParts.push(`AGENT ROLE: You are acting as the ${a.name} (${a.role}). ${a.description}. Approach the user's request in that capacity.`);
+    } else if (activeAgents.length > 1) {
+      const list = activeAgents.map(a => `${a.name} (${a.role}) — ${a.description}`).join('; ');
+      contextParts.push(`AGENT ROLES: Combine the perspectives of: ${list}. Address the user's request considering all of these roles.`);
+    }
+    if (currentProject) {
+      contextParts.push(`You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
+    }
+    contextParts.push(`FILE EDITING RULES:
+- To edit or create a file, use code blocks with the format: \`\`\`language:path/to/file
+- Example: \`\`\`tsx:src/App.tsx
+- The file path after the colon determines where the code is written.
+- To create a NEW file, just use a path that doesn't exist yet.
+- You can write multiple files in a single response — each code block becomes a file.
+- CRITICAL: a code block with a file path REPLACES that file's ENTIRE contents. ALWAYS output the COMPLETE file — never a fragment, snippet, or "rest unchanged" placeholder. Writing a partial file destroys the parts you left out.
+- For illustrative snippets you do NOT want saved to disk, use a plain code block with no file path.`);
+
+    // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
+    // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.
+    buildSkillInstructions(
+      useDatabaseContext ? ['pocketbase'] : [],
+      { pocketbaseUrl: pocketbaseConn?.base_url, userMessage: userMessageContent },
+    ).forEach(block => contextParts.push(block));
+
+    // Active task spec — the workflow "system of record", referenced instead of re-derived.
+    if (workflow.activeTask && workflow.spec.trim()) {
+      contextParts.push(`CURRENT TASK [${workflow.activeTask.stage.toUpperCase()}] — "${workflow.activeTask.title}"\nThis spec is the source of truth; work to its Acceptance Criteria and Definition of Done:\n\n${workflow.spec}`);
+    }
+
+    // The file tree (names only) is always cheap and tells the model what exists so it can
+    // request files by path.
+    if (projectFiles.length > 0) {
+      const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
+      contextParts.push(`PROJECT FILE TREE:\n${fileList}`);
+    }
+
+    // Context discipline (the token win): small projects still send everything; large projects
+    // send ONLY the active file + the working set (files pulled in via the spec or `@read`),
+    // instead of dumping the whole repo into every turn and exhausting the context window.
+    // In BOTH branches the active file's content is overridden with the live editor buffer,
+    // so the model always sees what the user is looking at (including unsaved edits).
+    const withEditorOverride = (p: string, c: string) =>
+      (p === currentFile && activeTab && !isImagePath(p) ? activeTab.content : c);
+    const fileEntries = Object.entries(allFileContents).filter(([, c]) => c.trim().length > 0);
+    const corpusSize = fileEntries.reduce((n, [, c]) => n + c.length, 0);
+    const SMALL_PROJECT_LIMIT = 24_000; // ~6K tokens — below this, just send it all.
+    if (fileEntries.length > 0 && corpusSize <= SMALL_PROJECT_LIMIT) {
+      const all = fileEntries.map(([p, c]) => fmtFile(p, withEditorOverride(p, c))).join('\n\n');
+      contextParts.push(`PROJECT FILE CONTENTS:\n${all}`);
+    } else if (fileEntries.length > 0) {
+      const include = new Set<string>();
+      if (currentFile) include.add(currentFile);
+      workingSetPaths.forEach(p => include.add(p));
+      // The task spec's affected files seed the working set — this is what lets the staged
+      // workflow pre-scope context so the model rarely needs to @read.
+      (workflow.activeTask?.affected_files || []).forEach(p => include.add(p));
+      const picked = fileEntries
+        .filter(([p]) => include.has(p))
+        .map(([p, c]) => [p, withEditorOverride(p, c)] as const);
+      const body = picked.map(([p, c]) => fmtFile(p, c)).join('\n\n');
+      contextParts.push(
+        `PROJECT FILE CONTENTS (scoped — large project, so only the active file and files in the working set are shown):\n${body || '(none yet)'}\n\n` +
+        `If you need a file from the tree that isn't shown above, output a line \`@read path/to/file\` (one per line) — Monastery will add it to the working set so it's available on your next turn.`,
+      );
+    }
+    return contextParts.length > 0 ? contextParts.join('\n\n') : null;
+  }, [activeAgentIds, getAgent, currentProject, useDatabaseContext, pocketbaseConn?.base_url, workflow.activeTask, workflow.spec, projectFiles, allFileContents, currentFile, activeTab, workingSetPaths]);
 
   const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { preferHermes?: boolean }) => {
     // Auto-create a session if none exists
@@ -686,83 +801,18 @@ export default function App() {
       const params = new URLSearchParams();
       if (endpointId) params.set('endpoint_id', endpointId);
       
-      // Build system context from the current project
-      const contextParts: string[] = [];
-      // Inject the active agent role(s) silently as a leading system instruction.
-      if (activeAgents.length === 1) {
-        const a = activeAgents[0];
-        contextParts.push(`AGENT ROLE: You are acting as the ${a.name} (${a.role}). ${a.description}. Approach the user's request in that capacity.`);
-      } else if (activeAgents.length > 1) {
-        const list = activeAgents.map(a => `${a.name} (${a.role}) — ${a.description}`).join('; ');
-        contextParts.push(`AGENT ROLES: Combine the perspectives of: ${list}. Address the user's request considering all of these roles.`);
-      }
-      if (currentProject) {
-        contextParts.push(`You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
-      }
-      contextParts.push(`FILE EDITING RULES:
-- To edit or create a file, use code blocks with the format: \`\`\`language:path/to/file
-- Example: \`\`\`tsx:src/App.tsx
-- The file path after the colon determines where the code is written.
-- To create a NEW file, just use a path that doesn't exist yet.
-- You can write multiple files in a single response — each code block becomes a file.`);
+      // Build system context from the current project (shared with the manual Continue path).
+      const systemContent = buildSystemContext(content);
+      const systemMessage = systemContent ? { role: 'system' as const, content: systemContent } : null;
 
-      // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
-      // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.
-      buildSkillInstructions(
-        useDatabaseContext ? ['pocketbase'] : [],
-        { pocketbaseUrl: pocketbaseConn?.base_url, userMessage: content },
-      ).forEach(block => contextParts.push(block));
-
-      // Active task spec — the workflow "system of record", referenced instead of re-derived.
-      if (workflow.activeTask && workflow.spec.trim()) {
-        contextParts.push(`CURRENT TASK [${workflow.activeTask.stage.toUpperCase()}] — "${workflow.activeTask.title}"\nThis spec is the source of truth; work to its Acceptance Criteria and Definition of Done:\n\n${workflow.spec}`);
-      }
-
-      // The file tree (names only) is always cheap and tells the model what exists so it can
-      // request files by path.
-      if (projectFiles.length > 0) {
-        const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
-        contextParts.push(`PROJECT FILE TREE:\n${fileList}`);
-      }
-
-      // Context discipline (the token win): small projects still send everything; large projects
-      // send ONLY the active file + the working set (files pulled in via the spec or `@read`),
-      // instead of dumping the whole repo into every turn and exhausting the context window.
-      const fmtFile = (path: string, content: string) => {
-        const ext = path.split('.').pop() || '';
-        return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
-      };
-      const fileEntries = Object.entries(allFileContents).filter(([, c]) => c.trim().length > 0);
-      const corpusSize = fileEntries.reduce((n, [, c]) => n + c.length, 0);
-      const SMALL_PROJECT_LIMIT = 24_000; // ~6K tokens — below this, just send it all.
-      if (fileEntries.length > 0 && corpusSize <= SMALL_PROJECT_LIMIT) {
-        const all = fileEntries.map(([p, c]) => fmtFile(p, c)).join('\n\n');
-        contextParts.push(`PROJECT FILE CONTENTS:\n${all}`);
-      } else if (fileEntries.length > 0) {
-        const include = new Set<string>();
-        if (currentFile) include.add(currentFile);
-        workingSetPaths.forEach(p => include.add(p));
-        // The task spec's affected files seed the working set — this is what lets the staged
-        // workflow pre-scope context so the model rarely needs to @read.
-        (workflow.activeTask?.affected_files || []).forEach(p => include.add(p));
-        const picked = fileEntries
-          .filter(([p]) => include.has(p))
-          // Prefer unsaved editor content for the active file.
-          .map(([p, c]) => (p === currentFile && editorContent ? [p, editorContent] as const : [p, c] as const));
-        const body = picked.map(([p, c]) => fmtFile(p, c)).join('\n\n');
-        contextParts.push(
-          `PROJECT FILE CONTENTS (scoped — large project, so only the active file and files in the working set are shown):\n${body || '(none yet)'}\n\n` +
-          `If you need a file from the tree that isn't shown above, output a line \`@read path/to/file\` (one per line) — Monastery will add it to the working set so it's available on your next turn.`,
-        );
-      }
-      const systemMessage = contextParts.length > 0 ? {
-        role: 'system' as const,
-        content: contextParts.join('\n\n'),
-      } : null;
-      
+      // History goes out with older assistant code blocks collapsed to placeholders — the
+      // system context above is the single source of truth for current file contents.
       const chatMessages = [
         ...(systemMessage ? [systemMessage] : []),
-        ...messages.map(m => ({ role: m.role, content: m.content })),
+        ...messages.map(m => ({
+          role: m.role,
+          content: m.role === 'assistant' ? stripHistoryCodeBlocks(m.content) : m.content,
+        })),
         { role: userMessage.role, content: userMessage.content },
       ];
       
@@ -911,11 +961,36 @@ export default function App() {
       let pendingContent = fullContent;
       let pendingChatMessages = chatMessages;
       let readRounds = 0;
-      while (!controller.signal.aborted) {
-        const requested = [...pendingContent.matchAll(/^\s*@read\s+(.+?)\s*$/gm)]
+      while (!controller.signal.aborted && currentProject?.id) {
+        const requestedRaw = [...pendingContent.matchAll(/^\s*@read\s+(.+?)\s*$/gm)]
           .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
-          .filter(p => p && !!allFileContents[p]);
-        if (requested.length === 0) break;
+          .filter(Boolean);
+        if (requestedRaw.length === 0) break;
+
+        // Resolve from DISK, not the in-memory map: the map can lag behind writes made
+        // earlier in this same conversation, which used to silently drop those requests.
+        const resolvedFiles: Array<[string, string]> = [];
+        const missing: string[] = [];
+        for (const p of requestedRaw) {
+          try {
+            const r = await fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(p)}`);
+            const d = r.ok ? await r.json().catch(() => null) : null;
+            if (typeof d?.content === 'string') resolvedFiles.push([p, d.content]);
+            else missing.push(p);
+          } catch {
+            missing.push(p);
+          }
+        }
+        if (missing.length > 0) {
+          setMessages(prev => [...prev, {
+            id: `ctx-miss-${Date.now()}`,
+            role: 'system' as const,
+            content: `⚠️ Requested file(s) not found: ${missing.join(', ')}`,
+            timestamp: Date.now(),
+          }]);
+        }
+        if (resolvedFiles.length === 0) break;
+        const requested = resolvedFiles.map(([p]) => p);
 
         setWorkingSetPaths(prev => Array.from(new Set([...prev, ...requested])));
 
@@ -937,7 +1012,7 @@ export default function App() {
           timestamp: Date.now(),
         }]);
 
-        const filesBlock = requested.map(p => fmtFile(p, allFileContents[p])).join('\n\n');
+        const filesBlock = resolvedFiles.map(([p, c]) => fmtFile(p, c)).join('\n\n');
         pendingChatMessages = [
           ...pendingChatMessages,
           { role: 'assistant' as const, content: pendingContent },
@@ -1020,7 +1095,7 @@ export default function App() {
       }]);
       setIsGenerating(false);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, projectFiles, currentFile, editorContent, allFileContents, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, useDatabaseContext, pocketbaseConn?.base_url, autoContinue, workingSetPaths, workflow.activeTask, workflow.spec]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, autoContinue, buildSystemContext, workflow.activeTaskId, workflow.loadTask]);
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
@@ -1044,10 +1119,17 @@ export default function App() {
       if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
       const modelId = availableModels[0]?.id || 'deepseek-chat';
 
-      // Send the conversation up to and including the truncated message, then ask the
-      // model to continue from exactly where it stopped.
-      const priorMessages = messages.slice(0, targetIndex + 1).map(m => ({ role: m.role, content: m.content }));
+      // Send the full system context (previously this path sent NONE — continuations had no
+      // project files or editing rules), then the conversation up to and including the
+      // truncated message. Older assistant code blocks are stripped like in handleSendMessage;
+      // the truncated message itself stays intact — the model continues from its own text.
+      const systemContent = buildSystemContext(targetMsg.content.slice(-2000));
+      const priorMessages = messages.slice(0, targetIndex + 1).map((m, i) => ({
+        role: m.role,
+        content: m.role === 'assistant' && i < targetIndex ? stripHistoryCodeBlocks(m.content) : m.content,
+      }));
       const chatMessages = [
+        ...(systemContent ? [{ role: 'system' as const, content: systemContent }] : []),
         ...priorMessages,
         { role: 'user' as const, content: 'Continue exactly where you left off. Do not repeat any text you already wrote.' },
       ];
@@ -1097,7 +1179,7 @@ export default function App() {
     } finally {
       setIsGenerating(false);
     }
-  }, [messages, availableModels, currentSession?.id, addMessage, applyAssistantOutput]);
+  }, [messages, availableModels, currentSession?.id, addMessage, applyAssistantOutput, buildSystemContext]);
 
   // Shared agent trigger — used by ChatPane quick-actions and the editor toolbar. Agents run
   // through the same chat flow as a normal message (so they get full project context and their
@@ -1353,6 +1435,8 @@ export default function App() {
                                 body: JSON.stringify({ path: currentFile, content: editorContent }),
                               });
                               markTabSaved();
+                              // Keep the LLM context map in sync with the saved file.
+                              setAllFileContents(prev => ({ ...prev, [currentFile]: editorContent }));
                             } catch (e) {
                               console.error('Save failed:', e);
                             }
