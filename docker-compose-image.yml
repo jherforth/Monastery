@@ -1,0 +1,31 @@
+services:
+  harness:
+    image: ghcr.io/jherforth/monastery:latest
+    container_name: monastery
+    ports:
+      - "3000:3000"
+    volumes:
+      - harness_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DATA_DIR=/app/data
+      - LOG_LEVEL=info
+      # LLM endpoint (override for your setup)
+      # - LLM_BASE_URL=http://host.docker.internal:11434
+      # - LLM_BASE_URL=http://ollama:11434
+    networks:
+      - homelab
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  harness_data:
+    driver: local
+
+networks:
+  homelab:
+    driver: bridge
