@@ -14,10 +14,15 @@ import { useAgents } from './hooks/useAgents';
 import { useHermesAgent } from './hooks/useHermesAgent';
 import { useHostingServices } from './hooks/useHostingServices';
 import { buildSkillInstructions } from './lib/skills';
-import { useWorkflow, WORKFLOW_ROLE_IDS, type Stage } from './hooks/useWorkflow';
+import { useWorkflow, WORKFLOW_ROLE_IDS, type Stage, type TaskMeta } from './hooks/useWorkflow';
 import { WorkflowPanel } from './components/WorkflowPanel';
 import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
+
+// Below this total corpus size the whole project is sent as context; above it, only the
+// active file + working set (scoped mode). Also the threshold for nudging users toward the
+// staged workflow, whose task specs pre-scope the right files.
+const SMALL_PROJECT_LIMIT = 64_000; // ~16K tokens
 
 // Format one file for the PROJECT FILE CONTENTS context block.
 const fmtFile = (path: string, content: string) => {
@@ -37,6 +42,32 @@ const stripHistoryCodeBlocks = (text: string): string =>
       ? `[previous version of \`${path}\` omitted — the CURRENT contents are in PROJECT FILE CONTENTS]`
       : '[code block omitted]';
   });
+
+// Repair the seam where a continuation resumes a response that was cut off INSIDE a code
+// block. Despite the "continue exactly where you left off" instruction, models often restart
+// with a duplicate fence opener (```css:styles.css) and/or repeat their last lines — which
+// unbalances the fences and permanently breaks both the chat's code-block rendering and the
+// file-apply parser. Called with the accumulated continuation on every chunk, so the live
+// render stays balanced too. A bare ``` at the start is a legitimate CLOSER and is kept —
+// only openers (fence + info string) are stripped.
+const stitchContinuation = (base: string, cont: string): string => {
+  let out = cont;
+  const insideBlock = ((base.match(/```/g) || []).length) % 2 === 1;
+  if (insideBlock) {
+    const opener = out.match(/^\s*```[^\s`][^\n]*\n/);
+    if (opener) out = out.slice(opener[0].length);
+  }
+  // Drop text the model repeated from the end of the base (longest suffix of base, ≥16
+  // chars, that the continuation starts with).
+  const tail = base.slice(-240);
+  for (let len = tail.length; len >= 16; len--) {
+    if (out.startsWith(tail.slice(tail.length - len))) {
+      out = out.slice(len);
+      break;
+    }
+  }
+  return out;
+};
 
 export default function App() {
   const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
@@ -70,10 +101,11 @@ export default function App() {
   // purpose: unbounded auto-continue can burn cloud (e.g. DeepSeek) tokens on verbose models.
   const [autoContinue, setAutoContinue] = useState(true);
   const MAX_AUTO_CONTINUE = 5;
-  // Same idea, separate cap: rounds where the model asked for files via `@read` and got them
-  // auto-fed back in. Kept small and distinct from MAX_AUTO_CONTINUE since each round is a full
-  // extra request (not just an appended chunk).
-  const MAX_AUTO_READ_ROUNDS = 3;
+  // Same idea, separate cap: rounds where the model asked for context via `@read`/`@search`
+  // and got results auto-fed back in. Kept small and distinct from MAX_AUTO_CONTINUE since
+  // each round is a full extra request (not just an appended chunk). 4 allows the full
+  // discovery chain in a complex project: search → read → (read more) → edit.
+  const MAX_AUTO_READ_ROUNDS = 4;
   // Context discipline: in large projects we don't dump the whole repo into every message. The
   // "working set" is the subset of files (beyond the active file) currently included in context —
   // seeded by a task spec's affected-files later, and grown when the model emits `@read <path>`.
@@ -89,6 +121,9 @@ export default function App() {
     );
   }, []);
   const abortRef = useRef<AbortController | null>(null);
+  // Workflow nudge: suggested at most once per session/project (reset below) when a freeform
+  // request hits a large project without an active task.
+  const workflowNudgeShownRef = useRef(false);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
@@ -200,6 +235,11 @@ export default function App() {
       fetchSessions();
     }
   }, [currentProject?.id, fetchSessions]);
+
+  // A new session or project gets one fresh chance to show the workflow nudge.
+  useEffect(() => {
+    workflowNudgeShownRef.current = false;
+  }, [currentProject?.id, currentSession?.id]);
 
   // Create a new session
   const handleCreateSession = useCallback(async () => {
@@ -573,9 +613,10 @@ export default function App() {
 
     (async () => {
       // Safety checkpoint: snapshot the project's on-disk state BEFORE applying anything,
-      // so even the first AI edit in a session is revertible (Git menu → snapshots).
+      // so even the first AI edit in a session is revertible. The snapshot id is attached to
+      // the write-feedback message below so the chat shows an inline "Abandon" button.
       // A checkpoint failure logs a warning but doesn't block the apply.
-      let checkpointed = false;
+      let checkpointSnapshotId: string | null = null;
       try {
         const cpRes = await fetch(`/api/projects/${currentProject.id}/snapshots/checkpoint`, {
           method: 'POST',
@@ -583,7 +624,7 @@ export default function App() {
           body: JSON.stringify({ name: 'Auto: before AI edit' }),
         });
         const cp = cpRes.ok ? await cpRes.json().catch(() => null) : null;
-        checkpointed = !!cp?.snapshot_id;
+        checkpointSnapshotId = cp?.snapshot_id || null;
       } catch (e) {
         console.warn('Safety checkpoint failed:', e);
       }
@@ -658,8 +699,8 @@ export default function App() {
           let note = '';
           if (okFiles.length > 0) {
             note += `✅ Wrote **${okFiles.length}** file${okFiles.length > 1 ? 's' : ''}: ${okFiles.map(f => `\`${f}\``).join(', ')}`;
-            note += checkpointed
-              ? '\n\n🛟 Safety snapshot saved beforehand — revert anytime from the Git menu.'
+            note += checkpointSnapshotId
+              ? '\n\n🛟 The previous state was snapshotted first — you can abandon these changes below.'
               : '\n\n⚠️ Safety snapshot could not be created before these changes.';
           }
           if (failFiles.length > 0) {
@@ -671,6 +712,10 @@ export default function App() {
               role: 'system' as const,
               content: note,
               timestamp: Date.now(),
+              // Carrying the snapshot id makes ChatPane render its restore button inline,
+              // so abandoning an AI edit is one click on the message itself.
+              model: (okFiles.length > 0 && checkpointSnapshotId) || undefined,
+              revertLabel: okFiles.length > 0 && checkpointSnapshotId ? 'Abandon these changes' : undefined,
             }]);
           }
         }
@@ -681,7 +726,7 @@ export default function App() {
   // Build the per-request system context: agent roles, editing rules, skills, task spec,
   // file tree, and file contents. Shared by handleSendMessage AND the manual Continue path,
   // so every request that can write files carries the same project grounding.
-  const buildSystemContext = useCallback((userMessageContent: string): string | null => {
+  const buildSystemContext = useCallback((userMessageContent: string, extraPaths: string[] = []): string | null => {
     const contextParts: string[] = [];
     // Inject the active agent role(s) silently as a leading system instruction.
     const activeAgents = activeAgentIds
@@ -734,7 +779,6 @@ export default function App() {
       (p === currentFile && activeTab && !isImagePath(p) ? activeTab.content : c);
     const fileEntries = Object.entries(allFileContents).filter(([, c]) => c.trim().length > 0);
     const corpusSize = fileEntries.reduce((n, [, c]) => n + c.length, 0);
-    const SMALL_PROJECT_LIMIT = 24_000; // ~6K tokens — below this, just send it all.
     if (fileEntries.length > 0 && corpusSize <= SMALL_PROJECT_LIMIT) {
       const all = fileEntries.map(([p, c]) => fmtFile(p, withEditorOverride(p, c))).join('\n\n');
       contextParts.push(`PROJECT FILE CONTENTS:\n${all}`);
@@ -742,6 +786,7 @@ export default function App() {
       const include = new Set<string>();
       if (currentFile) include.add(currentFile);
       workingSetPaths.forEach(p => include.add(p));
+      extraPaths.forEach(p => include.add(p));
       // The task spec's affected files seed the working set — this is what lets the staged
       // workflow pre-scope context so the model rarely needs to @read.
       (workflow.activeTask?.affected_files || []).forEach(p => include.add(p));
@@ -751,7 +796,9 @@ export default function App() {
       const body = picked.map(([p, c]) => fmtFile(p, c)).join('\n\n');
       contextParts.push(
         `PROJECT FILE CONTENTS (scoped — large project, so only the active file and files in the working set are shown):\n${body || '(none yet)'}\n\n` +
-        `If you need a file from the tree that isn't shown above, output a line \`@read path/to/file\` (one per line) — Monastery will add it to the working set so it's available on your next turn.`,
+        `If you need a file from the tree that isn't shown above, output a line \`@read path/to/file\` (one per line) — its contents will be provided to you.\n` +
+        `If you don't know WHICH file is relevant (e.g. "fix the login button" in a large project), output \`@search <text, selector, or identifier>\` (one per line) to grep the whole project — you'll get back path:line matches, then @read the files you need.\n` +
+        `NEVER rewrite, edit, or guess the contents of a file that is not shown above — @search/@read first and wait for the results. Writing a file you haven't seen will destroy the user's real file.`,
       );
     }
     return contextParts.length > 0 ? contextParts.join('\n\n') : null;
@@ -786,6 +833,24 @@ export default function App() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+
+    // Nudge toward the staged workflow: freeform one-shot edits on a large (scoped-context)
+    // project are exactly where out-of-context mistakes happen. A task's Plan stage picks the
+    // affected files up front, which pre-scopes the model's context for every later stage.
+    // Shown once per session, only when no task is active; the button creates the task AND
+    // kicks off the Architect's Plan stage in one click.
+    const corpusSize = Object.values(allFileContents).reduce((n, c) => n + c.length, 0);
+    if (!workflow.activeTask && corpusSize > SMALL_PROJECT_LIMIT && !workflowNudgeShownRef.current && currentProject?.id) {
+      workflowNudgeShownRef.current = true;
+      setMessages(prev => [...prev, {
+        id: `wf-nudge-${Date.now()}`,
+        role: 'system' as const,
+        content: `💡 **Tip:** this project is large, so freeform edits only see part of it. For multi-file changes, the **staged workflow** is more reliable — an Architect first plans which files are affected, and that plan scopes every later step.`,
+        timestamp: Date.now(),
+        suggestTaskTitle: content.slice(0, 80),
+      }]);
+    }
+
     setIsGenerating(true);
 
     // Create abort controller for this request
@@ -806,8 +871,19 @@ export default function App() {
       const params = new URLSearchParams();
       if (endpointId) params.set('endpoint_id', endpointId);
       
+      // Any project file the user names in their message gets pulled into this request's
+      // context and persisted to the working set — so "fix the nav in styles.css" works in
+      // large (scoped-context) projects without the model having to @read first.
+      const mentioned = Object.keys(allFileContents).filter(p => {
+        const base = p.split('/').pop() || p;
+        return content.includes(p) || (base.length > 3 && content.toLowerCase().includes(base.toLowerCase()));
+      }).slice(0, 8);
+      if (mentioned.length > 0) {
+        setWorkingSetPaths(prev => Array.from(new Set([...prev, ...mentioned])));
+      }
+
       // Build system context from the current project (shared with the manual Continue path).
-      const systemContent = buildSystemContext(content);
+      const systemContent = buildSystemContext(content, mentioned);
       const systemMessage = systemContent ? { role: 'system' as const, content: systemContent } : null;
 
       // History goes out with older assistant code blocks collapsed to placeholders — the
@@ -932,11 +1008,18 @@ export default function App() {
         if (!contRes.ok) break;
         const contReader = contRes.body?.getReader();
         if (!contReader) break;
+        // Accumulate the continuation separately and re-stitch on every chunk, so duplicate
+        // fence openers / repeated lines at the seam are stripped even while streaming.
+        const contBase = fullContent;
+        let contBuf = '';
         for await (const { eventType, data } of parseSSEStream(contReader)) {
           if (eventType === 'finish_reason') finishReason = data;
           else if (eventType === 'usage') mergeUsage(data);
           else if (eventType === 'reasoning') { /* ignore reasoning on continuation */ }
-          else fullContent += data;
+          else {
+            contBuf += data;
+            fullContent = contBase + stitchContinuation(contBase, contBuf);
+          }
           setMessages(prev => prev.map(m =>
             m.id === aiMsgId ? { ...m, content: fullContent, usage } : m
           ));
@@ -970,9 +1053,16 @@ export default function App() {
         const requestedRaw = [...pendingContent.matchAll(/^\s*@read\s+(.+?)\s*$/gm)]
           .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
           .filter(Boolean);
-        if (requestedRaw.length === 0) break;
+        // `@search term` lets the model FIND the right file when neither it nor the user
+        // knows the filename (complex projects) — results come from the project grep
+        // endpoint, after which the model typically @reads the files it located.
+        const searchQueries = [...pendingContent.matchAll(/^\s*@search\s+(.+?)\s*$/gm)]
+          .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
+          .filter(Boolean)
+          .slice(0, 3);
+        if (requestedRaw.length === 0 && searchQueries.length === 0) break;
 
-        // Resolve from DISK, not the in-memory map: the map can lag behind writes made
+        // Resolve @read from DISK, not the in-memory map: the map can lag behind writes made
         // earlier in this same conversation, which used to silently drop those requests.
         const resolvedFiles: Array<[string, string]> = [];
         const missing: string[] = [];
@@ -994,16 +1084,41 @@ export default function App() {
             timestamp: Date.now(),
           }]);
         }
-        if (resolvedFiles.length === 0) break;
-        const requested = resolvedFiles.map(([p]) => p);
 
-        setWorkingSetPaths(prev => Array.from(new Set([...prev, ...requested])));
+        // Run @search queries against the project grep endpoint (ripgrep server-side).
+        const searchBlocks: string[] = [];
+        for (const q of searchQueries) {
+          try {
+            const r = await fetch(`/api/projects/${currentProject.id}/search?q=${encodeURIComponent(q)}&max=25`);
+            const d = r.ok ? await r.json().catch(() => null) : null;
+            const hits: Array<{ path: string; line: number; text: string }> = d?.matches || [];
+            searchBlocks.push(
+              hits.length > 0
+                ? `Results for "${q}" (path:line: text):\n${hits.map(h => `- ${h.path}:${h.line}: ${h.text}`).join('\n')}`
+                : `Results for "${q}": no matches.`
+            );
+          } catch {
+            searchBlocks.push(`Results for "${q}": search failed.`);
+          }
+        }
+
+        if (resolvedFiles.length === 0 && searchBlocks.length === 0) break;
+        const requested = resolvedFiles.map(([p]) => p);
+        if (requested.length > 0) {
+          setWorkingSetPaths(prev => Array.from(new Set([...prev, ...requested])));
+        }
+
+        // Human-readable summary of what this round pulled in.
+        const pulled = [
+          requested.length > 0 ? `📎 Added to context: ${requested.join(', ')}` : '',
+          searchQueries.length > 0 ? `🔎 Searched: ${searchQueries.map(q => `"${q}"`).join(', ')}` : '',
+        ].filter(Boolean).join(' · ');
 
         if (!autoContinue || readRounds >= MAX_AUTO_READ_ROUNDS) {
           setMessages(prev => [...prev, {
             id: `ctx-${Date.now()}`,
             role: 'system' as const,
-            content: `📎 Added to context: ${requested.join(', ')} — send your next message (or "continue") and these files will be included.`,
+            content: `${pulled} — send your next message (or "continue") and the results will be included.`,
             timestamp: Date.now(),
           }]);
           break;
@@ -1013,15 +1128,21 @@ export default function App() {
         setMessages(prev => [...prev, {
           id: `ctx-${Date.now()}`,
           role: 'system' as const,
-          content: `📎 Added to context: ${requested.join(', ')} — continuing automatically…`,
+          content: `${pulled} — continuing automatically…`,
           timestamp: Date.now(),
         }]);
 
-        const filesBlock = resolvedFiles.map(([p, c]) => fmtFile(p, c)).join('\n\n');
+        const feedbackParts: string[] = [];
+        if (resolvedFiles.length > 0) {
+          feedbackParts.push(`Here are the file(s) you requested:\n\n${resolvedFiles.map(([p, c]) => fmtFile(p, c)).join('\n\n')}`);
+        }
+        if (searchBlocks.length > 0) {
+          feedbackParts.push(`Search results:\n\n${searchBlocks.join('\n\n')}`);
+        }
         pendingChatMessages = [
           ...pendingChatMessages,
           { role: 'assistant' as const, content: pendingContent },
-          { role: 'user' as const, content: `Here are the file(s) you requested:\n\n${filesBlock}\n\nContinue the task using this context.` },
+          { role: 'user' as const, content: `${feedbackParts.join('\n\n')}\n\nContinue the task using this context. You may issue further \`@read\` or \`@search\` lines if you still need more.` },
         ];
 
         const roundMsgId = `${aiMsgId}-read${readRounds}`;
@@ -1100,7 +1221,7 @@ export default function App() {
       }]);
       setIsGenerating(false);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, autoContinue, buildSystemContext, workflow.activeTaskId, workflow.loadTask]);
+  }, [messages, currentSession, currentProject, createSession, addMessage, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, autoContinue, buildSystemContext, allFileContents, workflow.activeTaskId, workflow.loadTask]);
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
@@ -1149,7 +1270,9 @@ export default function App() {
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
 
-      let fullContent = targetMsg.content;
+      const contBase = targetMsg.content;
+      let contBuf = '';
+      let fullContent = contBase;
       let finishReason = '';
       let usage = targetMsg.usage;
       const mergeUsage = (raw: string) => {
@@ -1166,7 +1289,12 @@ export default function App() {
         if (eventType === 'finish_reason') finishReason = data;
         else if (eventType === 'usage') mergeUsage(data);
         else if (eventType === 'reasoning') { /* ignore reasoning on continuation */ }
-        else fullContent += data;
+        else {
+          // Re-stitch on every chunk — strips duplicate fence openers / repeated lines at
+          // the seam so the code-block rendering stays balanced (see stitchContinuation).
+          contBuf += data;
+          fullContent = contBase + stitchContinuation(contBase, contBuf);
+        }
         setMessages(prev => prev.map(m =>
           m.id === truncatedMsgId ? { ...m, content: fullContent, usage } : m
         ));
@@ -1222,13 +1350,16 @@ export default function App() {
 
   // Run a workflow stage through the chat flow. Each stage acts as its role and works against the
   // task spec (already in context). preferHermes hands the stage to the Hermes agent (hybrid mode).
-  const runStage = useCallback((stage: Stage, preferHermes = false) => {
-    const task = workflow.activeTask;
+  // taskOverride lets a caller run a stage on a JUST-created task before React state has caught up
+  // (used by the chat's "create a task & plan it" nudge button).
+  const runStage = useCallback((stage: Stage, preferHermes = false, taskOverride?: TaskMeta) => {
+    const task = taskOverride ?? workflow.activeTask;
     if (!task) return;
+    const specText = taskOverride ? '' : workflow.spec;
     let prompt = '';
     switch (stage) {
       case 'plan':
-        prompt = `🏗️ Act as the Architect for the task "${task.title}". Here is the current spec:\n\n${workflow.spec || '(empty)'}\n\nProduce the COMPLETE updated specification — fill in Goal, concrete checkable Acceptance Criteria, a Definition of Done, the Affected Files (real paths from the project tree), and the Approach. Output it as a single fenced code block written to the spec file:\n\n\`\`\`md:.monastery/tasks/${task.id}/spec.md\n<full spec here>\n\`\`\``;
+        prompt = `🏗️ Act as the Architect for the task "${task.title}". Here is the current spec:\n\n${specText || '(empty)'}\n\nProduce the COMPLETE updated specification — fill in Goal, concrete checkable Acceptance Criteria, a Definition of Done, the Affected Files (real paths from the project tree), and the Approach. Output it as a single fenced code block written to the spec file:\n\n\`\`\`md:.monastery/tasks/${task.id}/spec.md\n<full spec here>\n\`\`\``;
         break;
       case 'implement':
         prompt = `💻 Act as the Coder for the task "${task.title}". Implement strictly per the spec (in context). Make minimal, focused edits to the affected files only. Output each changed/new file as a fenced code block with its path (e.g. \`\`\`ts:src/foo.ts).`;
@@ -1333,6 +1464,28 @@ export default function App() {
               hasActiveTask={!!workflow.activeTask}
               onStopGeneration={handleStopGeneration}
               onContinue={handleContinueGeneration}
+              onCreateTask={async (title) => {
+                try {
+                  // Create + activate the task, then immediately run the Architect's Plan
+                  // stage on it (passed explicitly — React state hasn't re-rendered yet).
+                  const task = await workflow.createTask(title, currentSession?.id);
+                  runStage('plan', false, task);
+                } catch (e) {
+                  console.error('Task creation from nudge failed:', e);
+                }
+              }}
+              onReverted={() => {
+                // Reload everything after an in-chat "Abandon these changes" restore so the
+                // editor tabs and the LLM context map match the restored disk state.
+                setOpenTabs([]);
+                setActiveTabIndex(0);
+                if (currentProject?.id) {
+                  fetch(`/api/projects/${currentProject.id}/files`)
+                    .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
+                  fetch(`/api/projects/${currentProject.id}/files/read-all`)
+                    .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
+                }
+              }}
               autoContinue={autoContinue}
               onToggleAutoContinue={setAutoContinue}
               isGenerating={isGenerating}

@@ -47,6 +47,11 @@ interface ChatPaneProps {
   hasActiveTask?: boolean;
   onStopGeneration?: () => void;
   onContinue?: (messageId: string) => void;
+  /** Called after an in-chat snapshot restore succeeds so the app can reload files/tabs. */
+  onReverted?: () => void;
+  /** Creates a workflow task with the given title and kicks off its Plan stage — used by
+   *  the large-project workflow nudge (messages carrying suggestTaskTitle). */
+  onCreateTask?: (title: string) => void;
   /** Whether truncated responses auto-continue (capped) instead of requiring a manual click. */
   autoContinue?: boolean;
   onToggleAutoContinue?: (on: boolean) => void;
@@ -72,6 +77,8 @@ export function ChatPane({
   hasActiveTask = false,
   onStopGeneration,
   onContinue,
+  onReverted,
+  onCreateTask,
   autoContinue = true,
   onToggleAutoContinue,
   isGenerating = false,
@@ -103,6 +110,7 @@ export function ChatPane({
     try {
       await restoreSnapshot(snapshotId, { create_backup: true });
       useAppStore.getState().setLastRestoredSnapshotId(snapshotId);
+      onReverted?.();
     } catch (e) {
       console.error('Revert failed:', e);
     } finally {
@@ -450,7 +458,16 @@ export function ChatPane({
                     className="mt-2 flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-dark-surface hover:bg-monastery-lantern hover:text-monastery-dark-bg rounded-lg transition-colors disabled:opacity-50 mx-auto"
                   >
                     <RotateCcw size={12} />
-                    {revertingId === message.model ? 'Reverting...' : 'Revert to this snapshot'}
+                    {revertingId === message.model ? 'Reverting...' : (message.revertLabel || 'Revert to this snapshot')}
+                  </button>
+                )}
+                {/* Workflow nudge: one click creates the task and starts the Plan stage */}
+                {message.role === 'system' && message.suggestTaskTitle && onCreateTask && (
+                  <button
+                    onClick={() => onCreateTask(message.suggestTaskTitle!)}
+                    className="mt-2 flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg transition-colors mx-auto"
+                  >
+                    📋 Create a task for this &amp; plan it
                   </button>
                 )}
                 {/* Timestamp footer on every message */}

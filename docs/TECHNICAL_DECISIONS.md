@@ -15,6 +15,35 @@
 - Auto-discovery support (mDNS/Avahi for common services like Ollama on the LAN).
 - Python agent services use the same unified client or direct HTTP calls.
 
+## LLM Context Pipeline (hard-won invariants)
+Each of these exists because its absence caused a real "the model overwrote working code with
+out-of-context content" incident:
+- **Single source of truth**: the per-request system context (built in `buildSystemContext`,
+  `packages/web-ui/src/App.tsx`) carries current file contents; chat history has older assistant
+  code blocks collapsed to placeholders so stale versions can't compete with it.
+- **Freshness on every write path**: the in-memory file map is updated after AI writes and manual
+  saves, and fully re-read after shell commands. Any new file-write path MUST keep this invariant.
+- **Scoped context for large projects** (>64KB source): file tree + active file + working set only.
+  The model grows the working set itself via `@read <path>` and `@search <query>` (server-side
+  ripgrep) — both auto-fed back in capped rounds. User filename mentions are auto-included.
+- **Complete files only**: a path-tagged code block replaces the entire file; the apply parser has
+  NO prose-triggered pattern (removed after it wrote explanatory fragments over whole files), and
+  the system prompt forbids fragments and writing files the model hasn't seen.
+- **Safety checkpoint before every AI edit**: writes only fire after a server-side snapshot of the
+  on-disk state (`POST .../snapshots/checkpoint`); the chat message offers one-click abandon.
+- **Continuation stitching**: token-cap continuations are re-joined with duplicate fence openers
+  and repeated lines stripped (`stitchContinuation`) so code-block rendering and the apply parser
+  survive mid-block truncation.
+
+## Streaming Robustness
+- SSE data fields are sanitized (`sse_safe` in `harness-api/src/handlers.rs`): axum's SSE encoder
+  panics on `\r`, and model output can echo CRLF from Windows-authored context files. All
+  model-text emissions (chat, agent, Hermes streams) pass through it; text uploads are normalized
+  to LF at the source.
+- Truncated responses (`finish_reason: "length"`) auto-continue, but always **toggle-gated and
+  capped** (both the token-cap resends and the `@read`/`@search` rounds) — unbounded automatic
+  resends once burned real API credit and are deliberately impossible.
+
 ## Model & Resource Awareness
 - Hardware detection (CPU cores, RAM, GPU availability) to inform LLM prompts and quantization recommendations.
 - Context window management and automatic prompt optimization based on detected resources.
@@ -44,6 +73,10 @@
 - Full ARM64 support for Jetson, mini PCs, and Proxmox.
 - Environment variables and UI config for easy networking (e.g., `LLM_BASE_URL=http://ollama:11434`).
 - Wizard includes examples for common side-by-side setups (harness + Ollama + PocketBase, etc.).
+- **Image publishing**: `ghcr.io/jherforth/monastery` (`docker/Dockerfile`), built by a
+  **manually-triggered** GitHub Action (`.github/workflows/docker-build.yml`) — deliberate builds
+  only, tagged `:latest` + `:alpha-v0.1.<n>`; per-commit auto-builds were rejected as version-number
+  churn.
 
 ## Security & Operations
 - Minimal outbound connectivity by default.

@@ -5,6 +5,9 @@ export interface Message {
   reasoning?: string;
   timestamp: number;
   model?: string;
+  /** Custom label for the snapshot-restore button on system messages that carry a
+   *  snapshot id in `model` (e.g. "Abandon these changes" on AI-edit checkpoints). */
+  revertLabel?: string;
   attachments?: Attachment[];
   /** True when the model stopped because it hit max_tokens (finish_reason="length"),
    *  meaning the response is incomplete and can be continued on user request. */
@@ -20,6 +23,9 @@ export interface Message {
   via?: 'hermes' | 'llm';
   /** Agent role label(s) active when a user message was sent (e.g. "🏗️ Architect") — shown as chips. */
   agentLabels?: string[];
+  /** On system messages: proposed workflow-task title. ChatPane renders a one-click
+   *  "create task & plan it" button for it (the large-project workflow nudge). */
+  suggestTaskTitle?: string;
 }
 
 export interface Attachment {

@@ -54,10 +54,32 @@ The **🛠 Workflow** strip sits just above the chat input. Click to expand.
 Each transition is recorded as an **exit state** (chain of custody) you can see in the panel.
 
 ### Context discipline (the token win)
-- **Small projects** still send everything.
+- **Small projects** (≤64KB of source, ~16K tokens) still send everything — including your live
+  editor buffer for the open file, unsaved edits and all.
 - **Large projects** send only the **file tree** (names) + the **active file** + the **working set**
-  (the spec's affected files + anything you've pulled in). If the model needs another file it emits
-  `@read path/to/file`, and Monastery adds it to the working set for the next turn.
+  (the spec's affected files + anything pulled in). The model has two tools to grow that set
+  mid-turn, and both are **auto-fed back** (capped rounds, honoring the auto-continue toggle):
+  - `@read path/to/file` — fetches a file's current on-disk contents.
+  - `@search <text or identifier>` — greps the whole project (ripgrep server-side) and returns
+    `path:line` matches; used when neither the user nor the model knows *which* file matters
+    ("fix the login button"), then it `@read`s what it found.
+- **Filename mentions work too**: if the user's message names a file that exists in the tree
+  ("center the nav in styles.css"), it's included in that request's context and persisted to the
+  working set — no `@read` round needed.
+- The scoped-mode instructions **forbid writing a file the model hasn't seen** — it must
+  `@search`/`@read` first. Combined with the complete-file rule (a path-tagged code block replaces
+  the whole file; fragments are never applied from prose), this is what prevents the model from
+  "confidently rewriting" files it never read.
+- **Freshness invariant:** the context map is updated on every write path (AI code blocks, manual
+  editor saves, shell commands trigger a full re-read), and older assistant code blocks in chat
+  history are collapsed to placeholders — the system context is the *single source of truth* for
+  current file contents.
+
+### The workflow nudge
+When a freeform message lands on a large project with **no active task**, the chat shows a one-time
+tip explaining that the staged workflow scopes context better, with a **"Create a task for this &
+plan it"** button — one click creates the task (titled from the message) and immediately runs the
+Architect's Plan stage. Shown at most once per session; ignoring it changes nothing.
 
 ### Hybrid execution (Hermes hand-off)
 Every stage has **Run** (your connected LLM) and, when a Hermes agent is configured, **Hand to

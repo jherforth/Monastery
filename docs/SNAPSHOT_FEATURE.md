@@ -65,11 +65,16 @@ All endpoints are prefixed with `/api/projects/:project_id/snapshots`:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/` | List all snapshots (paginated) |
-| POST | `/` | Create new snapshot |
+| POST | `/` | Create new snapshot (file contents in the request body) |
+| POST | `/checkpoint` | Create a snapshot from the project's **current on-disk state**, read server-side (no upload). Body: optional `{ "name": "..." }`. Returns `{ snapshot_id, file_count }` (`snapshot_id: null` when the project is empty). |
 | GET | `/:snapshot_id` | Get snapshot details with files |
 | DELETE | `/:snapshot_id` | Delete a snapshot |
 | POST | `/:snapshot_id/restore` | Restore to snapshot |
 | GET | `/:snapshot_id/diff?target=:uuid` | Compare with another snapshot |
+
+> Deleting a **project** (`DELETE /api/projects/:id`) also deletes all of its snapshots (plus
+> sessions/messages) and wipes the project directory — this is what allows re-cloning a git
+> repo/branch fresh.
 
 ### Request/Response Examples
 
@@ -169,7 +174,14 @@ GET /api/projects/{project_id}/snapshots/{snapshot_id}/diff?target={other_snapsh
 
 ## UI Integration Points
 
-### Components to Implement
+### What exists today
+
+- **In-chat revert buttons** — the primary surface. AI-edit feedback messages ("Wrote N files")
+  carry an *Abandon these changes* button; commit markers carry *Revert to this snapshot*.
+- **TopBar Git dropdown** — lists recent snapshots for the current project with one-click restore.
+- `useSnapshots` hook (`packages/web-ui/src/hooks/useSnapshots.ts`) wraps the API.
+
+### Components to Implement (future)
 
 1. **SnapshotPanel** (`packages/web-ui/src/components/SnapshotPanel.tsx`)
    - Timeline view of snapshots
@@ -212,14 +224,21 @@ interface SnapshotActions {
 }
 ```
 
-### Automatic Snapshot Triggers
+### Automatic Snapshot Triggers (implemented)
 
-Consider automatic snapshots on:
-- Before LLM-generated code changes
-- After successful compilation/build
-- Before deployment
-- Periodic auto-save (configurable interval)
-- Manual keyboard shortcut (Ctrl+Shift+S)
+Two automatic triggers are live, both using `SnapshotTrigger::BeforeChange`:
+
+1. **Before every AI edit** — when an assistant response is about to write files or run shell
+   commands, the frontend first calls `POST .../snapshots/checkpoint` (named *"Auto: before AI
+   edit"*) and only fires the writes after it completes. The "✅ Wrote N files" system message in
+   chat carries the snapshot id and renders an inline **"Abandon these changes"** button — one
+   click restores the pre-edit state and reloads the editor tabs + LLM context map. This makes
+   even the *first* AI edit in a brand-new project fully revertible.
+2. **Before commit-push** — the git commit flow snapshots the project (*"Pre-commit: <message>"*)
+   before committing, and commit markers in chat get a "Revert to this snapshot" button.
+
+Still candidates for later: after successful build, before deployment, periodic auto-save,
+manual keyboard shortcut (Ctrl+Shift+S).
 
 ## Security Considerations
 

@@ -33,7 +33,7 @@ A self-hosted sanctuary for AI-assisted coding. Monastery is a fully self-hosted
 ```bash
 git clone https://github.com/jherforth/Monastery.git
 cd Monastery
-cp .env.example .env
+cp .env.example .env (optional - you can enter keys in the UI)
 ```
 
 Edit `.env` to configure your LLM endpoint:
