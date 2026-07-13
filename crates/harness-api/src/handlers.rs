@@ -2125,51 +2125,84 @@ pub struct SearchReplace {
     pub replace: String,
 }
 
-/// Find `needle` in `hay` and return the (start, end) byte range of the first match. Tries an
-/// exact match first, then a whitespace-tolerant match (compares lines with trailing whitespace
-/// trimmed) so a model that slightly misquotes indentation still lands the edit.
+/// Find `needle` in `hay` and return the (start, end) byte range of the first match. Tiers, from
+/// strict to loose, so a model that slightly misquotes a section still lands the edit:
+///   1. exact substring
+///   2. line-by-line, ignoring TRAILING whitespace
+///   3. line-by-line, ignoring LEADING+TRAILING whitespace (indentation drift — the common case
+///      where the model reflows/re-indents the SEARCH block relative to the real file)
+///   4. as (3) but ignoring blank lines on both sides (stray blank line in the SEARCH block)
 fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
-    if needle.is_empty() {
+    if needle.trim().is_empty() {
         return None;
     }
+    // Tier 1: exact.
     if let Some(pos) = hay.find(needle) {
         return Some((pos, pos + needle.len()));
     }
-    // Whitespace-tolerant fallback: slide a window over the haystack's lines and compare the
-    // needle's lines with each line's trailing whitespace trimmed.
-    let needle_norm: Vec<&str> = needle.lines().map(|l| l.trim_end()).collect();
-    if needle_norm.is_empty() {
-        return None;
-    }
+
     let hay_lines: Vec<&str> = hay.lines().collect();
-    if hay_lines.len() < needle_norm.len() {
-        return None;
-    }
     // Byte offset of the start of each line (for reconstructing the match range).
     let mut line_starts = Vec::with_capacity(hay_lines.len() + 1);
     let mut off = 0usize;
     for l in &hay_lines {
         line_starts.push(off);
         off += l.len();
-        // account for the '\n' that `lines()` stripped (assumes LF; CRLF is normalized on upload)
+        // account for the '\n' that `lines()` stripped (assumes LF; CRLF is normalized on write)
         if off < hay.len() {
             off += 1;
         }
     }
     line_starts.push(hay.len());
-    for start in 0..=(hay_lines.len() - needle_norm.len()) {
-        let matches = needle_norm.iter().enumerate()
-            .all(|(i, nl)| hay_lines[start + i].trim_end() == *nl);
-        if matches {
-            let end_line = start + needle_norm.len();
-            let start_byte = line_starts[start];
-            // End at the newline before the next line (or EOF for the last line).
-            let end_byte = if end_line < hay_lines.len() {
-                line_starts[end_line].saturating_sub(1)
-            } else {
-                hay.len()
-            };
-            return Some((start_byte, end_byte));
+
+    // Reconstruct the byte range spanning hay lines [first, last].
+    let byte_range = |first: usize, last: usize| -> (usize, usize) {
+        let start_byte = line_starts[first];
+        let end_byte = if last + 1 < hay_lines.len() {
+            line_starts[last + 1].saturating_sub(1)
+        } else {
+            hay.len()
+        };
+        (start_byte, end_byte)
+    };
+
+    // Contiguous line match with a given per-line normalizer (tiers 2 & 3).
+    fn norm_line(l: &str, trim_both: bool) -> &str {
+        if trim_both { l.trim() } else { l.trim_end() }
+    }
+    let windowed = |trim_both: bool| -> Option<(usize, usize)> {
+        let needle_norm: Vec<&str> = needle.lines().map(|l| norm_line(l, trim_both)).collect();
+        if needle_norm.is_empty() || hay_lines.len() < needle_norm.len() {
+            return None;
+        }
+        for start in 0..=(hay_lines.len() - needle_norm.len()) {
+            if needle_norm.iter().enumerate().all(|(i, nl)| norm_line(hay_lines[start + i], trim_both) == *nl) {
+                return Some(byte_range(start, start + needle_norm.len() - 1));
+            }
+        }
+        None
+    };
+
+    if let Some(r) = windowed(false) { return Some(r); }
+    if let Some(r) = windowed(true) { return Some(r); }
+
+    // Tier 4: match the non-blank lines only (blank lines ignored on both sides), fully trimmed.
+    let needle_ne: Vec<&str> = needle.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    if needle_ne.is_empty() {
+        return None;
+    }
+    let hay_ne: Vec<(usize, &str)> = hay_lines.iter().enumerate()
+        .map(|(i, l)| (i, l.trim()))
+        .filter(|(_, l)| !l.is_empty())
+        .collect();
+    if hay_ne.len() < needle_ne.len() {
+        return None;
+    }
+    for start in 0..=(hay_ne.len() - needle_ne.len()) {
+        if (0..needle_ne.len()).all(|k| hay_ne[start + k].1 == needle_ne[k]) {
+            let first_line = hay_ne[start].0;
+            let last_line = hay_ne[start + needle_ne.len() - 1].0;
+            return Some(byte_range(first_line, last_line));
         }
     }
     None

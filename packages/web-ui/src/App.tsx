@@ -20,9 +20,12 @@ import { parseSSEStream } from './lib/sse';
 import { Message } from './types';
 
 // Below this total corpus size the whole project is sent as context; above it, only the
-// active file + working set (scoped mode). Also the threshold for nudging users toward the
-// staged workflow, whose task specs pre-scope the right files.
-const SMALL_PROJECT_LIMIT = 64_000; // ~16K tokens
+// active file + working set (scoped mode).
+const SMALL_PROJECT_LIMIT = 96_000; // ~24K tokens
+// The workflow nudge is deliberately much higher and decoupled from context scoping — it should
+// only fire for GENUINELY large projects, not a single sizable HTML/CSS page. Suppressible too.
+const WORKFLOW_NUDGE_LIMIT = 400_000; // ~100K tokens
+const WORKFLOW_NUDGE_SUPPRESS_KEY = 'monastery.suppressWorkflowNudge';
 
 // Format one file for the PROJECT FILE CONTENTS context block.
 const fmtFile = (path: string, content: string) => {
@@ -913,13 +916,13 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
 
     setMessages((prev) => [...prev, userMessage]);
 
-    // Nudge toward the staged workflow: freeform one-shot edits on a large (scoped-context)
-    // project are exactly where out-of-context mistakes happen. A task's Plan stage picks the
-    // affected files up front, which pre-scopes the model's context for every later stage.
-    // Shown once per session, only when no task is active; the button creates the task AND
-    // kicks off the Architect's Plan stage in one click.
+    // Nudge toward the staged workflow: freeform one-shot edits on a GENUINELY large project are
+    // where out-of-context mistakes happen. A task's Plan stage picks the affected files up front.
+    // Fires at most once per session, only when no task is active, only above WORKFLOW_NUDGE_LIMIT,
+    // and never once the user has clicked "Don't show again" (persisted in localStorage).
     const corpusSize = Object.values(allFileContents).reduce((n, c) => n + c.length, 0);
-    if (!workflow.activeTask && corpusSize > SMALL_PROJECT_LIMIT && !workflowNudgeShownRef.current && currentProject?.id) {
+    const nudgeSuppressed = localStorage.getItem(WORKFLOW_NUDGE_SUPPRESS_KEY) === '1';
+    if (!workflow.activeTask && corpusSize > WORKFLOW_NUDGE_LIMIT && !workflowNudgeShownRef.current && !nudgeSuppressed && currentProject?.id) {
       workflowNudgeShownRef.current = true;
       setMessages(prev => [...prev, {
         id: `wf-nudge-${Date.now()}`,
@@ -1570,6 +1573,13 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
                 } catch (e) {
                   console.error('Task creation from nudge failed:', e);
                 }
+              }}
+              onSuppressWorkflowNudge={() => {
+                // Persist the opt-out and strip the action buttons from any nudge already shown.
+                localStorage.setItem(WORKFLOW_NUDGE_SUPPRESS_KEY, '1');
+                setMessages(prev => prev.map(m => m.suggestTaskTitle
+                  ? { ...m, suggestTaskTitle: undefined, content: `${m.content}\n\n_(You won't be reminded about this again.)_` }
+                  : m));
               }}
               onReverted={() => {
                 // Reload everything after an in-chat "Abandon these changes" restore so the

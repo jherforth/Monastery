@@ -52,6 +52,8 @@ interface ChatPaneProps {
   /** Creates a workflow task with the given title and kicks off its Plan stage — used by
    *  the large-project workflow nudge (messages carrying suggestTaskTitle). */
   onCreateTask?: (title: string) => void;
+  /** Permanently suppress the large-project workflow nudge (persisted by the app). */
+  onSuppressWorkflowNudge?: () => void;
   /** Whether truncated responses auto-continue (capped) instead of requiring a manual click. */
   autoContinue?: boolean;
   onToggleAutoContinue?: (on: boolean) => void;
@@ -79,6 +81,7 @@ export function ChatPane({
   onContinue,
   onReverted,
   onCreateTask,
+  onSuppressWorkflowNudge,
   autoContinue = true,
   onToggleAutoContinue,
   isGenerating = false,
@@ -461,14 +464,25 @@ export function ChatPane({
                     {revertingId === message.model ? 'Reverting...' : (message.revertLabel || 'Revert to this snapshot')}
                   </button>
                 )}
-                {/* Workflow nudge: one click creates the task and starts the Plan stage */}
+                {/* Workflow nudge: one click creates the task and starts the Plan stage;
+                    a second link permanently dismisses the reminder. */}
                 {message.role === 'system' && message.suggestTaskTitle && onCreateTask && (
-                  <button
-                    onClick={() => onCreateTask(message.suggestTaskTitle!)}
-                    className="mt-2 flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg transition-colors mx-auto"
-                  >
-                    📋 Create a task for this &amp; plan it
-                  </button>
+                  <div className="mt-2 flex items-center justify-center gap-3">
+                    <button
+                      onClick={() => onCreateTask(message.suggestTaskTitle!)}
+                      className="flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg transition-colors"
+                    >
+                      📋 Create a task for this &amp; plan it
+                    </button>
+                    {onSuppressWorkflowNudge && (
+                      <button
+                        onClick={onSuppressWorkflowNudge}
+                        className="text-xs text-monastery-text-muted hover:text-monastery-text-secondary underline transition-colors"
+                      >
+                        Don't show again
+                      </button>
+                    )}
+                  </div>
                 )}
                 {/* Timestamp footer on every message */}
                 {timeLabel && (
