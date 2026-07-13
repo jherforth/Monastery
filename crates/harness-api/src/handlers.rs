@@ -3518,12 +3518,38 @@ pub async fn deploy_to_hosting(
             // forced (no-cache) rebuild so the in-Dockerfile clone re-fetches the latest commit.
             // If the app was deleted in Coolify (404), drop the stale mapping and fall through to
             // create a fresh one — so a user who wipes the app in Coolify can just redeploy.
-            //
-            // NOTE (config drift): a redeploy reuses the app config Coolify stored at create time
-            // (Dockerfile, ports_mappings, etc.). Changes to how Monastery *generates* those won't
-            // reach an existing app via redeploy — the user must delete the app in Coolify and
-            // redeploy (404 path) to pick them up. TODO: PATCH the app config on redeploy to sync.
             if let Some(existing_uuid) = lookup_deployment(&state, req.project_id, req.connection_id).await? {
+                // Refresh the app's stored Dockerfile FIRST. A Coolify redeploy rebuilds from the
+                // Dockerfile it saved at create time; because that Dockerfile was byte-identical
+                // every redeploy, the `git clone` layer stayed cached and the app kept serving the
+                // code from its first build. Re-sending a freshly-generated Dockerfile (new
+                // embedded cachebust) changes the clone layer's cache key so `force=true` actually
+                // re-clones the latest commit. Best-effort: if the update fails we still trigger the
+                // forced rebuild below (no worse than before).
+                let dockerfile_b64 = base64::engine::general_purpose::STANDARD.encode(clone_dockerfile.as_bytes());
+                let patch_url = format!("{}/api/v1/applications/{}", base, existing_uuid);
+                match client
+                    .patch(&patch_url)
+                    .header("Authorization", format!("Bearer {}", api_token))
+                    .header("Content-Type", "application/json")
+                    .json(&serde_json::json!({ "dockerfile": dockerfile_b64 }))
+                    .send()
+                    .await
+                {
+                    Ok(r) if r.status().is_success() => {
+                        tracing::info!("Refreshed Coolify Dockerfile for app {} before redeploy", existing_uuid);
+                    }
+                    Ok(r) => {
+                        tracing::warn!(
+                            "Coolify Dockerfile refresh returned HTTP {} — redeploying with force anyway",
+                            r.status().as_u16()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!("Coolify Dockerfile refresh request failed ({}) — redeploying with force anyway", e);
+                    }
+                }
+
                 let deploy_url = format!("{}/api/v1/deploy?uuid={}&force=true", base, existing_uuid);
                 match client
                     .get(&deploy_url)
@@ -4276,15 +4302,19 @@ fn generate_clone_dockerfile(
     branch: &str,
 ) -> (String, u16) {
     let cachebust = chrono::Utc::now().timestamp();
-    // Clone step for node-based stages (git installed via apk).
+    // The cachebust is embedded DIRECTLY in the clone RUN command (not just as an `ARG`) so the
+    // layer's cache key changes every time the Dockerfile is regenerated — forcing Docker to
+    // re-run `git clone` and fetch the latest commit. An `ARG` alone does NOT work: Docker only
+    // busts cache at a build-arg's first *usage*, and the old Dockerfile never referenced it, so
+    // the clone layer was cached and redeploys kept shipping the code from the first build.
     let node_clone = format!(
-        "RUN apk add --no-cache git && git -c http.sslVerify=false clone --depth 1 --single-branch --branch {b} \"{u}\" . && rm -rf .git",
-        b = branch, u = clone_url
+        "RUN apk add --no-cache git && echo \"monastery-cachebust {cb}\" && git -c http.sslVerify=false clone --depth 1 --single-branch --branch {b} \"{u}\" . && rm -rf .git",
+        cb = cachebust, b = branch, u = clone_url
     );
     // Clone step for the prebuilt alpine/git image (git already present).
     let git_clone = format!(
-        "RUN git -c http.sslVerify=false clone --depth 1 --single-branch --branch {b} \"{u}\" . && rm -rf .git",
-        b = branch, u = clone_url
+        "RUN echo \"monastery-cachebust {cb}\" && git -c http.sslVerify=false clone --depth 1 --single-branch --branch {b} \"{u}\" . && rm -rf .git",
+        cb = cachebust, b = branch, u = clone_url
     );
 
     match framework {
