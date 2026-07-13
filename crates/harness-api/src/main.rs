@@ -121,6 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/git/connections/:id/branches", get(handlers::list_git_branches))
         .route("/api/git/status", get(handlers::get_git_status))
         .route("/api/git/commit-push", post(handlers::git_commit_push))
+        .route("/api/git/pull", post(handlers::git_pull))
         .route("/api/git/push", post(handlers::git_push))
         .route("/api/git/clone", post(handlers::git_clone))
         // Hosting service routes (Self-Host Wizard)

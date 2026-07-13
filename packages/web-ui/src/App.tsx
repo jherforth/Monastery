@@ -1483,6 +1483,24 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
             fetch(`/api/projects/${currentProject.id}/files/read-all`)
               .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
           }
+        }}
+        onPullComplete={(msg) => {
+          // Reload files + LLM context so the pulled-in remote changes are adopted everywhere,
+          // and drop a marker in chat. Open tabs are reset so no stale buffer overwrites merged work.
+          setOpenTabs([]);
+          setActiveTabIndex(0);
+          if (currentProject?.id) {
+            fetch(`/api/projects/${currentProject.id}/files`)
+              .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
+            fetch(`/api/projects/${currentProject.id}/files/read-all`)
+              .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
+          }
+          setMessages(prev => [...prev, {
+            id: `pull-${Date.now()}`,
+            role: 'system' as const,
+            content: `⬇️ ${msg}`,
+            timestamp: Date.now(),
+          }]);
         }}      />
       
       <SelfHostWizard isOpen={isWizardOpen} onClose={() => setIsWizardOpen(false)} onFixBuildError={handleFixBuildError} />

@@ -81,6 +81,20 @@ export function useGitForge(projectId?: string | null) {
     { refreshInterval: 15000 }
   );
 
+  // Separately, on a slower cadence and on window focus, hit the status endpoint with
+  // fetch=true so it refreshes the remote-tracking ref. The plain poll above is local-only and
+  // can't see commits another contributor pushed; this is what makes the "behind" badge real.
+  // Its result is written back into the main status cache via onSuccess.
+  useSWR<GitStatus>(
+    projectId ? `/api/git/status?project_id=${encodeURIComponent(projectId)}&fetch=true` : null,
+    fetcher,
+    {
+      refreshInterval: 120000,
+      revalidateOnFocus: true,
+      onSuccess: (data) => { mutateStatus(data, { revalidate: false }); },
+    }
+  );
+
   const connectForge = useCallback(async (req: ConnectForgeRequest) => {
     const result = await apiPost('/api/git/connections', req, 'Failed to connect');
     await mutate();
@@ -122,6 +136,15 @@ export function useGitForge(projectId?: string | null) {
     return res.json();
   }, [mutateStatus]);
 
+  const pullProject = useCallback(async (): Promise<{ message: string; snapshot_id?: string | null }> => {
+    if (!projectId) throw new Error('No project selected');
+    const res = await fetch(`/api/git/pull?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Pull failed');
+    await mutateStatus();
+    return data;
+  }, [projectId, mutateStatus]);
+
   const cloneRepo = useCallback(async (req: GitCloneRequest) => {
     const res = await fetch('/api/git/clone', {
       method: 'POST',
@@ -155,6 +178,7 @@ export function useGitForge(projectId?: string | null) {
     listRepos,
     listBranches,
     pushProject,
+    pullProject,
     cloneRepo,
     refreshConnections: mutate,
     refreshStatus: mutateStatus,

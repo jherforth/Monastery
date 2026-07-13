@@ -13,9 +13,11 @@ interface TopBarProps {
   onCommitComplete?: (message: string, snapshotId?: string, wasRestore?: boolean) => void;
   onRestoreComplete?: () => void;
   onOpenWizard?: () => void;
+  /** Called after a successful pull so the app can reload files + LLM context. */
+  onPullComplete?: (message: string) => void;
 }
 
-export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete, onRestoreComplete, onOpenWizard }: TopBarProps) {
+export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete, onRestoreComplete, onOpenWizard, onPullComplete }: TopBarProps) {
   const { 
     currentProject,
     setCurrentProject,
@@ -40,12 +42,13 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
   const [gitDropdownOpen, setGitDropdownOpen] = useState(false);
   const [committing, setCommitting] = useState(false);
+  const [pulling, setPulling] = useState(false);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [restoringId, setRestoringId] = useState<string | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const lastRestoredSnapshotId = useAppStore(s => s.lastRestoredSnapshotId);
   const setLastRestoredSnapshotId = useAppStore(s => s.setLastRestoredSnapshotId);
-  const { gitStatus } = useGitForge(currentProject?.id);
+  const { gitStatus, pullProject } = useGitForge(currentProject?.id);
   const { listSnapshots, restoreSnapshot } = useSnapshots();
 
   // Fetch snapshots when git dropdown opens
@@ -136,7 +139,10 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // Surface the real reason — e.g. a diverged remote that needs a Pull first — instead of
+        // failing silently. The backend returns an actionable message in that case.
         console.error('Commit/push failed:', data.error);
+        alert(`Commit & Push failed:\n\n${data.error || 'Unknown error'}`);
       } else {
         onCommitComplete?.(data.message || 'Committed', data.snapshot_id, wasRestore);
         setLastRestoredSnapshotId(null);
@@ -145,6 +151,20 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       console.error('Commit/push error:', e);
     } finally {
       setCommitting(false);
+    }
+  };
+
+  const handlePull = async () => {
+    if (!currentProject?.id) return;
+    setPulling(true);
+    try {
+      const data = await pullProject();
+      onPullComplete?.(data.message || 'Pulled latest changes');
+    } catch (e: any) {
+      console.error('Pull error:', e);
+      alert(`Pull failed:\n\n${e?.message || 'Unknown error'}`);
+    } finally {
+      setPulling(false);
     }
   };
 
@@ -438,6 +458,24 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                 </>
               )}
             </div>
+          )}
+
+          {/* Pull Button — appears when the branch is behind the remote (another contributor
+              pushed). Rebases local edits on top; snapshots first so it's revertible. */}
+          {gitStatus && currentProject && gitStatus.behind > 0 && (
+            <button
+              onClick={handlePull}
+              disabled={pulling}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface border border-amber-500/40 hover:border-amber-400 text-amber-300 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
+              title={`origin/${gitStatus.branch} has ${gitStatus.behind} new commit(s) — pull them into your local copy`}
+            >
+              {pulling ? (
+                <span className="w-3 h-3 border border-amber-300 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <ArrowDown size={12} />
+              )}
+              {pulling ? 'Pulling...' : `Pull ${gitStatus.behind}`}
+            </button>
           )}
 
           {/* Commit & Push Button */}

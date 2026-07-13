@@ -379,7 +379,10 @@ impl GitService {
             clone_url.to_string()
         };
 
-        let mut args = vec!["clone", "--depth", "1"];
+        // NOTE: a FULL clone (no --depth) for the local working copy. A shallow clone can't
+        // rebase/merge cleanly against later remote commits, which broke multi-contributor
+        // sync. The throwaway deploy clone (generate_clone_dockerfile) stays shallow.
+        let mut args = vec!["clone"];
         if let Some(b) = branch {
             args.push("--branch");
             args.push(b);
@@ -443,61 +446,150 @@ impl GitService {
         Ok(())
     }
 
-    /// Stage, commit, and push changes in an existing git repo
-    pub fn git_commit_and_push(project_path: &Path, message: &str, author_name: Option<&str>, author_email: Option<&str>) -> Result<String> {
+    /// Stage, commit, and push changes in an existing git repo. When a `token` is supplied the
+    /// remote is fetched and any diverging commits (another contributor's work) are rebased in
+    /// BEFORE pushing — so a non-fast-forward rejection can't leave the user stuck. A rebase
+    /// conflict aborts cleanly and reports it; the local commit is preserved either way.
+    pub fn git_commit_and_push(project_path: &Path, message: &str, author_name: Option<&str>, author_email: Option<&str>, token: Option<&str>) -> Result<String> {
         // Configure git identity for commits
         let name = author_name.unwrap_or("Monastery AI");
         let email = author_email.unwrap_or("monastery@homelab.local");
         let _ = run_git(project_path, &["config", "user.email", email]);
         let _ = run_git(project_path, &["config", "user.name", name]);
-        
+
         // Stage all changes
         run_git(project_path, &["add", "-A"])?;
 
         // Check if there are staged changes
         let diff_check = run_git(project_path, &["diff", "--cached", "--quiet"]);
-        if diff_check.is_ok() {
-            return Ok("No changes to commit".to_string());
+        let had_changes = diff_check.is_err();
+        if had_changes {
+            run_git(project_path, &["commit", "-m", message])?;
         }
-
-        // Commit
-        run_git(project_path, &["commit", "-m", message])?;
 
         // Get current branch
         let branch = run_git(project_path, &["rev-parse", "--abbrev-ref", "HEAD"])
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "main".to_string());
 
-        // Push to origin
-        run_git(project_path, &["push", "origin", &branch])?;
-
-        Ok(format!("Committed and pushed to origin/{}", branch))
-    }
-
-    /// Pull latest changes from remote
-    pub fn git_pull(project_path: &Path, token: Option<&str>) -> Result<String> {
-        let remote_url = run_git(project_path, &["remote", "get-url", "origin"])
-            .map_err(|_| crate::Error::Config("No remote 'origin' configured".into()))?;
-
-        let pull_url = if let (Some(t), true) = (token, remote_url.starts_with("https://")) {
-            remote_url.replacen("https://", &format!("https://oauth2:{}@", t), 1)
-        } else {
-            remote_url
-        };
-
-        let output = Command::new("git")
-            .args(["pull", &pull_url])
-            .current_dir(project_path)
-            .output()
-            .map_err(|e| crate::Error::Network(format!("Failed to run git pull: {}", e)))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(crate::Error::Network(format!("Git pull failed: {}", stderr)));
+        // Integrate remote changes before pushing (multi-contributor safety). Best-effort fetch:
+        // a brand-new remote branch or an offline forge shouldn't block a local commit.
+        let mut rebased_remote = false;
+        if Self::git_fetch(project_path, token, &branch).is_ok() {
+            let behind = count_commits(project_path, &format!("HEAD..origin/{}", branch));
+            if behind > 0 {
+                if run_git(project_path, &["rebase", &format!("origin/{}", branch)]).is_err() {
+                    let _ = run_git(project_path, &["rebase", "--abort"]);
+                    return Err(crate::Error::Config(format!(
+                        "origin/{b} has commits from another contributor that conflict with your changes. Your work is committed locally but was NOT pushed — use Pull to bring in and resolve their changes, then push again.", b = branch
+                    )));
+                }
+                rebased_remote = true;
+            }
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        Ok(stdout)
+        // Nothing to do if there were no local changes AND we didn't pull anything to push.
+        let ahead = count_commits(project_path, &format!("origin/{}..HEAD", branch));
+        if !had_changes && ahead == 0 {
+            return Ok("No changes to commit".to_string());
+        }
+
+        // Push (token-authed URL when available; else rely on origin's stored credentials).
+        push_current(project_path, token, &branch)?;
+
+        Ok(if rebased_remote {
+            format!("Merged remote changes and pushed to origin/{}", branch)
+        } else {
+            format!("Committed and pushed to origin/{}", branch)
+        })
+    }
+
+    /// Pull remote changes into the local working copy, rebasing local edits on top so nothing
+    /// is lost. Uncommitted edits are committed first (as a safety commit) before the rebase.
+    /// Returns a human-readable summary; a rebase conflict is rolled back and reported.
+    pub fn git_pull(project_path: &Path, token: Option<&str>) -> Result<String> {
+        let branch = run_git(project_path, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "main".to_string());
+
+        Self::git_fetch(project_path, token, &branch)?;
+
+        let behind = count_commits(project_path, &format!("HEAD..origin/{}", branch));
+        if behind == 0 {
+            return Ok(format!("Already up to date with origin/{}.", branch));
+        }
+
+        // Preserve any uncommitted local edits as a commit so the rebase can't discard them.
+        let _ = run_git(project_path, &["config", "user.email", "monastery@homelab.local"]);
+        let _ = run_git(project_path, &["config", "user.name", "Monastery AI"]);
+        run_git(project_path, &["add", "-A"])?;
+        if run_git(project_path, &["diff", "--cached", "--quiet"]).is_err() {
+            run_git(project_path, &["commit", "-m", "Monastery: local changes before pull"])?;
+        }
+
+        match run_git(project_path, &["rebase", &format!("origin/{}", branch)]) {
+            Ok(_) => Ok(format!("Pulled {} change(s) from origin/{} (your local edits kept on top).", behind, branch)),
+            Err(_) => {
+                let _ = run_git(project_path, &["rebase", "--abort"]);
+                Err(crate::Error::Config(format!(
+                    "Pulled changes from origin/{b} conflict with your local edits. The pull was rolled back — revert or reconcile the overlapping changes, then try again.", b = branch
+                )))
+            }
+        }
+    }
+
+    /// Fetch `branch` from origin into refs/remotes/origin/<branch>, unshallowing a shallow
+    /// clone so a later rebase/merge has enough history. Auth via token when the origin URL is
+    /// http(s); a token-less/offline call simply returns Err and callers treat it as best-effort.
+    pub fn git_fetch(project_path: &Path, token: Option<&str>, branch: &str) -> Result<()> {
+        let remote_url = run_git(project_path, &["remote", "get-url", "origin"])
+            .map_err(|_| crate::Error::Config("No remote 'origin' configured".into()))?;
+        let url = match token {
+            Some(t) => inject_token(&remote_url, t),
+            None => remote_url,
+        };
+        let is_shallow = run_git(project_path, &["rev-parse", "--is-shallow-repository"])
+            .map(|s| s.trim() == "true").unwrap_or(false);
+        // '+' force-updates the tracking ref even on a non-fast-forward remote history.
+        let refspec = format!("+{b}:refs/remotes/origin/{b}", b = branch);
+        if is_shallow {
+            // Unshallow so merges work; if it errors (e.g. already complete), fall through.
+            if run_git(project_path, &["fetch", "--unshallow", &url, &refspec]).is_ok() {
+                return Ok(());
+            }
+        }
+        run_git(project_path, &["fetch", &url, &refspec]).map(|_| ())
+    }
+}
+
+/// Count commits in a revision range (e.g. "HEAD..origin/main"); 0 on any error.
+fn count_commits(project_path: &Path, range: &str) -> u32 {
+    run_git(project_path, &["rev-list", "--count", range])
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Push the current branch to origin, using a token-authed URL when available.
+fn push_current(project_path: &Path, token: Option<&str>, branch: &str) -> Result<()> {
+    match token {
+        Some(t) => {
+            let remote_url = run_git(project_path, &["remote", "get-url", "origin"])?;
+            let url = inject_token(&remote_url, t);
+            run_git(project_path, &["push", &url, branch]).map(|_| ())
+        }
+        None => run_git(project_path, &["push", "origin", branch]).map(|_| ()),
+    }
+}
+
+/// Inject an oauth2 token into an http(s) remote URL for authenticated fetch/push.
+fn inject_token(remote_url: &str, token: &str) -> String {
+    if remote_url.starts_with("https://") {
+        remote_url.replacen("https://", &format!("https://oauth2:{}@", token), 1)
+    } else if remote_url.starts_with("http://") {
+        remote_url.replacen("http://", &format!("http://oauth2:{}@", token), 1)
+    } else {
+        remote_url.to_string()
     }
 }
 

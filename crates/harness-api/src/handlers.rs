@@ -1506,7 +1506,19 @@ pub async fn get_git_status(
     } else {
         state.config.data_dir.clone()
     };
-    
+
+    // With ?fetch=true, refresh the remote-tracking ref first so ahead/behind reflects reality.
+    // Without it (the frequent poll), status stays a fast local-only read. The tracking ref only
+    // updates on fetch/pull, so the "behind" badge is otherwise frozen at clone time.
+    if params.get("fetch").map(|v| v == "true").unwrap_or(false) {
+        if let Ok(status) = GitService::git_status(&project_path) {
+            if status.has_remote {
+                let token = resolve_project_git(&state, &project_path).await.ok().map(|g| g.token);
+                let _ = GitService::git_fetch(&project_path, token.as_deref(), &status.branch);
+            }
+        }
+    }
+
     let status = GitService::git_status(&project_path)
         .map_err(|e| ApiError::Core(e))?;
     Ok(Json(status))
@@ -1588,24 +1600,86 @@ pub async fn git_commit_push(
         None => (None, None),
     };
     
+    // Best-effort forge token so the pre-push fetch/rebase can authenticate. If the project has
+    // no remote or no matching connection, we push without it (origin's stored creds), as before.
+    let token = resolve_project_git(&state, &project_path).await.ok().map(|g| g.token);
+
     let result = GitService::git_commit_and_push(
         &project_path, &message,
         author_name.as_deref(),
         author_email.as_deref(),
+        token.as_deref(),
     )
         .map_err(|e| ApiError::Core(e))?;
-    
+
     // Update git_connections last_synced_at
     let now = chrono::Utc::now().to_rfc3339();
     let _ = sqlx::query("UPDATE git_connections SET last_synced_at = ?")
         .bind(&now)
         .execute(&*state.db)
         .await;
-    
+
     Ok(Json(serde_json::json!({
         "success": true,
         "message": result,
         "snapshot_id": snapshot_result,
+    })))
+}
+
+/// Pull remote changes into a project's local working copy (rebasing local edits on top).
+/// This is what lets Monastery adopt commits pushed by other contributors — the local copy
+/// was previously write-only to the remote.
+pub async fn git_pull(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    use sqlx::Row;
+    let project_id_str = params.get("project_id")
+        .ok_or_else(|| ApiError::Config("Missing project_id".into()))?;
+    let project_id = uuid::Uuid::parse_str(project_id_str)
+        .map_err(|_| ApiError::Config("Invalid project_id".into()))?;
+
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id_str)
+        .fetch_optional(&*state.db)
+        .await?;
+    let project_name: String = match row {
+        Some(r) => r.get(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+    let project_path = state.config.data_dir.join(&project_name);
+
+    // Snapshot the current on-disk state first, so a pull that brings in surprising changes is
+    // revertible from the chat's snapshot list.
+    let snapshot_id: Option<String> = {
+        let mut files = Vec::new();
+        read_files_for_snapshot(&project_path, &project_path, &mut files);
+        if files.is_empty() { None } else {
+            let req = CreateSnapshotRequest {
+                project_id,
+                name: Some("Before pull".into()),
+                description: Some("Snapshot taken before pulling remote changes".into()),
+                created_by: Some("Monastery".into()),
+                trigger: SnapshotTrigger::BeforeChange,
+                files,
+                parent_snapshot_id: None,
+            };
+            state.snapshot_service.create_snapshot(req).await.ok().map(|r| r.snapshot.id.to_string())
+        }
+    };
+
+    let token = resolve_project_git(&state, &project_path).await.ok().map(|g| g.token);
+    let message = GitService::git_pull(&project_path, token.as_deref())
+        .map_err(|e| ApiError::Core(e))?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = sqlx::query("UPDATE git_connections SET last_synced_at = ?")
+        .bind(&now).execute(&*state.db).await;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": message,
+        "snapshot_id": snapshot_id,
     })))
 }
 
