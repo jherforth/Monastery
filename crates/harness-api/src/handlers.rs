@@ -2205,6 +2205,32 @@ fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
             return Some(byte_range(first_line, last_line));
         }
     }
+
+    // Tier 5: fuzzy — the model got most of the block right but misquoted a line or two. Slide a
+    // window and score by positional line similarity (fully trimmed). Accept the best window only
+    // when it's specific and unambiguous: >=4 lines, >=80% of lines match, and it's the SOLE best
+    // window. The pre-edit snapshot backstops the small residual risk of a wrong region.
+    let needle_t: Vec<&str> = needle.lines().map(|l| l.trim()).collect();
+    let n = needle_t.len();
+    if n >= 4 && hay_lines.len() >= n {
+        let hay_t: Vec<&str> = hay_lines.iter().map(|l| l.trim()).collect();
+        let score = |start: usize| -> usize {
+            (0..n).filter(|&i| hay_t[start + i] == needle_t[i]).count()
+        };
+        let last_start = hay_t.len() - n;
+        let mut best_start = 0usize;
+        let mut best_count = 0usize;
+        for start in 0..=last_start {
+            let c = score(start);
+            if c > best_count { best_count = c; best_start = start; }
+        }
+        let ties = (0..=last_start).filter(|&s| score(s) == best_count).count();
+        // best_count/n >= 0.8, integer-safe; unique best window.
+        if best_count * 5 >= n * 4 && ties == 1 {
+            return Some(byte_range(best_start, best_start + n - 1));
+        }
+    }
+
     None
 }
 
