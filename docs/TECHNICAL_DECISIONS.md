@@ -26,9 +26,14 @@ out-of-context content" incident:
 - **Scoped context for large projects** (>64KB source): file tree + active file + working set only.
   The model grows the working set itself via `@read <path>` and `@search <query>` (server-side
   ripgrep) — both auto-fed back in capped rounds. User filename mentions are auto-included.
-- **Complete files only**: a path-tagged code block replaces the entire file; the apply parser has
-  NO prose-triggered pattern (removed after it wrote explanatory fragments over whole files), and
-  the system prompt forbids fragments and writing files the model hasn't seen.
+- **Two edit modes (the fix for "a section clobbered the whole file")**: a path-tagged code block
+  containing `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` hunks is applied as a targeted in-place
+  edit (`POST .../files/edit`, matched exactly then whitespace-tolerantly against the on-disk file);
+  a path-tagged block WITHOUT those markers is a whole-file create/rewrite. Whole-file writes from
+  the AI send `guard_partial_overwrite`, so the backend refuses to replace a non-trivial existing
+  file whose new content is merely a contiguous slice of the old (the classic partial-edit mistake).
+  The apply parser also has NO prose-triggered pattern (removed after it wrote explanatory fragments
+  over whole files).
 - **Safety checkpoint before every AI edit**: writes only fire after a server-side snapshot of the
   on-disk state (`POST .../snapshots/checkpoint`); the chat message offers one-click abandon.
 - **Continuation stitching**: token-cap continuations are re-joined with duplicate fence openers

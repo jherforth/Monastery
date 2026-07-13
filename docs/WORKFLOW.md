@@ -67,9 +67,13 @@ Each transition is recorded as an **exit state** (chain of custody) you can see 
   ("center the nav in styles.css"), it's included in that request's context and persisted to the
   working set — no `@read` round needed.
 - The scoped-mode instructions **forbid writing a file the model hasn't seen** — it must
-  `@search`/`@read` first. Combined with the complete-file rule (a path-tagged code block replaces
-  the whole file; fragments are never applied from prose), this is what prevents the model from
-  "confidently rewriting" files it never read.
+  `@search`/`@read` first — which prevents the model from "confidently rewriting" files it never read.
+- **Editing a section vs. replacing a file**: to change part of an existing file the model emits
+  `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` hunk(s) inside a path-tagged block, applied in place
+  (`/files/edit`) so the rest of the file is untouched. A path-tagged block WITHOUT those markers
+  replaces the whole file (create/rewrite). The backend **refuses** a whole-file block that is just
+  a slice of the existing file — the failure mode where a model emitted only the edited section and
+  wiped the rest. The chat feedback distinguishes "✅ Wrote" (whole file) from "✏️ Edited (N hunks)".
 - **Freshness invariant:** the context map is updated on every write path (AI code blocks, manual
   editor saves, shell commands trigger a full re-read), and older assistant code blocks in chat
   history are collapsed to placeholders — the system context is the *single source of truth* for

@@ -1944,6 +1944,11 @@ pub struct WriteFileRequest {
     /// decoded to raw bytes before writing. Absent/other = plain text.
     #[serde(default)]
     pub encoding: Option<String>,
+    /// When true (AI-generated writes), refuse to replace an existing non-trivial file whose
+    /// new content is merely a contiguous slice of the old — the "model emitted a section as a
+    /// whole-file block, wiping the rest" failure. Manual saves/uploads leave this false.
+    #[serde(default)]
+    pub guard_partial_overwrite: bool,
 }
 
 pub async fn write_project_file(
@@ -2004,11 +2009,146 @@ pub async fn write_project_file(
         std::fs::write(&full_path, bytes)
             .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
     } else {
+        // Guardrail against the "section clobbered the whole file" bug: if the model sends a
+        // whole-file write whose content is literally a contiguous slice of the existing file,
+        // it's almost certainly a partial edit mis-formatted as a full file. Refuse it and tell
+        // the model to use a SEARCH/REPLACE edit block. (Low false-positive: a genuine rewrite
+        // essentially never reproduces itself as an exact substring of the original.)
+        if req.guard_partial_overwrite && full_path.exists() {
+            if let Ok(existing) = std::fs::read_to_string(&full_path) {
+                let new_trim = req.content.trim();
+                let old_trim = existing.trim();
+                if old_trim.len() > 400
+                    && new_trim.len() < old_trim.len()
+                    && old_trim.contains(new_trim)
+                {
+                    return Err(ApiError::Config(format!(
+                        "Refusing to overwrite {}: the new content is just a section of the existing file (the rest would be lost). Re-send this change as a SEARCH/REPLACE edit block instead of a whole-file block.",
+                        req.path
+                    )));
+                }
+            }
+        }
         std::fs::write(&full_path, &req.content)
             .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
     }
 
     Ok(Json(serde_json::json!({ "success": true, "path": req.path })))
+}
+
+/// Apply targeted SEARCH/REPLACE edits to an existing file — a real modify-in-place, so the
+/// model can change one section without re-emitting (and risking truncating) the whole file.
+/// Each edit's `search` text is located in the current on-disk file and swapped for `replace`.
+#[derive(Debug, Deserialize)]
+pub struct EditFileRequest {
+    pub path: String,
+    pub edits: Vec<SearchReplace>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SearchReplace {
+    pub search: String,
+    pub replace: String,
+}
+
+/// Find `needle` in `hay` and return the (start, end) byte range of the first match. Tries an
+/// exact match first, then a whitespace-tolerant match (compares lines with trailing whitespace
+/// trimmed) so a model that slightly misquotes indentation still lands the edit.
+fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
+    if needle.is_empty() {
+        return None;
+    }
+    if let Some(pos) = hay.find(needle) {
+        return Some((pos, pos + needle.len()));
+    }
+    // Whitespace-tolerant fallback: slide a window over the haystack's lines and compare the
+    // needle's lines with each line's trailing whitespace trimmed.
+    let needle_norm: Vec<&str> = needle.lines().map(|l| l.trim_end()).collect();
+    if needle_norm.is_empty() {
+        return None;
+    }
+    let hay_lines: Vec<&str> = hay.lines().collect();
+    if hay_lines.len() < needle_norm.len() {
+        return None;
+    }
+    // Byte offset of the start of each line (for reconstructing the match range).
+    let mut line_starts = Vec::with_capacity(hay_lines.len() + 1);
+    let mut off = 0usize;
+    for l in &hay_lines {
+        line_starts.push(off);
+        off += l.len();
+        // account for the '\n' that `lines()` stripped (assumes LF; CRLF is normalized on upload)
+        if off < hay.len() {
+            off += 1;
+        }
+    }
+    line_starts.push(hay.len());
+    for start in 0..=(hay_lines.len() - needle_norm.len()) {
+        let matches = needle_norm.iter().enumerate()
+            .all(|(i, nl)| hay_lines[start + i].trim_end() == *nl);
+        if matches {
+            let end_line = start + needle_norm.len();
+            let start_byte = line_starts[start];
+            // End at the newline before the next line (or EOF for the last line).
+            let end_byte = if end_line < hay_lines.len() {
+                line_starts[end_line].saturating_sub(1)
+            } else {
+                hay.len()
+            };
+            return Some((start_byte, end_byte));
+        }
+    }
+    None
+}
+
+pub async fn edit_project_file(
+    Path(project_id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<EditFileRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project_dir = resolve_project_dir(&state, project_id).await?;
+    let full_path = project_dir.join(&req.path);
+
+    let canonical_base = project_dir.canonicalize()
+        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
+    let resolved = full_path.canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("File not found: {}", req.path)))?;
+    if !resolved.starts_with(&canonical_base) {
+        return Err(ApiError::Config("Path traversal not allowed".into()));
+    }
+
+    let mut content = tokio::fs::read_to_string(&resolved).await
+        .map_err(|e| ApiError::Internal(format!("Failed to read file: {}", e)))?;
+
+    let mut applied = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    for edit in &req.edits {
+        match find_match_range(&content, &edit.search) {
+            Some((s, e)) => {
+                content.replace_range(s..e, &edit.replace);
+                applied += 1;
+            }
+            None => {
+                // Surface a short snippet so the model/user can see which hunk didn't match.
+                let snippet: String = edit.search.lines().next().unwrap_or("").chars().take(60).collect();
+                failed.push(snippet);
+            }
+        }
+    }
+
+    // Only persist if something actually applied — never write a no-op that could truncate.
+    if applied > 0 {
+        std::fs::write(&resolved, &content)
+            .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": applied > 0,
+        "path": req.path,
+        "applied": applied,
+        "failed": failed,
+        "content": content,
+    })))
 }
 
 /// Serve a project file for preview (static file serving)

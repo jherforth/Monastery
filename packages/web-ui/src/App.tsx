@@ -541,11 +541,23 @@ export default function App() {
   const applyAssistantOutput = useCallback((fullContent: string) => {
     if (!currentProject?.id) return;
 
-    type WriteResult = { path: string; ok: boolean; error?: string };
+    type WriteResult = { path: string; ok: boolean; error?: string; kind?: 'write' | 'edit'; applied?: number; failedHunks?: number };
     // Collect everything to apply first — the fetches only fire AFTER the safety
     // checkpoint below, so a bad response can't destroy un-snapshotted work.
     const fileWrites: Array<{ path: string; content: string }> = [];
+    const fileEdits: Array<{ path: string; edits: Array<{ search: string; replace: string }> }> = [];
     const modifiedFiles: string[] = [];
+
+    // Parse SEARCH/REPLACE edit blocks out of a code-block body. Their presence means the
+    // model wants a targeted in-place edit (modify a section) rather than a full-file replace —
+    // which is what prevents a section from clobbering the whole file.
+    const parseEditBlocks = (code: string): Array<{ search: string; replace: string }> => {
+      const re = /<<<<<<<+[ \t]*SEARCH[ \t]*\r?\n([\s\S]*?)\r?\n=======[ \t]*\r?\n([\s\S]*?)\r?\n>>>>>>>+[ \t]*REPLACE/g;
+      const out: Array<{ search: string; replace: string }> = [];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(code)) !== null) out.push({ search: m[1], replace: m[2] });
+      return out;
+    };
 
     // --- Code block parser ---
     // Pattern 1: language:path/to/file on the opening fence line
@@ -592,6 +604,14 @@ export default function App() {
           : match[2]?.toLowerCase();
         if (lang === 'diff') continue;
 
+        // SEARCH/REPLACE block(s) → targeted in-place edit; otherwise a full-file write.
+        const edits = parseEditBlocks(code);
+        if (edits.length > 0) {
+          modifiedFiles.push(filePath);
+          fileEdits.push({ path: filePath, edits });
+          continue;
+        }
+
         const cleanCode = code.trimEnd() + '\n';
         if (!cleanCode.trim()) continue; // skip empty blocks
 
@@ -609,7 +629,7 @@ export default function App() {
       if (cmd) shellCommands.push(cmd);
     }
 
-    if (fileWrites.length === 0 && shellCommands.length === 0) return;
+    if (fileWrites.length === 0 && fileEdits.length === 0 && shellCommands.length === 0) return;
 
     (async () => {
       // Safety checkpoint: snapshot the project's on-disk state BEFORE applying anything,
@@ -629,26 +649,57 @@ export default function App() {
         console.warn('Safety checkpoint failed:', e);
       }
 
+      // Whole-file writes carry guard_partial_overwrite so the backend refuses to replace an
+      // existing file with what is really just a section of it (the "section clobbered the whole
+      // file" bug) — the model should use a SEARCH/REPLACE edit block for that instead.
+      const editedContents: Record<string, string> = {};
       const writes: Promise<WriteResult | void>[] = fileWrites.map(({ path: filePath, content: cleanCode }) =>
         fetch(`/api/projects/${currentProject.id}/files/write`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, content: cleanCode }),
+          body: JSON.stringify({ path: filePath, content: cleanCode, guard_partial_overwrite: true }),
         }).then(async r => {
           if (!r.ok) {
             const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
             const msg = typeof err === 'object' && err !== null && 'error' in err
               ? String(err.error) : `HTTP ${r.status}`;
             console.error(`Failed to write ${filePath}: ${msg}`);
-            return { path: filePath, ok: false, error: msg };
+            return { path: filePath, ok: false, error: msg, kind: 'write' as const };
           }
           console.log(`Wrote ${filePath} (${cleanCode.length} bytes)`);
-          return { path: filePath, ok: true };
+          editedContents[filePath] = cleanCode;
+          return { path: filePath, ok: true, kind: 'write' as const };
         }).catch(e => {
           console.error(`Write error for ${filePath}:`, e);
-          return { path: filePath, ok: false, error: String(e) };
+          return { path: filePath, ok: false, error: String(e), kind: 'write' as const };
         })
       );
+
+      // Targeted SEARCH/REPLACE edits — applied against the on-disk file server-side.
+      for (const { path: filePath, edits } of fileEdits) {
+        writes.push(
+          fetch(`/api/projects/${currentProject.id}/files/edit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: filePath, edits }),
+          }).then(async r => {
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) {
+              const msg = data?.error || `HTTP ${r.status}`;
+              console.error(`Failed to edit ${filePath}: ${msg}`);
+              return { path: filePath, ok: false, error: String(msg), kind: 'edit' as const };
+            }
+            const applied = data?.applied || 0;
+            const failedHunks = Array.isArray(data?.failed) ? data.failed.length : 0;
+            if (typeof data?.content === 'string') editedContents[filePath] = data.content;
+            return { path: filePath, ok: applied > 0, kind: 'edit' as const, applied, failedHunks,
+              error: applied === 0 ? 'no SEARCH text matched' : undefined };
+          }).catch(e => {
+            console.error(`Edit error for ${filePath}:`, e);
+            return { path: filePath, ok: false, error: String(e), kind: 'edit' as const };
+          })
+        );
+      }
 
       for (const cmd of shellCommands) {
         writes.push(
@@ -675,14 +726,15 @@ export default function App() {
         fetch(`/api/projects/${currentProject.id}/files`)
           .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
 
-        // Keep the LLM's context fresh: fold successful writes into allFileContents so the
-        // next turn's PROJECT FILE CONTENTS matches the disk. (This map previously went stale
-        // after the first AI edit, making the model regenerate from outdated file state.)
-        const okPaths = new Set(results.filter((r): r is WriteResult => !!r && r.ok).map(r => r.path));
-        if (okPaths.size > 0) {
+        // Keep the LLM's context fresh: fold successful writes AND edits into allFileContents so
+        // the next turn's PROJECT FILE CONTENTS matches the disk. (This map previously went stale
+        // after the first AI edit, making the model regenerate from outdated file state.) Edits
+        // use the server-returned post-edit content; writes use the content we sent.
+        const okResults = results.filter((r): r is WriteResult => !!r && r.ok);
+        if (okResults.length > 0) {
           setAllFileContents(prev => {
             const next = { ...prev };
-            for (const w of fileWrites) if (okPaths.has(w.path)) next[w.path] = w.content;
+            for (const r of okResults) if (editedContents[r.path] !== undefined) next[r.path] = editedContents[r.path];
             return next;
           });
         }
@@ -692,13 +744,24 @@ export default function App() {
             .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
         }
 
-        // Feedback: add a system note showing which files were written
-        const okFiles = results.filter((r): r is WriteResult => !!r && r.ok).map(r => r.path);
+        // Feedback: separate whole-file writes, targeted edits, and failures.
+        const wroteFiles = okResults.filter(r => r.kind !== 'edit').map(r => r.path);
+        const editedResults = okResults.filter(r => r.kind === 'edit');
         const failFiles = results.filter((r): r is WriteResult => !!r && !r.ok);
-        if (okFiles.length > 0 || failFiles.length > 0) {
+        if (wroteFiles.length > 0 || editedResults.length > 0 || failFiles.length > 0) {
           let note = '';
-          if (okFiles.length > 0) {
-            note += `✅ Wrote **${okFiles.length}** file${okFiles.length > 1 ? 's' : ''}: ${okFiles.map(f => `\`${f}\``).join(', ')}`;
+          if (wroteFiles.length > 0) {
+            note += `✅ Wrote **${wroteFiles.length}** file${wroteFiles.length > 1 ? 's' : ''}: ${wroteFiles.map(f => `\`${f}\``).join(', ')}`;
+          }
+          if (editedResults.length > 0) {
+            const parts = editedResults.map(r => {
+              const hunks = `${r.applied} hunk${(r.applied ?? 0) > 1 ? 's' : ''}`;
+              const miss = r.failedHunks ? `, ${r.failedHunks} unmatched` : '';
+              return `\`${r.path}\` (${hunks}${miss})`;
+            });
+            note += (note ? '\n\n' : '') + `✏️ Edited **${editedResults.length}** file${editedResults.length > 1 ? 's' : ''}: ${parts.join(', ')}`;
+          }
+          if (wroteFiles.length > 0 || editedResults.length > 0) {
             note += checkpointSnapshotId
               ? '\n\n🛟 The previous state was snapshotted first — you can abandon these changes below.'
               : '\n\n⚠️ Safety snapshot could not be created before these changes.';
@@ -706,6 +769,7 @@ export default function App() {
           if (failFiles.length > 0) {
             note += (note ? '\n\n' : '') + `❌ Failed **${failFiles.length}** file${failFiles.length > 1 ? 's' : ''}: ${failFiles.map(f => `\`${f.path}\` (${f.error})`).join(', ')}`;
           }
+          const anyChange = wroteFiles.length > 0 || editedResults.length > 0;
           if (note) {
             setMessages(prev => [...prev, {
               id: `write-feedback-${Date.now()}`,
@@ -714,8 +778,8 @@ export default function App() {
               timestamp: Date.now(),
               // Carrying the snapshot id makes ChatPane render its restore button inline,
               // so abandoning an AI edit is one click on the message itself.
-              model: (okFiles.length > 0 && checkpointSnapshotId) || undefined,
-              revertLabel: okFiles.length > 0 && checkpointSnapshotId ? 'Abandon these changes' : undefined,
+              model: (anyChange && checkpointSnapshotId) || undefined,
+              revertLabel: anyChange && checkpointSnapshotId ? 'Abandon these changes' : undefined,
             }]);
           }
         }
@@ -742,14 +806,29 @@ export default function App() {
     if (currentProject) {
       contextParts.push(`You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
     }
-    contextParts.push(`FILE EDITING RULES:
-- To edit or create a file, use code blocks with the format: \`\`\`language:path/to/file
-- Example: \`\`\`tsx:src/App.tsx
-- The file path after the colon determines where the code is written.
-- To create a NEW file, just use a path that doesn't exist yet.
-- You can write multiple files in a single response — each code block becomes a file.
-- CRITICAL: a code block with a file path REPLACES that file's ENTIRE contents. ALWAYS output the COMPLETE file — never a fragment, snippet, or "rest unchanged" placeholder. Writing a partial file destroys the parts you left out.
-- For illustrative snippets you do NOT want saved to disk, use a plain code block with no file path.`);
+    contextParts.push(`FILE EDITING RULES — read carefully, choose the right mode:
+
+1. EDITING part of an EXISTING file → use one or more SEARCH/REPLACE blocks inside a path-tagged code block. The SEARCH text must be copied EXACTLY from the file's current contents (enough surrounding lines to be unique); it is found and replaced in place, leaving the rest of the file untouched. This is the ONLY safe way to change a section — do NOT paste just the changed section as a whole-file block.
+
+   \`\`\`html:index.html
+   <<<<<<< SEARCH
+     <h1>Old title</h1>
+   =======
+     <h1>New title</h1>
+   >>>>>>> REPLACE
+   \`\`\`
+
+   Use several SEARCH/REPLACE blocks in the same code block for multiple edits to one file.
+
+2. CREATING a new file, or intentionally REWRITING a whole file → a path-tagged code block with the file's COMPLETE contents (no SEARCH/REPLACE markers):
+
+   \`\`\`tsx:src/NewThing.tsx
+   <full file contents>
+   \`\`\`
+
+CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTIRE contents. NEVER put just a section, fragment, or "…rest unchanged…" in one — the omitted parts are permanently deleted. If you are changing only part of a file, you MUST use mode 1. Monastery will reject a whole-file block that is only a slice of the existing file.
+- The path after the colon determines where the code is written; you can edit/create multiple files in one response.
+- For illustrative snippets you do NOT want saved to disk, use a plain code block with NO file path.`);
 
     // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
     // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.

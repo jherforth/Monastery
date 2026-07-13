@@ -81,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:id/files/read", get(handlers::read_project_file))
         .route("/api/projects/:id/files/read-all", get(handlers::read_all_project_files))
         .route("/api/projects/:id/files/write", post(handlers::write_project_file))
+        .route("/api/projects/:id/files/edit", post(handlers::edit_project_file))
         .route("/api/projects/:id/files", delete(handlers::delete_project_file))
         .route("/api/projects/:id/files/dir", post(handlers::create_project_directory))
         .route("/api/projects/:id/files/dir", delete(handlers::delete_project_directory))
