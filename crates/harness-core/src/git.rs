@@ -582,15 +582,22 @@ fn push_current(project_path: &Path, token: Option<&str>, branch: &str) -> Resul
     }
 }
 
-/// Inject an oauth2 token into an http(s) remote URL for authenticated fetch/push.
+/// Inject an oauth2 token into an http(s) remote URL for authenticated fetch/push. Idempotent:
+/// strips any credentials already baked into the URL first, so a token-cloned origin
+/// (`https://oauth2:TOKEN@host/…`) doesn't get double-injected into a malformed URL that fails auth.
 fn inject_token(remote_url: &str, token: &str) -> String {
-    if remote_url.starts_with("https://") {
-        remote_url.replacen("https://", &format!("https://oauth2:{}@", token), 1)
-    } else if remote_url.starts_with("http://") {
-        remote_url.replacen("http://", &format!("http://oauth2:{}@", token), 1)
-    } else {
-        remote_url.to_string()
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = remote_url.strip_prefix(scheme) {
+            // Split off the authority (up to the first '/') and drop any existing "user:pass@".
+            let (authority, path) = match rest.find('/') {
+                Some(i) => (&rest[..i], &rest[i..]),
+                None => (rest, ""),
+            };
+            let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+            return format!("{}oauth2:{}@{}{}", scheme, token, host, path);
+        }
     }
+    remote_url.to_string()
 }
 
 /// Helper: run a git command and return trimmed stdout
