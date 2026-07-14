@@ -33,6 +33,29 @@ const fmtFile = (path: string, content: string) => {
   return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
 };
 
+type EditHunk = { search: string; replace: string };
+
+// Parse SEARCH/REPLACE edit blocks out of a code-block body. Their presence means the model
+// wants a targeted in-place edit (modify a section) rather than a full-file replace — which is
+// what prevents a section from clobbering the whole file.
+const parseEditBlocks = (code: string): EditHunk[] => {
+  const re = /<<<<<<<+[ \t]*SEARCH[ \t]*\r?\n([\s\S]*?)\r?\n=======[ \t]*\r?\n([\s\S]*?)\r?\n>>>>>>>+[ \t]*REPLACE/g;
+  const out: EditHunk[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(code)) !== null) out.push({ search: m[1], replace: m[2] });
+  return out;
+};
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Extract the code-block body for a specific file path from an assistant response (the first
+// ```lang:path\n…\n``` block whose path matches). Used by the edit-recovery retry.
+const extractFileBlock = (response: string, path: string): string | null => {
+  const re = new RegExp('```[\\w.]*\\s*:\\s*' + escapeRegExp(path) + '\\s*\\n([\\s\\S]*?)\\n```');
+  const m = response.match(re);
+  return m ? m[1] : null;
+};
+
 // Replace fenced code blocks in OLDER assistant messages with short placeholders before
 // sending history to the LLM. Without this, history accumulates multiple stale versions of
 // each file that compete with the current PROJECT FILE CONTENTS in the system message —
@@ -127,6 +150,9 @@ export default function App() {
   // Workflow nudge: suggested at most once per session/project (reset below) when a freeform
   // request hits a large project without an active task.
   const workflowNudgeShownRef = useRef(false);
+  // Holds the latest recoverFailedEdits so applyAssistantOutput (defined earlier) can invoke it
+  // without a forward reference in its dependency array.
+  const recoverFailedEditsRef = useRef<((failed: Array<{ path: string; hunks: EditHunk[] }>) => void) | null>(null);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
@@ -548,19 +574,8 @@ export default function App() {
     // Collect everything to apply first — the fetches only fire AFTER the safety
     // checkpoint below, so a bad response can't destroy un-snapshotted work.
     const fileWrites: Array<{ path: string; content: string }> = [];
-    const fileEdits: Array<{ path: string; edits: Array<{ search: string; replace: string }> }> = [];
+    const fileEdits: Array<{ path: string; edits: EditHunk[] }> = [];
     const modifiedFiles: string[] = [];
-
-    // Parse SEARCH/REPLACE edit blocks out of a code-block body. Their presence means the
-    // model wants a targeted in-place edit (modify a section) rather than a full-file replace —
-    // which is what prevents a section from clobbering the whole file.
-    const parseEditBlocks = (code: string): Array<{ search: string; replace: string }> => {
-      const re = /<<<<<<<+[ \t]*SEARCH[ \t]*\r?\n([\s\S]*?)\r?\n=======[ \t]*\r?\n([\s\S]*?)\r?\n>>>>>>>+[ \t]*REPLACE/g;
-      const out: Array<{ search: string; replace: string }> = [];
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(code)) !== null) out.push({ search: m[1], replace: m[2] });
-      return out;
-    };
 
     // --- Code block parser ---
     // Pattern 1: language:path/to/file on the opening fence line
@@ -656,6 +671,8 @@ export default function App() {
       // existing file with what is really just a section of it (the "section clobbered the whole
       // file" bug) — the model should use a SEARCH/REPLACE edit block for that instead.
       const editedContents: Record<string, string> = {};
+      // Hunks that didn't match, per file — fed to the escalating recovery below.
+      const failedHunksByFile: Record<string, EditHunk[]> = {};
       const writes: Promise<WriteResult | void>[] = fileWrites.map(({ path: filePath, content: cleanCode }) =>
         fetch(`/api/projects/${currentProject.id}/files/write`, {
           method: 'POST',
@@ -693,9 +710,10 @@ export default function App() {
               return { path: filePath, ok: false, error: String(msg), kind: 'edit' as const };
             }
             const applied = data?.applied || 0;
-            const failedHunks = Array.isArray(data?.failed) ? data.failed.length : 0;
+            const failedList: EditHunk[] = Array.isArray(data?.failed) ? data.failed : [];
+            if (failedList.length > 0) failedHunksByFile[filePath] = failedList;
             if (typeof data?.content === 'string') editedContents[filePath] = data.content;
-            return { path: filePath, ok: applied > 0, kind: 'edit' as const, applied, failedHunks,
+            return { path: filePath, ok: applied > 0, kind: 'edit' as const, applied, failedHunks: failedList.length,
               error: applied === 0 ? 'no SEARCH text matched' : undefined };
           }).catch(e => {
             console.error(`Edit error for ${filePath}:`, e);
@@ -785,6 +803,14 @@ export default function App() {
               revertLabel: anyChange && checkpointSnapshotId ? 'Abandon these changes' : undefined,
             }]);
           }
+        }
+
+        // Escalating recovery for edit hunks that didn't match (see recoverFailedEdits).
+        const stillFailed = Object.entries(failedHunksByFile)
+          .filter(([, hunks]) => hunks.length > 0)
+          .map(([path, hunks]) => ({ path, hunks }));
+        if (stillFailed.length > 0) {
+          recoverFailedEditsRef.current?.(stillFailed);
         }
       });
     })();
@@ -885,6 +911,121 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
     }
     return contextParts.length > 0 ? contextParts.join('\n\n') : null;
   }, [activeAgentIds, getAgent, currentProject, useDatabaseContext, pocketbaseConn?.base_url, workflow.activeTask, workflow.spec, projectFiles, allFileContents, currentFile, activeTab, workingSetPaths]);
+
+  // Minimal one-shot LLM call that returns the full text (no UI message). Used by edit recovery.
+  const streamChat = useCallback(async (messages: Array<{ role: string; content: string }>): Promise<string> => {
+    const activeEndpoint = useAppStore.getState().activeEndpoint;
+    const params = new URLSearchParams();
+    if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
+    const modelId = availableModels[0]?.id || 'deepseek-chat';
+    const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages }),
+    });
+    if (!res.ok) throw new Error(`LLM request failed (HTTP ${res.status})`);
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('No response body');
+    let full = '';
+    for await (const { eventType, data } of parseSSEStream(reader)) {
+      if (eventType !== 'finish_reason' && eventType !== 'usage' && eventType !== 'reasoning') full += data;
+    }
+    return full;
+  }, [availableModels]);
+
+  // Apply one file's correction from an LLM retry response: SEARCH/REPLACE → edit endpoint,
+  // otherwise a full-file block → write endpoint. Returns true if the file was changed.
+  const applyCorrectionForFile = useCallback(async (path: string, response: string): Promise<boolean> => {
+    if (!currentProject?.id) return false;
+    const body = extractFileBlock(response, path);
+    if (!body) return false;
+    const hunks = parseEditBlocks(body);
+    try {
+      if (hunks.length > 0) {
+        const r = await fetch(`/api/projects/${currentProject.id}/files/edit?loose=true`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, edits: hunks }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if ((d?.applied || 0) > 0) { if (typeof d.content === 'string') setAllFileContents(prev => ({ ...prev, [path]: d.content })); return true; }
+        return false;
+      }
+      // Full-file replacement — no guard here (this is an explicit, user-visible correction).
+      const clean = body.trimEnd() + '\n';
+      const r = await fetch(`/api/projects/${currentProject.id}/files/write`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, content: clean }),
+      });
+      if (r.ok) { setAllFileContents(prev => ({ ...prev, [path]: clean })); return true; }
+      return false;
+    } catch { return false; }
+  }, [currentProject?.id]);
+
+  // Escalating recovery when SEARCH/REPLACE hunks fail to match, in three visible stages:
+  //   1. "digging deeper"    — retry the same hunks with the looser backend matcher (no LLM)
+  //   2. "double checking"   — re-read each file fresh, ask the model to redo the edit against it
+  //   3. "need more info"    — give up gracefully and ask the user to clarify
+  const recoverFailedEdits = useCallback(async (failed: Array<{ path: string; hunks: EditHunk[] }>) => {
+    if (!currentProject?.id || failed.length === 0) return;
+    const pid = currentProject.id;
+    const post = (content: string) => setMessages(prev => [...prev, {
+      id: `edit-recover-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      role: 'system' as const, content, timestamp: Date.now(),
+    }]);
+    const refreshFile = (path: string) => {
+      fetch(`/api/projects/${pid}/files/read?path=${encodeURIComponent(path)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (typeof d?.content === 'string') { setAllFileContents(prev => ({ ...prev, [path]: d.content })); updateTabContentByPath(path, d.content); } })
+        .catch(() => {});
+    };
+
+    // --- Stage 1: digging deeper (looser backend match) ---
+    post('🔍 Digging deeper — retrying the change with a looser match…');
+    let remaining: Array<{ path: string; hunks: EditHunk[] }> = [];
+    for (const { path, hunks } of failed) {
+      try {
+        const r = await fetch(`/api/projects/${pid}/files/edit?loose=true`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, edits: hunks }),
+        });
+        const d = await r.json().catch(() => ({}));
+        const stillFailed: EditHunk[] = Array.isArray(d?.failed) ? d.failed : hunks;
+        if ((d?.applied || 0) > 0 && typeof d.content === 'string') { setAllFileContents(prev => ({ ...prev, [path]: d.content })); updateTabContentByPath(path, d.content); }
+        if (stillFailed.length > 0) remaining.push({ path, hunks: stillFailed });
+      } catch {
+        remaining.push({ path, hunks });
+      }
+    }
+    if (remaining.length === 0) { post('✅ Recovered on a looser match — the change is applied.'); return; }
+
+    // --- Stage 2: double checking files (LLM redo against fresh content) ---
+    post('📂 Double checking files — re-reading them and asking the model to redo the change…');
+    const nextRemaining: Array<{ path: string; hunks: EditHunk[] }> = [];
+    for (const { path, hunks } of remaining) {
+      try {
+        const fr = await fetch(`/api/projects/${pid}/files/read?path=${encodeURIComponent(path)}`);
+        const fd = fr.ok ? await fr.json().catch(() => null) : null;
+        const current = typeof fd?.content === 'string' ? fd.content : null;
+        if (current == null) { nextRemaining.push({ path, hunks }); continue; }
+        const intended = hunks.map((h, i) => `Intended change ${i + 1} — new text:\n${h.replace}`).join('\n\n');
+        const sys = `You are editing files in the project "${currentProject.name}". To change part of a file, output a SEARCH/REPLACE block inside a path-tagged code block:\n\`\`\`:${path}\n<<<<<<< SEARCH\n<lines copied EXACTLY from the current file>\n=======\n<new lines>\n>>>>>>> REPLACE\n\`\`\`\nThe SEARCH text must match the current file character-for-character. If that's impractical, output the COMPLETE corrected file in a \`\`\`:${path}\` block instead. Output ONLY the code block.`;
+        const user = `A previous SEARCH/REPLACE edit to \`${path}\` did not match and was not applied. Here is the EXACT current content of \`${path}\`:\n\n\`\`\`\n${current}\n\`\`\`\n\n${intended}\n\nRe-emit the change so it applies cleanly.`;
+        const response = await streamChat([{ role: 'system', content: sys }, { role: 'user', content: user }]);
+        const ok = await applyCorrectionForFile(path, response);
+        if (ok) refreshFile(path); else nextRemaining.push({ path, hunks });
+      } catch {
+        nextRemaining.push({ path, hunks });
+      }
+    }
+    if (nextRemaining.length === 0) { post('✅ Recovered after re-checking the files — the change is applied.'); return; }
+
+    // --- Stage 3: need more information ---
+    const files = nextRemaining.map(f => `\`${f.path}\``).join(', ');
+    post(`❓ I need more information. I couldn't confidently apply the change to ${files} — the section I was trying to edit doesn't line up with what's currently in the file. Could you point me at the exact lines to change (or paste them here)? Nothing was left half-applied, and you can still abandon the earlier changes above.`);
+  }, [currentProject?.id, streamChat, applyCorrectionForFile, updateTabContentByPath]);
+
+  // Keep the ref current so applyAssistantOutput (defined earlier) can call the latest version.
+  recoverFailedEditsRef.current = recoverFailedEdits;
 
   const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { preferHermes?: boolean }) => {
     // Auto-create a session if none exists

@@ -2132,7 +2132,7 @@ pub struct SearchReplace {
 ///   3. line-by-line, ignoring LEADING+TRAILING whitespace (indentation drift — the common case
 ///      where the model reflows/re-indents the SEARCH block relative to the real file)
 ///   4. as (3) but ignoring blank lines on both sides (stray blank line in the SEARCH block)
-fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
+fn find_match_range(hay: &str, needle: &str, loose: bool) -> Option<(usize, usize)> {
     if needle.trim().is_empty() {
         return None;
     }
@@ -2207,12 +2207,14 @@ fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
     }
 
     // Tier 5: fuzzy — the model got most of the block right but misquoted a line or two. Slide a
-    // window and score by positional line similarity (fully trimmed). Accept the best window only
-    // when it's specific and unambiguous: >=4 lines, >=80% of lines match, and it's the SOLE best
-    // window. The pre-edit snapshot backstops the small residual risk of a wrong region.
+    // window and score by positional line similarity (fully trimmed). `loose` (an escalated retry)
+    // lowers the bar: strict = >=4 lines, >=80% match, SOLE best window; loose = >=3 lines, >=60%
+    // match, first-best on a tie. The pre-edit snapshot backstops the residual wrong-region risk.
     let needle_t: Vec<&str> = needle.lines().map(|l| l.trim()).collect();
     let n = needle_t.len();
-    if n >= 4 && hay_lines.len() >= n {
+    let (min_lines, ratio_num, ratio_den, require_unique) =
+        if loose { (3usize, 3usize, 5usize, false) } else { (4usize, 4usize, 5usize, true) };
+    if n >= min_lines && hay_lines.len() >= n {
         let hay_t: Vec<&str> = hay_lines.iter().map(|l| l.trim()).collect();
         let score = |start: usize| -> usize {
             (0..n).filter(|&i| hay_t[start + i] == needle_t[i]).count()
@@ -2224,9 +2226,10 @@ fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
             let c = score(start);
             if c > best_count { best_count = c; best_start = start; }
         }
-        let ties = (0..=last_start).filter(|&s| score(s) == best_count).count();
-        // best_count/n >= 0.8, integer-safe; unique best window.
-        if best_count * 5 >= n * 4 && ties == 1 {
+        let unique = !require_unique
+            || (0..=last_start).filter(|&s| score(s) == best_count).count() == 1;
+        // best_count/n >= ratio_num/ratio_den, integer-safe.
+        if best_count * ratio_den >= n * ratio_num && unique {
             return Some(byte_range(best_start, best_start + n - 1));
         }
     }
@@ -2237,8 +2240,12 @@ fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
 pub async fn edit_project_file(
     Path(project_id): Path<uuid::Uuid>,
     State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     Json(req): Json<EditFileRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // `loose=true` (an escalated retry, "digging deeper") lowers the fuzzy matcher's bar.
+    let loose = params.get("loose").map(|v| v == "true").unwrap_or(false);
+
     let project_dir = resolve_project_dir(&state, project_id).await?;
     let full_path = project_dir.join(&req.path);
 
@@ -2254,17 +2261,17 @@ pub async fn edit_project_file(
         .map_err(|e| ApiError::Internal(format!("Failed to read file: {}", e)))?;
 
     let mut applied = 0usize;
-    let mut failed: Vec<String> = Vec::new();
+    // Failed hunks returned in FULL (search+replace) so the frontend's escalating retry can
+    // re-attempt exactly those without re-applying the ones that already landed.
+    let mut failed: Vec<serde_json::Value> = Vec::new();
     for edit in &req.edits {
-        match find_match_range(&content, &edit.search) {
+        match find_match_range(&content, &edit.search, loose) {
             Some((s, e)) => {
                 content.replace_range(s..e, &edit.replace);
                 applied += 1;
             }
             None => {
-                // Surface a short snippet so the model/user can see which hunk didn't match.
-                let snippet: String = edit.search.lines().next().unwrap_or("").chars().take(60).collect();
-                failed.push(snippet);
+                failed.push(serde_json::json!({ "search": edit.search, "replace": edit.replace }));
             }
         }
     }
