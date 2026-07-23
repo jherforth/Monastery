@@ -49,6 +49,13 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
     window.addEventListener('monastery:open-settings', handler);
     return () => window.removeEventListener('monastery:open-settings', handler);
   }, []);
+
+  // The command palette (and anything else) can open the Source & Ship drawer via this event.
+  useEffect(() => {
+    const handler = () => setSourceShipOpen(true);
+    window.addEventListener('monastery:open-source-ship', handler);
+    return () => window.removeEventListener('monastery:open-source-ship', handler);
+  }, []);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');

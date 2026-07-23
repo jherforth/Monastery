@@ -22,10 +22,18 @@ import {
   WORKFLOW_NUDGE_SUPPRESS_KEY,
 } from './hooks/useChatOrchestrator';
 import { useDialogs } from './components/ui/dialogs';
-import { Message } from './types';
+import { CommandPalette, type CommandItem } from './components/CommandPalette';
+import { Message, FileNode } from './types';
+
+// Flatten the file tree into plain file paths for the command palette's quick-open.
+const flattenFiles = (nodes: FileNode[]): string[] =>
+  nodes.flatMap(n => n.type === 'directory' ? flattenFiles(n.children || []) : [n.path]);
 
 export default function App() {
-  const { sidebarCollapsed, previewCollapsed, editorCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
+  const {
+    sidebarCollapsed, previewCollapsed, editorCollapsed, paneLayout, updatePaneLayout,
+    theme, setTheme, toggleSidebar, togglePreview, toggleEditor, currentProject, setCurrentProject,
+  } = useAppStore();
   const { confirm, promptText } = useDialogs();
 
   // Multi-tab editor state (open files, active buffer)
@@ -470,8 +478,37 @@ export default function App() {
     }
   }, [currentProject?.id, currentFile, editorContent, markTabSaved]);
 
+  // Command palette (Ctrl+K): every action reachable by keyboard; new features land here
+  // first instead of growing another button somewhere.
+  const paletteCommands: CommandItem[] = [
+    { id: 'new-session', section: 'Chat', label: 'New session', run: handleCreateSession },
+    ...sessions.slice(0, 8).map(s => ({
+      id: `session-${s.id}`,
+      section: 'Chat',
+      label: `Switch to session: ${s.title}`,
+      keywords: 'open chat history',
+      run: () => handleSelectSession(s.id),
+    })),
+    { id: 'open-tasks', section: 'Tasks', label: workflow.activeTask ? `Open task: ${workflow.activeTask.title}` : 'Open tasks', keywords: 'workflow plan implement verify review', run: () => setIsTaskDrawerOpen(true) },
+    { id: 'source-ship', section: 'Ship', label: 'Open Source & Ship', keywords: 'git commit push pull snapshot revert', run: () => window.dispatchEvent(new CustomEvent('monastery:open-source-ship')) },
+    { id: 'deploy', section: 'Ship', label: 'Deploy (Self-Host Wizard)', hint: 'Ctrl+Shift+D', keywords: 'dokploy coolify docker', run: () => setIsWizardOpen(true) },
+    { id: 'toggle-sidebar', section: 'Layout', label: `${sidebarCollapsed ? 'Show' : 'Hide'} file tree`, run: toggleSidebar },
+    { id: 'toggle-editor', section: 'Layout', label: `${editorCollapsed ? 'Show' : 'Hide'} code editor`, run: toggleEditor },
+    { id: 'toggle-preview', section: 'Layout', label: `${previewCollapsed ? 'Show' : 'Hide'} preview pane`, run: togglePreview },
+    { id: 'toggle-theme', section: 'Layout', label: `Switch to ${theme === 'monastery-dark' ? 'light' : 'dark'} theme`, run: () => setTheme(theme === 'monastery-dark' ? 'scriptorium-light' : 'monastery-dark') },
+    { id: 'settings-llm', section: 'Settings', label: 'Settings: Models', keywords: 'llm endpoint ollama', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'llm' } })) },
+    { id: 'settings-hermes', section: 'Settings', label: 'Settings: Hermes Agent', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'hermes' } })) },
+    { id: 'settings-git', section: 'Settings', label: 'Settings: Git Forges', keywords: 'github gitlab forgejo gitea', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'git' } })) },
+    { id: 'settings-hosting', section: 'Settings', label: 'Settings: Hosting', keywords: 'dokploy coolify pocketbase', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'hosting' } })) },
+  ];
+
   return (
     <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
+      <CommandPalette
+        commands={paletteCommands}
+        files={flattenFiles(projectFiles)}
+        onOpenFile={openFileInTab}
+      />
       <TopBar availableProjects={availableProjects} endpoints={endpoints} onRefreshProjects={refreshProjects}
         onOpenWizard={() => setIsWizardOpen(true)}
         onCommitComplete={(msg, snapshotId, wasRestore) => {
