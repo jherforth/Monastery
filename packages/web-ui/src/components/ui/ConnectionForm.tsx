@@ -13,8 +13,8 @@ export interface ConnectionField {
 interface ConnectionFormProps {
   fields: ConnectionField[];
   submitLabel: string;
-  submitting?: boolean;
   error?: string | null;
+  /** Throw (or reject) to signal failure — the form then keeps its values; on success it clears. */
   onSubmit: (values: Record<string, string>) => void | Promise<void>;
 }
 
@@ -22,15 +22,28 @@ interface ConnectionFormProps {
  * The one "connect a service" form (name / URL / key and friends), replacing the four
  * hand-rolled variants that used to live in the LLM, Hermes, hosting, and git-forge setups.
  */
-export function ConnectionForm({ fields, submitLabel, submitting = false, error, onSubmit }: ConnectionFormProps) {
+export function ConnectionForm({ fields, submitLabel, error, onSubmit }: ConnectionFormProps) {
   const [values, setValues] = useState<Record<string, string>>(
     () => Object.fromEntries(fields.map(f => [f.key, ''])),
   );
+  const [submitting, setSubmitting] = useState(false);
   const canSubmit = fields.every(f => !f.required || values[f.key]?.trim());
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    try {
+      await onSubmit(values);
+      setValues(Object.fromEntries(fields.map(f => [f.key, ''])));
+    } catch {
+      // Parent surfaces the error via the `error` prop; keep the entered values.
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); if (canSubmit && !submitting) onSubmit(values); }}
+      onSubmit={(e) => { e.preventDefault(); if (canSubmit && !submitting) handleSubmit(); }}
       className="space-y-3"
     >
       {fields.map(f => (

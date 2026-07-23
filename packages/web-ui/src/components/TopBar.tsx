@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus, Trash2, Code } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
-import { SettingsModal, type SettingsTab } from './SettingsModal';
+import { SettingsView, type SettingsTab } from './SettingsView';
 import { useDialogs } from './ui/dialogs';
 import { useGitForge } from '../hooks/useGitForge';
 import { useSnapshots } from '../hooks/useSnapshots';
@@ -545,7 +545,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
         </div>
       </header>
 
-      <SettingsModal isOpen={isSettingsOpen} initialTab={settingsTab} onClose={() => { setIsSettingsOpen(false); setSettingsTab(undefined); onRefreshProjects?.(); }} />
+      <SettingsView isOpen={isSettingsOpen} initialTab={settingsTab} onClose={() => { setIsSettingsOpen(false); setSettingsTab(undefined); onRefreshProjects?.(); }} />
 
       {/* New Project modal */}
       {newProjectOpen && (
