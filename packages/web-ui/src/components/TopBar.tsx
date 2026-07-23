@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
-import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus, Trash2, Code } from 'lucide-react';
+import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Plus, Trash2, Code, Rocket } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsView, type SettingsTab } from './SettingsView';
+import { SourceShipDrawer } from './SourceShipDrawer';
 import { useDialogs } from './ui/dialogs';
 import { useGitForge } from '../hooks/useGitForge';
-import { useSnapshots } from '../hooks/useSnapshots';
 import type { EndpointConfig } from '../hooks/useEndpoints';
 
 interface TopBarProps {
@@ -56,40 +56,10 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const [creatingProject, setCreatingProject] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
-  const [gitDropdownOpen, setGitDropdownOpen] = useState(false);
-  const [committing, setCommitting] = useState(false);
-  const [pulling, setPulling] = useState(false);
-  const [snapshots, setSnapshots] = useState<any[]>([]);
-  const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [sourceShipOpen, setSourceShipOpen] = useState(false);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
-  const lastRestoredSnapshotId = useAppStore(s => s.lastRestoredSnapshotId);
-  const setLastRestoredSnapshotId = useAppStore(s => s.setLastRestoredSnapshotId);
-  const { gitStatus, pullProject } = useGitForge(currentProject?.id);
-  const { listSnapshots, restoreSnapshot } = useSnapshots();
+  const { gitStatus } = useGitForge(currentProject?.id);
   const { confirm, notice } = useDialogs();
-
-  // Fetch snapshots when git dropdown opens
-  const handleGitDropdownToggle = async () => {
-    if (!gitDropdownOpen && currentProject?.id) {
-      const result = await listSnapshots();
-      if (result?.snapshots) setSnapshots(result.snapshots);
-    }
-    setGitDropdownOpen(!gitDropdownOpen);
-  };
-
-  const handleRestoreSnapshot = async (snapshotId: string) => {
-    setRestoringId(snapshotId);
-    try {
-      await restoreSnapshot(snapshotId, { create_backup: true });
-      setLastRestoredSnapshotId(snapshotId);
-      setGitDropdownOpen(false);
-      onRestoreComplete?.();
-    } catch (e) {
-      console.error('Restore failed:', e);
-    } finally {
-      setRestoringId(null);
-    }
-  };
 
   // Delete a project: wipes the local directory (so a git repo/branch can be re-cloned
   // fresh) plus its sessions and snapshots. Asks for explicit confirmation first.
@@ -144,47 +114,6 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       setCreateError(e.message || 'Failed to create project');
     } finally {
       setCreatingProject(false);
-    }
-  };
-
-  const handleCommitPush = async () => {
-    if (!currentProject?.id) return;
-    setCommitting(true);
-    const wasRestore = !!lastRestoredSnapshotId;
-    try {
-      const res = await fetch(`/api/git/commit-push?project_id=${encodeURIComponent(currentProject.id)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: wasRestore ? 'Restore from snapshot' : 'Update from Monastery' }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // Surface the real reason — e.g. a diverged remote that needs a Pull first — instead of
-        // failing silently. The backend returns an actionable message in that case.
-        console.error('Commit/push failed:', data.error);
-        notice({ title: 'Commit & Push failed', message: String(data.error || 'Unknown error') });
-      } else {
-        onCommitComplete?.(data.message || 'Committed', data.snapshot_id, wasRestore);
-        setLastRestoredSnapshotId(null);
-      }
-    } catch (e) {
-      console.error('Commit/push error:', e);
-    } finally {
-      setCommitting(false);
-    }
-  };
-
-  const handlePull = async () => {
-    if (!currentProject?.id) return;
-    setPulling(true);
-    try {
-      const data = await pullProject();
-      onPullComplete?.(data.message || 'Pulled latest changes');
-    } catch (e: any) {
-      console.error('Pull error:', e);
-      notice({ title: 'Pull failed', message: String(e?.message || 'Unknown error') });
-    } finally {
-      setPulling(false);
     }
   };
 
@@ -375,13 +304,13 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
             </button>
           )}
 
-          {/* Git Menu — the one home for source control: status, pull, commit & push, snapshots */}
-          {gitStatus && currentProject && (
-            <div className="relative">
+          {/* Source & Ship chip — status at a glance; the drawer holds the actions */}
+          {currentProject && (
+            gitStatus ? (
               <button
-                onClick={handleGitDropdownToggle}
+                onClick={() => setSourceShipOpen(true)}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
-                title={`Branch: ${gitStatus.branch}\nAhead: ${gitStatus.ahead}, Behind: ${gitStatus.behind}\nFiles changed: ${gitStatus.changed_files.length}`}
+                title={`Source & Ship — branch ${gitStatus.branch}, ${gitStatus.changed_files.length} changed, ${gitStatus.ahead} ahead / ${gitStatus.behind} behind`}
               >
                 <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
                 <span className="text-xs text-monastery-text-secondary">
@@ -404,89 +333,16 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                 )}
                 <ChevronDown size={12} className="text-monastery-text-muted" />
               </button>
-
-              {gitDropdownOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setGitDropdownOpen(false)} />
-                  <div className="absolute top-full right-0 mt-1 w-72 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-96 overflow-y-auto">
-                    {/* Status summary */}
-                    <div className="px-3 py-2 text-xs text-monastery-text-secondary">
-                      <div className="flex items-center gap-1.5">
-                        <GitBranch size={12} className="text-monastery-text-muted" />
-                        <span className="font-medium">{gitStatus.branch}</span>
-                        <span className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'}>
-                          {gitStatus.is_clean ? 'clean' : `${gitStatus.changed_files.length} changed file${gitStatus.changed_files.length === 1 ? '' : 's'}`}
-                        </span>
-                      </div>
-                      {(gitStatus.ahead > 0 || gitStatus.behind > 0) && (
-                        <div className="mt-1 text-monastery-text-muted">
-                          {gitStatus.ahead > 0 && `${gitStatus.ahead} ahead`}
-                          {gitStatus.ahead > 0 && gitStatus.behind > 0 && ' · '}
-                          {gitStatus.behind > 0 && `${gitStatus.behind} behind origin/${gitStatus.branch}`}
-                        </div>
-                      )}
-                    </div>
-                    <div className="border-t border-monastery-dark-border my-1" />
-
-                    {/* Actions — always present, enabled by state, so the menu is predictable */}
-                    <button
-                      onClick={() => { setGitDropdownOpen(false); handlePull(); }}
-                      disabled={pulling || gitStatus.behind === 0}
-                      className="w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary disabled:opacity-40 disabled:hover:bg-transparent"
-                      title={gitStatus.behind > 0
-                        ? `origin/${gitStatus.branch} has ${gitStatus.behind} new commit(s) — pull them into your local copy (snapshots first)`
-                        : 'Nothing to pull — local copy is up to date with the remote'}
-                    >
-                      {pulling
-                        ? <span className="w-3.5 h-3.5 border border-amber-300 border-t-transparent rounded-full animate-spin" />
-                        : <ArrowDown size={14} className="text-amber-400" />}
-                      <span className="flex-1">{pulling ? 'Pulling…' : 'Pull from remote'}</span>
-                      {gitStatus.behind > 0 && <span className="text-xs text-amber-400">{gitStatus.behind}</span>}
-                    </button>
-                    <button
-                      onClick={() => { setGitDropdownOpen(false); handleCommitPush(); }}
-                      disabled={committing || gitStatus.is_clean}
-                      className="w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary disabled:opacity-40 disabled:hover:bg-transparent"
-                      title={gitStatus.is_clean ? 'No local changes to commit' : 'Commit all changes and push to remote'}
-                    >
-                      {committing
-                        ? <span className="w-3.5 h-3.5 border border-white border-t-transparent rounded-full animate-spin" />
-                        : <Upload size={14} className="text-monastery-pine" />}
-                      <span className="flex-1">{committing ? 'Pushing…' : 'Commit & Push'}</span>
-                      {!gitStatus.is_clean && <span className="text-xs text-amber-400">{gitStatus.changed_files.length}</span>}
-                    </button>
-
-                    {/* Snapshot History */}
-                    {snapshots.length > 0 && (
-                      <>
-                        <div className="border-t border-monastery-dark-border my-1" />
-                        <div className="px-3 py-1 text-xs text-monastery-text-muted font-medium uppercase tracking-wider">
-                          Snapshots
-                        </div>
-                        {snapshots.map((snap: any) => (
-                          <div key={snap.id} className="flex items-center gap-2 px-3 py-1.5 text-sm text-monastery-text-secondary hover:bg-monastery-dark-tertiary transition-colors">
-                            <div className="flex-1 min-w-0">
-                              <div className="text-xs truncate">{snap.name}</div>
-                              <div className="text-[10px] text-monastery-text-muted">
-                                {new Date(snap.created_at).toLocaleString()} · {snap.files_count} files
-                              </div>
-                            </div>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleRestoreSnapshot(snap.id); }}
-                              disabled={restoringId === snap.id}
-                              className="px-2 py-0.5 text-[10px] bg-monastery-dark-tertiary hover:bg-monastery-lantern hover:text-monastery-dark-bg rounded transition-colors disabled:opacity-50"
-                              title="Revert project to this snapshot"
-                            >
-                              {restoringId === snap.id ? '...' : 'Revert'}
-                            </button>
-                          </div>
-                        ))}
-                      </>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
+            ) : (
+              <button
+                onClick={() => setSourceShipOpen(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
+                title="Source & Ship — snapshots and deployment"
+              >
+                <Rocket size={14} className="text-monastery-lantern" />
+                <span className="text-xs text-monastery-text-secondary">Ship</span>
+              </button>
+            )
           )}
         </div>
 
@@ -520,14 +376,6 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
           )}
 
           <button
-            onClick={onOpenWizard}
-            className="px-3 py-1.5 bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg text-sm font-medium transition-colors"
-            title="Self-Host Wizard (Ctrl+Shift+D)"
-          >
-            Self-Host Wizard
-          </button>
-
-          <button
             onClick={() => setTheme(theme === 'monastery-dark' ? 'scriptorium-light' : 'monastery-dark')}
             className="p-2 hover:bg-monastery-dark-surface rounded-lg transition-colors"
             title={theme === 'monastery-dark' ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -546,6 +394,15 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       </header>
 
       <SettingsView isOpen={isSettingsOpen} initialTab={settingsTab} onClose={() => { setIsSettingsOpen(false); setSettingsTab(undefined); onRefreshProjects?.(); }} />
+
+      <SourceShipDrawer
+        open={sourceShipOpen}
+        onClose={() => setSourceShipOpen(false)}
+        onCommitComplete={onCommitComplete}
+        onRestoreComplete={onRestoreComplete}
+        onPullComplete={onPullComplete}
+        onOpenWizard={onOpenWizard}
+      />
 
       {/* New Project modal */}
       {newProjectOpen && (
