@@ -34,7 +34,7 @@ export function EditorPane({
   onAddTests,
 }: EditorPaneProps) {
   return (
-    <div className="h-full bg-monastery-dark-surface flex flex-col animate-slideInRight">
+    <div className="h-full bg-monastery-dark-surface flex flex-col animate-slideInRight rounded-xl overflow-hidden">
       {/* Tab Bar — tabs separate themselves by background, not ruled lines */}
       {tabs.length > 0 && (
         <div className="flex items-center bg-monastery-dark-bg overflow-x-auto shrink-0">

@@ -516,7 +516,9 @@ export default function App() {
   ];
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-monastery-dark-bg overflow-hidden">
+    // Transparent root: the body gradient is the page background, and panes float on it
+    // as rounded cards — the gutter between them is the divider (no ruled lines).
+    <div className="h-screen w-screen flex flex-col overflow-hidden">
       <CommandPalette
         commands={paletteCommands}
         files={flattenFiles(projectFiles)}
@@ -566,11 +568,11 @@ export default function App() {
         templateCtx={{ pocketbaseConfigured: !!pocketbaseConn }}
       />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2">
         {/* Left Sidebar — slides in/out with CSS transition */}
         <div
-          className={`transition-all duration-300 ease-in-out overflow-hidden ${
-            sidebarCollapsed ? 'w-0 border-r-0' : 'w-64 border-r border-monastery-dark-border'
+          className={`transition-all duration-300 ease-in-out overflow-hidden rounded-xl ${
+            sidebarCollapsed ? 'w-0' : 'w-64'
           }`}
         >
           <div className="w-64 h-full flex-shrink-0">
@@ -596,7 +598,7 @@ export default function App() {
             minSize={20}
             onResize={(size) => updatePaneLayout({ ...paneLayout, chat: size })}
           >
-           <div className="h-full flex flex-col">
+           <div className="h-full flex flex-col rounded-xl overflow-hidden">
             <div className="flex-1 min-h-0">
             <ChatPane
               activeTaskLabel={workflow.activeTask ? `${workflow.activeTask.title} · ${STAGE_LABEL[workflow.activeTask.stage]}` : null}
@@ -649,7 +651,7 @@ export default function App() {
           {/* Code Editor — has its own toggle, independent of the file-tree sidebar */}
           {!editorCollapsed && (
             <>
-              <PanelResizeHandle className="w-1 bg-transparent hover:bg-monastery-lantern/50 transition-colors cursor-col-resize" />
+              <PanelResizeHandle className="w-2 bg-transparent hover:bg-monastery-lantern/50 rounded transition-colors cursor-col-resize" />
               <Panel
                 defaultSize={previewCollapsed ? 100 - paneLayout.chat : paneLayout.editor}
                 minSize={20}
@@ -691,13 +693,13 @@ export default function App() {
           {/* Preview Pane — slides in/out */}
           {!previewCollapsed && (
             <>
-              <PanelResizeHandle className="w-1 bg-transparent hover:bg-monastery-lantern/50 transition-colors cursor-col-resize" />
+              <PanelResizeHandle className="w-2 bg-transparent hover:bg-monastery-lantern/50 rounded transition-colors cursor-col-resize" />
               <Panel
                 defaultSize={paneLayout.preview}
                 minSize={15}
                 onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
               >
-                <div className="h-full animate-slideInRight">
+                <div className="h-full animate-slideInRight rounded-xl overflow-hidden bg-monastery-dark-surface">
                   <PreviewPane projectId={currentProject?.id} />
                 </div>
               </Panel>

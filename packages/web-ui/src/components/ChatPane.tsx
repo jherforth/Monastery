@@ -322,21 +322,14 @@ export function ChatPane({
   };
 
   return (
-    <div className="flex flex-col h-full bg-monastery-dark-bg relative overflow-hidden">
-      {/* Monastery SVG background */}
-      <img
-        src={theme === 'monastery-dark' ? '/images/monasteryDark.svg' : '/images/monasteryLight.svg'}
-        alt=""
-        className="absolute inset-0 w-full h-full object-cover opacity-[0.07] pointer-events-none select-none"
-      />
-
+    <div className="flex flex-col h-full bg-monastery-dark-surface relative overflow-hidden">
       {/* Chat header — session switcher (sessions belong to the chat, not the file tree) */}
       {onSelectSession && (
         <div className="relative z-20 flex items-center gap-1 px-3 py-1.5 shrink-0">
           <div className="relative min-w-0">
             <button
               onClick={() => setSessionMenuOpen(o => !o)}
-              className="flex items-center gap-1.5 px-2 py-1 max-w-full hover:bg-monastery-dark-surface rounded-md transition-colors text-xs text-monastery-text-secondary"
+              className="flex items-center gap-1.5 px-2 py-1 max-w-full hover:bg-monastery-dark-tertiary rounded-md transition-colors text-xs text-monastery-text-secondary"
               title="Switch chat session"
             >
               <MessageSquare size={13} className="shrink-0" />
@@ -396,7 +389,7 @@ export function ChatPane({
           {onCreateSession && (
             <button
               onClick={onCreateSession}
-              className="p-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-monastery-text-secondary hover:text-monastery-text-primary shrink-0"
+              className="p-1 hover:bg-monastery-dark-tertiary rounded-md transition-colors text-monastery-text-secondary hover:text-monastery-text-primary shrink-0"
               title="New session"
             >
               <Plus size={14} />
@@ -410,7 +403,7 @@ export function ChatPane({
               className={`ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors shrink-0 max-w-[45%] ${
                 activeTaskLabel
                   ? 'bg-monastery-lantern/15 text-monastery-lantern hover:bg-monastery-lantern/25'
-                  : 'text-monastery-text-secondary hover:bg-monastery-dark-surface hover:text-monastery-text-primary'
+                  : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
               }`}
               title={activeTaskLabel ? 'Open the active task' : 'Structured tasks: Plan → Implement → Verify → Review'}
             >
@@ -446,28 +439,28 @@ export function ChatPane({
               <div className="grid grid-cols-2 gap-2 text-left max-w-sm mx-auto">
                 <button 
                   onClick={() => onSendMessage('Create a Next.js app with authentication')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
+                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Web App</div>
                   Create a Next.js app with authentication
                 </button>
                 <button 
                   onClick={() => onSendMessage('Explain how this project structure works')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
+                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Understand</div>
                   Explain this codebase structure
                 </button>
                 <button 
                   onClick={() => onSendMessage('Add unit tests to the existing module')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
+                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Testing</div>
                   Add tests to the existing module
                 </button>
                 <button 
                   onClick={() => onSendMessage('Deploy this project to my homelab server')}
-                  className="p-3 bg-monastery-dark-surface rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
+                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Deploy</div>
                   Deploy this to my homelab
@@ -519,8 +512,8 @@ export function ChatPane({
                   message.role === 'user'
                     ? 'bg-monastery-pine text-white'
                     : message.role === 'system'
-                    ? 'bg-monastery-dark-tertiary border border-monastery-dark-border text-center'
-                    : 'bg-monastery-dark-surface border border-monastery-dark-border'
+                    ? 'bg-monastery-dark-tertiary text-center'
+                    : 'bg-monastery-dark-bg'
                 }`}
               >
                 {/* Agent role chips on a user message (which role(s) it was sent under) */}
@@ -665,8 +658,8 @@ export function ChatPane({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
-      <form onSubmit={handleSubmit} className="border-t border-monastery-dark-border p-4">
+      {/* Input — no rule above it; the inset field carries its own edge */}
+      <form onSubmit={handleSubmit} className="p-4 pt-2">
         {/* Composer toolbar: a "+ Context" popover holds the registry-driven options (skills,
             behaviors) so new ones never widen this row; active ones surface as removable chips.
             The Chat/Agent mode selector sits at the right, with roles behind it in a popover. */}
@@ -857,7 +850,7 @@ export function ChatPane({
         )}
         
         <div className="flex items-end gap-2">
-          <label className="p-2 hover:bg-monastery-dark-surface rounded-lg transition-colors cursor-pointer">
+          <label className="p-2 hover:bg-monastery-dark-tertiary rounded-lg transition-colors cursor-pointer">
             <Paperclip size={20} className="text-monastery-text-secondary" />
             <input
               type="file"
@@ -882,7 +875,7 @@ export function ChatPane({
             disabled={!activeEndpoint && messages.length === 0}
             rows={1}
             style={{ maxHeight: MAX_INPUT_HEIGHT }}
-            className="flex-1 bg-monastery-dark-surface border border-monastery-dark-border rounded-xl px-4 py-3 text-sm resize-y overflow-y-auto focus:outline-none focus:border-monastery-pine transition-colors"
+            className="flex-1 bg-monastery-dark-bg border border-monastery-dark-border rounded-xl px-4 py-3 text-sm resize-y overflow-y-auto focus:outline-none focus:border-monastery-pine transition-colors"
           />
           
           {isGenerating ? (

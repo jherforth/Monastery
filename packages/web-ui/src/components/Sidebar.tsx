@@ -85,7 +85,7 @@ function FileTreeItem({ node, depth, onSelectFile, onDeleteFile, onCreateFile, o
         onDragOver={isDirectory ? handleDragOver : undefined}
         onDragLeave={isDirectory ? handleDragLeave : undefined}
         onDrop={isDirectory ? handleDrop : undefined}
-        className={`w-full flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-sm ${
+        className={`w-full flex items-center gap-1.5 px-2 py-1 hover:bg-monastery-dark-tertiary rounded-md transition-colors text-sm ${
           isDragOver ? 'bg-monastery-pine/20 ring-1 ring-monastery-pine' : ''
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
@@ -225,9 +225,8 @@ export function Sidebar({
   }, [showCreateMenu]);
 
   return (
-    // No border-r on the aside — the sidebar wrapper in App.tsx already draws the pane
-    // seam, and the two together rendered a doubled line.
-    <aside className="w-64 bg-monastery-dark-bg flex flex-col shrink-0">
+    // A rounded card on the page gradient (App wraps it) — surface tone, no borders.
+    <aside className="w-64 bg-monastery-dark-surface flex flex-col shrink-0 h-full">
       {/* The sidebar is the file tree — sessions live in the chat header, agent roles in the
           composer, and connections in Settings. */}
       <div className="flex-1 overflow-y-auto py-2">
@@ -243,7 +242,7 @@ export function Sidebar({
               {onRefreshFiles && (
                 <button
                   onClick={onRefreshFiles}
-                  className="p-1 hover:bg-monastery-dark-surface rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
+                  className="p-1 hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
                   title="Refresh files from disk (e.g. changes written by Hermes)"
                 >
                   <RefreshCw size={14} />
@@ -253,7 +252,7 @@ export function Sidebar({
               {/* Upload button */}
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="p-1 hover:bg-monastery-dark-surface rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
+                className="p-1 hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
                 title="Upload file to project"
               >
                 <Upload size={14} />
@@ -263,7 +262,7 @@ export function Sidebar({
               <div className="relative" ref={createMenuRef}>
                 <button
                   onClick={(e) => { e.stopPropagation(); setShowCreateMenu(!showCreateMenu); }}
-                  className="p-1 hover:bg-monastery-dark-surface rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
+                  className="p-1 hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
                   title="Create file or directory"
                 >
                   <Plus size={14} />

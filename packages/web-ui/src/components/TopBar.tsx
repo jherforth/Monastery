@@ -144,7 +144,8 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   
   return (
     <>
-      <header className="h-14 bg-monastery-dark-bg border-b border-monastery-dark-border flex items-center justify-between px-4 shrink-0">
+      {/* Floats on the page gradient — the gutter below it is the separation */}
+      <header className="h-14 flex items-center justify-between px-4 shrink-0">
         {/* Left: Logo + Project */}
         <div className="flex items-center gap-3">
           <button
