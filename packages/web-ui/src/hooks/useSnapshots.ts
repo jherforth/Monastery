@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { useAppStore } from '../store/useAppStore';
-import type { SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../types';
+import type { SnapshotDetail, SnapshotDiff } from '../types';
 
 interface CreateSnapshotRequest {
   name?: string;

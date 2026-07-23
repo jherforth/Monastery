@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, Plus, Play, Bot, FlaskConical, CheckCircle2, XCircle, Loader2, ArrowRight, X } from 'lucide-react';
+import { ChevronRight, Plus, Play, Bot, FlaskConical, CheckCircle2, XCircle, Loader2, ArrowRight, X } from 'lucide-react';
 import { useWorkflow, STAGES, specHasAcDod, latestVerify, type Stage } from '../hooks/useWorkflow';
 import { availableTemplates, getTemplate, type TaskTemplateContext } from '../lib/taskTemplates';
 
-const HINT_KEY = 'monastery.workflowHintSeen';
+export const STAGE_LABEL: Record<Stage, string> = {
+  plan: '🏗️ Plan', implement: '💻 Implement', verify: '🧪 Verify', review: '🔍 Review', done: '✅ Done',
+};
 
-interface WorkflowPanelProps {
+interface TaskDrawerProps {
+  open: boolean;
+  onClose: () => void;
   projectId?: string;
   workflow: ReturnType<typeof useWorkflow>;
   /** Run a stage through the chat flow (preferHermes hands it to the Hermes agent). */
@@ -18,26 +22,20 @@ interface WorkflowPanelProps {
   templateCtx: TaskTemplateContext;
 }
 
-const STAGE_LABEL: Record<Stage, string> = {
-  plan: '🏗️ Plan', implement: '💻 Implement', verify: '🧪 Verify', review: '🔍 Review', done: '✅ Done',
-};
-
-export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes, hermesAvailable, onApplySkills, templateCtx }: WorkflowPanelProps) {
+/**
+ * The staged-workflow task surface (Plan → Implement → Verify → Review → Done): task
+ * selection/creation, the spec.md system of record, gates, stage actions, and the
+ * exit-state chain. Lives in a right-side drawer opened from the chat header's task chip,
+ * so it no longer compresses the chat vertically.
+ */
+export function TaskDrawer({ open, onClose, projectId, workflow, onRunStage, onHandToHermes, hermesAvailable, onApplySkills, templateCtx }: TaskDrawerProps) {
   const { tasks, activeTask, spec, setSpec, createTask, loadTask, patchTask, verify, recordExit, refresh } = workflow;
-  const [open, setOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [templateId, setTemplateId] = useState('feature');
   const [busy, setBusy] = useState<string | null>(null);
   const [verifyOut, setVerifyOut] = useState<string | null>(null);
-  const [hintSeen, setHintSeen] = useState(() => {
-    try { return !!localStorage.getItem(HINT_KEY); } catch { return true; }
-  });
-  const dismissHint = () => {
-    try { localStorage.setItem(HINT_KEY, '1'); } catch { /* ignore */ }
-    setHintSeen(true);
-  };
 
-  if (!projectId) return null;
+  if (!open || !projectId) return null;
 
   const templates = availableTemplates(templateCtx);
 
@@ -83,67 +81,58 @@ export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes,
   };
 
   return (
-    <div className="border-b border-monastery-dark-border bg-monastery-dark-bg">
-      {/* Collapsed strip */}
-      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-2 px-4 py-2 text-xs text-monastery-text-secondary hover:text-monastery-text-primary">
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span className="font-medium">🛠 Workflow</span>
-        {activeTask ? (
-          <span className="text-monastery-text-muted truncate">· {activeTask.title} · <span className="text-monastery-lantern">{STAGE_LABEL[stage]}</span></span>
-        ) : (
-          <span className="text-monastery-text-muted">· no active task</span>
-        )}
-      </button>
-
-      {/* First-use hint — shown once, only when there are no tasks yet. */}
-      {!open && tasks.length === 0 && !hintSeen && (
-        <div className="mx-4 mb-2 flex items-start gap-2 rounded-lg border border-monastery-lantern/40 bg-monastery-lantern/10 px-3 py-2 text-[11px] text-monastery-text-secondary">
-          <span className="flex-1">
-            <span className="text-monastery-lantern font-medium">New — structured tasks.</span>{' '}
-            Drive coding as <b>Plan → Implement → Verify → Review</b> with a spec, gates, and a scoped
-            (token-frugal) context. Click <b>🛠 Workflow</b> above to start one.
-          </span>
-          <button onClick={dismissHint} className="shrink-0 hover:text-monastery-text-primary" title="Dismiss">
-            <X size={12} />
+    <>
+      <div className="fixed inset-0 z-30 bg-black/30" onClick={onClose} />
+      <aside className="fixed inset-y-0 right-0 z-40 w-[26rem] max-w-full bg-monastery-dark-bg border-l border-monastery-dark-border shadow-2xl flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 py-3 border-b border-monastery-dark-border shrink-0">
+          <div>
+            <h3 className="text-sm font-semibold text-monastery-text-primary">🛠 Tasks</h3>
+            <p className="text-[11px] text-monastery-text-muted">
+              Structured coding: Plan → Implement → Verify → Review, gated by a spec.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-monastery-dark-surface rounded-lg text-monastery-text-secondary" title="Close">
+            <X size={16} />
           </button>
         </div>
-      )}
 
-      {open && (
-        <div className="px-4 pb-3 space-y-3">
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {/* Task selector + create */}
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="space-y-2">
             <select
               value={activeTask?.id || ''}
               onChange={(e) => e.target.value && loadTask(e.target.value)}
-              className="bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1 text-xs max-w-[220px]"
+              className="w-full bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1.5 text-xs"
             >
               <option value="">— select task —</option>
               {tasks.map((t) => <option key={t.id} value={t.id}>{t.title} ({t.stage})</option>)}
             </select>
-            <input
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
-              placeholder="New task title"
-              className="flex-1 min-w-[140px] bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1 text-xs"
-            />
-            <select
-              value={templateId}
-              onChange={(e) => setTemplateId(e.target.value)}
-              title="Task template — seeds the spec"
-              className="bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1 text-xs"
-            >
-              {templates.map((t) => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
-            </select>
-            <button
-              type="button"
-              disabled={!newTitle.trim() || busy === 'create'}
-              onClick={handleCreate}
-              className="flex items-center gap-1 px-2 py-1 text-xs rounded-lg bg-monastery-lantern text-monastery-dark-bg font-medium disabled:opacity-50"
-            >
-              <Plus size={12} /> New
-            </button>
+            <div className="flex items-center gap-2">
+              <input
+                value={newTitle}
+                onChange={(e) => setNewTitle(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCreate(); }}
+                placeholder="New task title"
+                className="flex-1 min-w-0 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1.5 text-xs"
+              />
+              <select
+                value={templateId}
+                onChange={(e) => setTemplateId(e.target.value)}
+                title="Task template — seeds the spec"
+                className="bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1.5 text-xs"
+              >
+                {templates.map((t) => <option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}
+              </select>
+              <button
+                type="button"
+                disabled={!newTitle.trim() || busy === 'create'}
+                onClick={handleCreate}
+                className="flex items-center gap-1 px-2 py-1.5 text-xs rounded-lg bg-monastery-lantern text-monastery-dark-bg font-medium disabled:opacity-50 shrink-0"
+              >
+                <Plus size={12} /> New
+              </button>
+            </div>
           </div>
 
           {activeTask && (
@@ -179,7 +168,7 @@ export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes,
                 <textarea
                   value={spec}
                   onChange={(e) => setSpec(e.target.value)}
-                  rows={6}
+                  rows={10}
                   className="w-full bg-monastery-dark-surface border border-monastery-dark-border rounded-lg px-2 py-1.5 text-xs font-mono resize-y"
                   placeholder="Run the Plan stage to draft the spec, or write it here."
                 />
@@ -229,7 +218,7 @@ export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes,
               </div>
 
               {verifyOut && (
-                <pre className="text-[10px] bg-monastery-dark-surface border border-monastery-dark-border rounded-lg p-2 max-h-40 overflow-auto whitespace-pre-wrap">{verifyOut}</pre>
+                <pre className="text-[10px] bg-monastery-dark-surface border border-monastery-dark-border rounded-lg p-2 max-h-48 overflow-auto whitespace-pre-wrap">{verifyOut}</pre>
               )}
 
               {/* Exit-state chain (chain of custody) */}
@@ -247,8 +236,16 @@ export function WorkflowPanel({ projectId, workflow, onRunStage, onHandToHermes,
               <button onClick={() => refresh()} className="text-[10px] underline text-monastery-text-muted hover:text-monastery-text-primary">refresh</button>
             </>
           )}
+
+          {!activeTask && tasks.length === 0 && (
+            <p className="text-xs text-monastery-text-muted leading-relaxed">
+              No tasks yet. A task drives coding as <b>Plan → Implement → Verify → Review</b> with a
+              spec as the source of truth — the Architect plans which files are affected, and that
+              plan scopes every later step. Best for multi-file changes in larger projects.
+            </p>
+          )}
         </div>
-      )}
-    </div>
+      </aside>
+    </>
   );
 }

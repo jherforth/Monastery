@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { AppState, Message, LLMEndpoint, Project, Session, SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../types';
+import { AppState, Message, LLMEndpoint, Project, Session, SnapshotSummary, SnapshotDetail } from '../types';
 
 const defaultLayout = {
   chat: 25,
@@ -24,6 +24,9 @@ interface AppStore extends AppState {
   setTheme: (theme: 'monastery-dark' | 'scriptorium-light') => void;
   toggleSidebar: () => void;
   togglePreview: () => void;
+  /** The code editor pane has its own visibility, independent of the file-tree sidebar. */
+  editorCollapsed: boolean;
+  toggleEditor: () => void;
   updatePaneLayout: (layout: { chat: number; editor: number; preview: number }) => void;
   setResourceUsage: (usage: { cpu: number; memory: number; gpu?: number }) => void;
   
@@ -38,7 +41,7 @@ interface AppStore extends AppState {
 
 export const useAppStore = create<AppStore>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       // Initial state
       currentProject: null,
       sessions: [],
@@ -50,6 +53,7 @@ export const useAppStore = create<AppStore>()(
       theme: 'monastery-dark',
       sidebarCollapsed: true,
       previewCollapsed: true,
+      editorCollapsed: false,
       paneLayout: defaultLayout,
       
       // Snapshot initial state
@@ -107,8 +111,12 @@ export const useAppStore = create<AppStore>()(
         sidebarCollapsed: !state.sidebarCollapsed 
       })),
       
-      togglePreview: () => set((state) => ({ 
-        previewCollapsed: !state.previewCollapsed 
+      togglePreview: () => set((state) => ({
+        previewCollapsed: !state.previewCollapsed
+      })),
+
+      toggleEditor: () => set((state) => ({
+        editorCollapsed: !state.editorCollapsed
       })),
       
       updatePaneLayout: (layout) => set({ paneLayout: layout }),
@@ -138,6 +146,7 @@ export const useAppStore = create<AppStore>()(
         paneLayout: state.paneLayout,
         sidebarCollapsed: state.sidebarCollapsed,
         previewCollapsed: state.previewCollapsed,
+        editorCollapsed: state.editorCollapsed,
         endpoints: state.endpoints,
       }),
     }

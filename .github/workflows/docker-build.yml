@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Tag suffix (e.g. "3" for alpha-v0.1.3). Leave blank to auto-use the run number.'
+        description: 'Patch number (e.g. "3" for v0.2.3-alpha). Leave blank to auto-increment from the latest v0.2.x-alpha git tag.'
         required: false
         type: string
       update_latest:
@@ -24,11 +24,17 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # contents: write lets the workflow push the git tag that records each build,
+      # which is also what the auto-increment reads on the next run.
+      contents: write
       packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + tags so the auto-increment can see existing v0.2.x-alpha tags.
+          fetch-depth: 0
+          fetch-tags: true
 
       # GHCR requires lowercase image names; github.repository preserves repo casing
       # ("jherforth/Monastery"), which would fail the push.
@@ -36,17 +42,20 @@ jobs:
         id: image
         run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
-      # Manual runs still need SOME auto-incrementing fallback for the common case where you
-      # don't care about a specific number — the run number only advances when you actually
-      # click "Run workflow", so it stays meaningful now instead of ticking on every commit.
+      # Versioning: v0.2.<patch>-alpha, matching the GitHub release tag format. With no
+      # input, the patch is one past the highest existing v0.2.x-alpha git tag — and this
+      # workflow pushes a tag for every build it publishes, so the counter only advances
+      # when an image actually ships (unlike run_number, which ticked on every dispatch).
       - name: Compute version tag
         id: version
         run: |
           if [ -n "${{ inputs.version }}" ]; then
-            echo "tag=alpha-v0.1.${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            patch="${{ inputs.version }}"
           else
-            echo "tag=alpha-v0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+            latest=$(git tag -l 'v0.2.*-alpha' | sed -E 's/^v0\.2\.([0-9]+)-alpha$/\1/' | sort -n | tail -1)
+            patch=$(( ${latest:--1} + 1 ))
           fi
+          echo "tag=v0.2.${patch}-alpha" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -70,3 +79,17 @@ jobs:
             ${{ inputs.update_latest && format('{0}/{1}:latest', env.REGISTRY, steps.image.outputs.name) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Record the shipped build as a git tag (skipped when the tag already exists, e.g. a
+      # rebuild of a version that has a GitHub release).
+      - name: Tag this build
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists — skipping tag push"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "${tag}"
+            git push origin "${tag}"
+          fi
