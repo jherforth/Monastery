@@ -50,11 +50,17 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
     return () => window.removeEventListener('monastery:open-settings', handler);
   }, []);
 
-  // The command palette (and anything else) can open the Source & Ship drawer via this event.
+  // The command palette (and anything else) can open the Source & Ship drawer via this event;
+  // the close event keeps it mutually exclusive with the task drawer (both dock right).
   useEffect(() => {
-    const handler = () => setSourceShipOpen(true);
-    window.addEventListener('monastery:open-source-ship', handler);
-    return () => window.removeEventListener('monastery:open-source-ship', handler);
+    const openHandler = () => setSourceShipOpen(true);
+    const closeHandler = () => setSourceShipOpen(false);
+    window.addEventListener('monastery:open-source-ship', openHandler);
+    window.addEventListener('monastery:close-source-ship', closeHandler);
+    return () => {
+      window.removeEventListener('monastery:open-source-ship', openHandler);
+      window.removeEventListener('monastery:close-source-ship', closeHandler);
+    };
   }, []);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -315,7 +321,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
           {currentProject && (
             gitStatus ? (
               <button
-                onClick={() => setSourceShipOpen(true)}
+                onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
                 title={`Source & Ship — branch ${gitStatus.branch}, ${gitStatus.changed_files.length} changed, ${gitStatus.ahead} ahead / ${gitStatus.behind} behind`}
               >
@@ -342,7 +348,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
               </button>
             ) : (
               <button
-                onClick={() => setSourceShipOpen(true)}
+                onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
                 title="Source & Ship — snapshots and deployment"
               >

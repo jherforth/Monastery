@@ -441,7 +441,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
             {step > 0 && <button onClick={() => setStep(step - 1)} className="px-3 py-1.5 text-xs bg-monastery-dark-tertiary text-monastery-text-primary rounded-md hover:bg-monastery-dark-border transition-colors flex items-center gap-1"><ChevronLeft size={14} /> Back</button>}</div>
           <div className="flex items-center gap-2">
             <button onClick={() => { resetState(); onClose(); }} className="px-3 py-1.5 text-xs text-monastery-text-muted hover:text-monastery-text-primary transition-colors">Close</button>
-            {step < 2 && <button onClick={() => setStep(step + 1)} disabled={step === 0 && !platformConnected}
+            {step < 2 && <button onClick={() => setStep(step + 1)} disabled={step === 0 && (!selectedPlatform || !platformConnected)}
               className="px-4 py-1.5 text-xs bg-monastery-pine text-white rounded-md hover:bg-opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 font-medium transition-colors">Next <ChevronRight size={14} /></button>}</div></div>
         {!currentProject && <div className="px-5 pb-4"><p className="text-xs text-monastery-text-muted text-center">Open a project first to enable deployment.</p></div>}
       </div></div>);

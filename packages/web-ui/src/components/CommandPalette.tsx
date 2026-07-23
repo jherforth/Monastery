@@ -34,18 +34,20 @@ export function CommandPalette({ commands, files = [], onOpenFile }: CommandPale
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Global shortcut: Ctrl/Cmd+K toggles the palette.
+  // Global shortcut: Ctrl/Cmd+K toggles the palette. Capture phase so it wins even when
+  // focus is inside Monaco (which treats Ctrl+K as a chord leader and swallows it).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        e.stopPropagation();
         setOpen(o => !o);
         setQuery('');
         setSelected(0);
       }
     };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, []);
 
   useEffect(() => {
@@ -72,6 +74,11 @@ export function CommandPalette({ commands, files = [], onOpenFile }: CommandPale
     if (selected >= matches.length) setSelected(0);
   }, [matches.length, selected]);
 
+  // Keep the selected row visible while arrowing through a long list.
+  useEffect(() => {
+    listRef.current?.querySelector('[data-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [selected]);
+
   if (!open) return null;
 
   const close = () => { setOpen(false); setQuery(''); setSelected(0); };
@@ -85,7 +92,9 @@ export function CommandPalette({ commands, files = [], onOpenFile }: CommandPale
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    // stopPropagation so Escape only dismisses the palette — Settings and the drawers
+    // listen for Escape on window and would otherwise close underneath it too.
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
     else if (e.key === 'ArrowDown') { e.preventDefault(); setSelected(s => Math.min(s + 1, matches.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setSelected(s => Math.max(s - 1, 0)); }
     else if (e.key === 'Enter') { e.preventDefault(); runSelected(selected); }
@@ -128,6 +137,7 @@ export function CommandPalette({ commands, files = [], onOpenFile }: CommandPale
                   </div>
                 )}
                 <button
+                  data-selected={i === selected || undefined}
                   onClick={() => runSelected(i)}
                   onMouseEnter={() => setSelected(i)}
                   className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm transition-colors ${

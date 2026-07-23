@@ -58,6 +58,17 @@ export default function App() {
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [isTaskDrawerOpen, setIsTaskDrawerOpen] = useState(false);
+
+  // Both right-side drawers (tasks here, Source & Ship in TopBar) are mutually exclusive.
+  const openTaskDrawer = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('monastery:close-source-ship'));
+    setIsTaskDrawerOpen(true);
+  }, []);
+  useEffect(() => {
+    const handler = () => setIsTaskDrawerOpen(false);
+    window.addEventListener('monastery:open-source-ship', handler);
+    return () => window.removeEventListener('monastery:open-source-ship', handler);
+  }, []);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string }>>([]);
 
   // Endpoints for LLM selector in TopBar
@@ -489,7 +500,7 @@ export default function App() {
       keywords: 'open chat history',
       run: () => handleSelectSession(s.id),
     })),
-    { id: 'open-tasks', section: 'Tasks', label: workflow.activeTask ? `Open task: ${workflow.activeTask.title}` : 'Open tasks', keywords: 'workflow plan implement verify review', run: () => setIsTaskDrawerOpen(true) },
+    { id: 'open-tasks', section: 'Tasks', label: workflow.activeTask ? `Open task: ${workflow.activeTask.title}` : 'Open tasks', keywords: 'workflow plan implement verify review', run: openTaskDrawer },
     { id: 'source-ship', section: 'Ship', label: 'Open Source & Ship', keywords: 'git commit push pull snapshot revert', run: () => window.dispatchEvent(new CustomEvent('monastery:open-source-ship')) },
     { id: 'deploy', section: 'Ship', label: 'Deploy (Self-Host Wizard)', hint: 'Ctrl+Shift+D', keywords: 'dokploy coolify docker', run: () => setIsWizardOpen(true) },
     { id: 'toggle-sidebar', section: 'Layout', label: `${sidebarCollapsed ? 'Show' : 'Hide'} file tree`, run: toggleSidebar },
@@ -587,7 +598,7 @@ export default function App() {
             <div className="flex-1 min-h-0">
             <ChatPane
               activeTaskLabel={workflow.activeTask ? `${workflow.activeTask.title} · ${STAGE_LABEL[workflow.activeTask.stage]}` : null}
-              onOpenTasks={currentProject?.id ? () => setIsTaskDrawerOpen(true) : undefined}
+              onOpenTasks={currentProject?.id ? openTaskDrawer : undefined}
               messages={messages}
               onSendMessage={handleSendMessage}
               sessions={sessions}
