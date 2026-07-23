@@ -185,7 +185,6 @@ export default function App() {
   const {
     sessions,
     currentSession,
-    isLoading: isLoadingSessions,
     fetchSessions,
     createSession,
     getSession,
@@ -1667,12 +1666,6 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
               onUploadFile={handleUploadFile}
               onMoveFile={handleMoveFile}
               onRefreshFiles={refreshFileTree}
-              sessions={sessions}
-              currentSessionId={currentSession?.id ?? null}
-              isLoadingSessions={isLoadingSessions}
-              onCreateSession={handleCreateSession}
-              onSelectSession={handleSelectSession}
-              onDeleteSession={handleDeleteSession}
             />
           </div>
         </div>
@@ -1699,6 +1692,11 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
             <ChatPane
               messages={messages}
               onSendMessage={handleSendMessage}
+              sessions={sessions}
+              currentSessionId={currentSession?.id ?? null}
+              onCreateSession={handleCreateSession}
+              onSelectSession={handleSelectSession}
+              onDeleteSession={handleDeleteSession}
               activeAgentIds={activeAgentIds}
               onToggleAgent={toggleActiveAgent}
               maxActiveRoles={MAX_ACTIVE_ROLES}

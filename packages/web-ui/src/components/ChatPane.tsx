@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, Database, Loader2, Coins } from 'lucide-react';
-import { Message, Attachment } from '../types';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, Database, Loader2, Coins, MessageSquare, Plus, Trash2 } from 'lucide-react';
+import { Message, Attachment, SessionInfo } from '../types';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
 import { useAgents } from '../hooks/useAgents';
@@ -33,9 +33,33 @@ function ReasoningWindow({ reasoning }: { reasoning: string }) {
   );
 }
 
+// Compact relative timestamp for the session list ("5m ago", "3d ago").
+const formatSessionDate = (dateStr: string) => {
+  try {
+    const d = new Date(dateStr);
+    const diffMs = Date.now() - d.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return d.toLocaleDateString();
+  } catch {
+    return dateStr;
+  }
+};
+
 interface ChatPaneProps {
   messages: Message[];
   onSendMessage: (content: string, attachments?: Attachment[]) => void;
+  /** Chat sessions for the active project — shown in the header session switcher. */
+  sessions?: SessionInfo[];
+  currentSessionId?: string | null;
+  onCreateSession?: () => void;
+  onSelectSession?: (sessionId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
   /** Currently active agent role ids (a persistent "lens" over chat messages). */
   activeAgentIds?: string[];
   /** Toggle an agent role on/off (caller enforces the max). */
@@ -73,6 +97,11 @@ interface ChatPaneProps {
 export function ChatPane({
   messages,
   onSendMessage,
+  sessions = [],
+  currentSessionId = null,
+  onCreateSession,
+  onSelectSession,
+  onDeleteSession,
   activeAgentIds = [],
   onToggleAgent,
   maxActiveRoles = 2,
@@ -94,6 +123,7 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Shared compact-pill styling for the inline toolbar (toggles + agent role chips).
   const pill = (active: boolean) =>
@@ -288,7 +318,82 @@ export function ChatPane({
         alt=""
         className="absolute inset-0 w-full h-full object-cover opacity-[0.07] pointer-events-none select-none"
       />
-      
+
+      {/* Chat header — session switcher (sessions belong to the chat, not the file tree) */}
+      {onSelectSession && (
+        <div className="relative z-20 flex items-center gap-1 px-3 py-1.5 border-b border-monastery-dark-border shrink-0">
+          <div className="relative min-w-0">
+            <button
+              onClick={() => setSessionMenuOpen(o => !o)}
+              className="flex items-center gap-1.5 px-2 py-1 max-w-full hover:bg-monastery-dark-surface rounded-md transition-colors text-xs text-monastery-text-secondary"
+              title="Switch chat session"
+            >
+              <MessageSquare size={13} className="shrink-0" />
+              <span className="truncate">
+                {sessions.find(s => s.id === currentSessionId)?.title || 'New session'}
+              </span>
+              <ChevronDown size={12} className="text-monastery-text-muted shrink-0" />
+            </button>
+            {sessionMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setSessionMenuOpen(false)} />
+                <div className="absolute top-full left-0 mt-1 w-72 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-80 overflow-y-auto">
+                  {onCreateSession && (
+                    <>
+                      <button
+                        onClick={() => { onCreateSession(); setSessionMenuOpen(false); }}
+                        className="w-full text-left px-3 py-2 text-sm text-monastery-lantern hover:bg-monastery-dark-tertiary transition-colors flex items-center gap-2"
+                      >
+                        <Plus size={14} /> New Session
+                      </button>
+                      {sessions.length > 0 && <div className="border-t border-monastery-dark-border my-1" />}
+                    </>
+                  )}
+                  {sessions.map(session => (
+                    <div
+                      key={session.id}
+                      onClick={() => { onSelectSession(session.id); setSessionMenuOpen(false); }}
+                      className={`group flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors ${
+                        currentSessionId === session.id
+                          ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
+                          : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
+                      }`}
+                    >
+                      <MessageSquare size={14} className="shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm truncate">{session.title}</div>
+                        <div className="text-xs text-monastery-text-muted">
+                          {formatSessionDate(session.updated_at)}
+                          {session.message_count > 0 && ` · ${session.message_count} msgs`}
+                        </div>
+                      </div>
+                      {onDeleteSession && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onDeleteSession(session.id); }}
+                          className="opacity-0 group-hover:opacity-100 p-1 hover:bg-red-500/20 rounded transition-all shrink-0"
+                          title="Delete session"
+                        >
+                          <Trash2 size={12} className="text-red-400" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          {onCreateSession && (
+            <button
+              onClick={onCreateSession}
+              className="p-1 hover:bg-monastery-dark-surface rounded-md transition-colors text-monastery-text-secondary hover:text-monastery-text-primary shrink-0"
+              title="New session"
+            >
+              <Plus size={14} />
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 relative z-10">
         {messages.length === 0 ? (
