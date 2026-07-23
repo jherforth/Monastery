@@ -156,9 +156,18 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
   // When on, chat messages are routed to the Hermes agent instead of plain LLM streaming.
   // Only selectable when a default Hermes connection is configured.
   const [agentMode, setAgentModeRaw] = useState(false);
-  // When on, the LLM system context includes Pocketbase + deployment instructions (with the
-  // configured Pocketbase URL). Toggled by the user when building a DB-backed app.
-  const [useDatabaseContext, setUseDatabaseContext] = useState(false);
+  // Toggle-triggered skills the user has switched on (see lib/skills.ts) — e.g. 'pocketbase'
+  // injects backend + deployment instructions into the LLM context. Registry-driven: the
+  // composer renders whatever skills exist, so new domains need no UI changes.
+  const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
+  const toggleSkill = useCallback((id: string, on?: boolean) => {
+    setActiveSkillIds(ids => {
+      const has = ids.includes(id);
+      const want = on ?? !has;
+      if (want === has) return ids;
+      return want ? [...ids, id] : ids.filter(x => x !== id);
+    });
+  }, []);
   const [autoContinue, setAutoContinue] = useState(true);
   // Context discipline: in large projects we don't dump the whole repo into every message. The
   // "working set" is the subset of files (beyond the active file) currently included in context —
@@ -497,7 +506,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
     // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
     // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.
     buildSkillInstructions(
-      useDatabaseContext ? ['pocketbase'] : [],
+      activeSkillIds,
       { pocketbaseUrl: pocketbaseBaseUrl, userMessage: userMessageContent },
     ).forEach(block => contextParts.push(block));
 
@@ -545,7 +554,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
       );
     }
     return contextParts.length > 0 ? contextParts.join('\n\n') : null;
-  }, [activeAgentIds, getAgent, currentProject, useDatabaseContext, pocketbaseBaseUrl, workflow.activeTask, workflow.spec, projectFiles, allFileContents, currentFile, activeTab, isImagePath, workingSetPaths]);
+  }, [activeAgentIds, getAgent, currentProject, activeSkillIds, pocketbaseBaseUrl, workflow.activeTask, workflow.spec, projectFiles, allFileContents, currentFile, activeTab, isImagePath, workingSetPaths]);
 
   // Minimal one-shot LLM call that returns the full text (no UI message). Used by edit recovery.
   const streamChat = useCallback(async (chatMessages: Array<{ role: string; content: string }>): Promise<string> => {
@@ -1244,8 +1253,8 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
     setAutoContinue,
     agentMode,
     setAgentMode,
-    useDatabaseContext,
-    setUseDatabaseContext,
+    activeSkillIds,
+    toggleSkill,
     activeAgentIds,
     toggleActiveAgent,
     handleSendMessage,

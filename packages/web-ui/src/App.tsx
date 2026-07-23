@@ -2,7 +2,8 @@ import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useState, useEffect, useCallback } from 'react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
-import { ChatPane } from './components/ChatPane';
+import { ChatPane, type ComposerToggle } from './components/ChatPane';
+import { SKILLS } from './lib/skills';
 import { EditorPane } from './components/EditorPane';
 import { useEditorTabs, isImagePath } from './hooks/useEditorTabs';
 import { PreviewPane } from './components/PreviewPane';
@@ -94,8 +95,8 @@ export default function App() {
     setAutoContinue,
     agentMode,
     setAgentMode,
-    useDatabaseContext,
-    setUseDatabaseContext,
+    activeSkillIds,
+    toggleSkill,
     activeAgentIds,
     toggleActiveAgent,
     handleSendMessage,
@@ -123,6 +124,28 @@ export default function App() {
     isImagePath,
     updateTabContentByPath,
   });
+
+  // Composer "+ Context" options: fixed behaviors plus every available toggle skill from the
+  // registry — a new skill in lib/skills.ts shows up here with zero UI changes.
+  const contextToggles: ComposerToggle[] = [
+    {
+      id: 'auto-continue',
+      label: 'Auto-continue',
+      description: 'Automatically continue responses cut off by the output-token limit (capped)',
+      active: autoContinue,
+      onToggle: setAutoContinue,
+      showChip: false,
+    },
+    ...SKILLS
+      .filter(s => s.trigger === 'toggle' && (!s.available || s.available({ pocketbaseUrl: pocketbaseConn?.base_url })))
+      .map(s => ({
+        id: s.id,
+        label: s.label,
+        description: s.description,
+        active: activeSkillIds.includes(s.id),
+        onToggle: (on: boolean) => toggleSkill(s.id, on),
+      })),
+  ];
 
   // Sync persisted theme with the HTML data-theme attribute on load
   useEffect(() => {
@@ -517,7 +540,7 @@ export default function App() {
               onRunStage={(s: Stage) => runStage(s, false)}
               onHandToHermes={(s: Stage) => runStage(s, true)}
               hermesAvailable={!!hermesConnection}
-              onApplySkills={(ids) => { if (ids.includes('pocketbase')) setUseDatabaseContext(true); }}
+              onApplySkills={(ids) => ids.forEach(id => toggleSkill(id, true))}
               templateCtx={{ pocketbaseConfigured: !!pocketbaseConn }}
             />
             <div className="flex-1 min-h-0">
@@ -557,15 +580,11 @@ export default function App() {
                 // editor tabs and the LLM context map match the restored disk state.
                 reloadProjectState();
               }}
-              autoContinue={autoContinue}
-              onToggleAutoContinue={setAutoContinue}
+              contextToggles={contextToggles}
               isGenerating={isGenerating}
               hermesAvailable={!!hermesConnection}
               agentMode={agentMode}
               onToggleAgentMode={setAgentMode}
-              pocketbaseAvailable={!!pocketbaseConn}
-              useDatabaseContext={useDatabaseContext}
-              onToggleDatabaseContext={setUseDatabaseContext}
             />
             </div>
            </div>

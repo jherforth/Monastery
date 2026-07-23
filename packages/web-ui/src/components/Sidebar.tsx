@@ -1,7 +1,6 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, Plus, Trash2, Bot, FilePlus, FolderPlus, Upload, RefreshCw } from 'lucide-react';
+import { Folder, FileCode, ChevronRight, ChevronDown, Plus, Trash2, FilePlus, FolderPlus, Upload, RefreshCw } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileNode } from '../types';
-import { AgentsTab } from './AgentsTab';
 
 interface ContextMenuState {
   visible: boolean;
@@ -209,7 +208,6 @@ export function Sidebar({
   onMoveFile,
   onRefreshFiles,
 }: SidebarProps) {
-  const [activeTab, setActiveTab] = useState<'files' | 'agents'>('files');
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const createMenuRef = useRef<HTMLDivElement>(null);
@@ -226,35 +224,12 @@ export function Sidebar({
     return () => window.removeEventListener('click', handler);
   }, [showCreateMenu]);
 
-  const tabs = [
-    { id: 'files', label: 'Files', icon: Folder },
-    { id: 'agents', label: 'Agents', icon: Bot },
-  ] as const;
-
   return (
     <aside className="w-64 bg-monastery-dark-bg border-r border-monastery-dark-border flex flex-col shrink-0">
-      {/* Tabs */}
-      <div className="flex border-b border-monastery-dark-border">
-        {tabs.map((tab) => {
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 px-2 py-2 text-xs font-medium transition-colors ${
-                activeTab === tab.id
-                  ? 'text-monastery-lantern border-b-2 border-monastery-lantern'
-                  : 'text-monastery-text-secondary hover:text-monastery-text-primary'
-              }`}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Content */}
+      {/* The sidebar is the file tree — sessions live in the chat header, agent roles in the
+          composer, and connections in Settings. */}
       <div className="flex-1 overflow-y-auto py-2">
-        {activeTab === 'files' && (
+        {(
           <div>
             {/* Files Toolbar */}
             <div className="flex items-center gap-1 px-3 py-1.5 border-b border-monastery-dark-border mb-1">
@@ -344,10 +319,6 @@ export function Sidebar({
               </div>
             )}
           </div>
-        )}
-        
-        {activeTab === 'agents' && (
-          <AgentsTab />
         )}
       </div>
     </aside>
