@@ -177,14 +177,15 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                 <ChevronDown size={12} className="text-monastery-text-muted" />
               </button>
 
-              {/* Project Dropdown */}
+              {/* Project Dropdown — z-50 so pane chrome (e.g. the chat header) can never
+                  paint over an open top-bar menu */}
               {projectDropdownOpen && (
                 <>
                   <div
-                    className="fixed inset-0 z-10"
+                    className="fixed inset-0 z-40"
                     onClick={() => setProjectDropdownOpen(false)}
                   />
-                  <div className="absolute top-full left-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-72 overflow-y-auto">
+                  <div className="absolute top-full left-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-50 py-1 max-h-72 overflow-y-auto">
                     {availableProjects.length === 0 && (
                       <div className="px-3 py-2 text-xs text-monastery-text-muted">No projects yet — create one below.</div>
                     )}
@@ -269,8 +270,8 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
               
               {llmDropdownOpen && endpoints.length > 1 && (
                 <>
-                  <div className="fixed inset-0 z-10" onClick={() => setLlmDropdownOpen(false)} />
-                  <div className="absolute top-full right-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1">
+                  <div className="fixed inset-0 z-40" onClick={() => setLlmDropdownOpen(false)} />
+                  <div className="absolute top-full right-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-50 py-1">
                     {endpoints.map((ep) => (
                       <button
                         key={ep.id}

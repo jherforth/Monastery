@@ -225,7 +225,9 @@ export function Sidebar({
   }, [showCreateMenu]);
 
   return (
-    <aside className="w-64 bg-monastery-dark-bg border-r border-monastery-dark-border flex flex-col shrink-0">
+    // No border-r on the aside — the sidebar wrapper in App.tsx already draws the pane
+    // seam, and the two together rendered a doubled line.
+    <aside className="w-64 bg-monastery-dark-bg flex flex-col shrink-0">
       {/* The sidebar is the file tree — sessions live in the chat header, agent roles in the
           composer, and connections in Settings. */}
       <div className="flex-1 overflow-y-auto py-2">

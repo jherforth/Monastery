@@ -647,7 +647,7 @@ export default function App() {
           {/* Code Editor — has its own toggle, independent of the file-tree sidebar */}
           {!editorCollapsed && (
             <>
-              <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+              <PanelResizeHandle className="w-1 bg-transparent hover:bg-monastery-lantern/50 transition-colors cursor-col-resize" />
               <Panel
                 defaultSize={previewCollapsed ? 100 - paneLayout.chat : paneLayout.editor}
                 minSize={20}
@@ -689,7 +689,7 @@ export default function App() {
           {/* Preview Pane — slides in/out */}
           {!previewCollapsed && (
             <>
-              <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
+              <PanelResizeHandle className="w-1 bg-transparent hover:bg-monastery-lantern/50 transition-colors cursor-col-resize" />
               <Panel
                 defaultSize={paneLayout.preview}
                 minSize={15}

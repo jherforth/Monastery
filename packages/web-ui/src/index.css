@@ -11,11 +11,13 @@
   --color-lantern: #F4A460;
   --color-amber: #FFBF00;
   
-  /* Dark mode base — deep navy blue */
+  /* Dark mode base — deep navy blue. The border is a low-alpha blue-grey rather than a
+     solid color: it reads as definition on raised surfaces (menus, cards) but recedes on
+     flat chrome, so pane seams stop looking like ruled lines. */
   --bg-primary: #0A1628;
   --bg-secondary: #0F1D32;
   --bg-tertiary: #162744;
-  --border-color: #1A2D4A;
+  --border-color: rgba(148, 166, 196, 0.14);
   --text-primary: #E6EDF3;
   --text-secondary: #8B949E;
   --text-muted: #6E7681;
@@ -35,7 +37,7 @@
   --bg-primary: #F0F4FA;
   --bg-secondary: #FFFFFF;
   --bg-tertiary: #F5F8FC;
-  --border-color: #D0D8E4;
+  --border-color: rgba(20, 40, 70, 0.12);
   --text-primary: #0A1628;
   --text-secondary: #3A4A5C;
   --text-muted: #6B7B8D;
@@ -82,7 +84,9 @@ code, pre, .monaco-editor {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-color);
+  /* Slightly stronger than --border-color so the thumb stays findable now that the
+     border token is low-alpha. */
+  background: rgba(148, 166, 196, 0.28);
   border-radius: 4px;
 }
 
