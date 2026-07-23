@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus, Trash2, Code } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal, type SettingsTab } from './SettingsModal';
+import { useDialogs } from './ui/dialogs';
 import { useGitForge } from '../hooks/useGitForge';
 import { useSnapshots } from '../hooks/useSnapshots';
 import type { EndpointConfig } from '../hooks/useEndpoints';
@@ -65,6 +66,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   const setLastRestoredSnapshotId = useAppStore(s => s.setLastRestoredSnapshotId);
   const { gitStatus, pullProject } = useGitForge(currentProject?.id);
   const { listSnapshots, restoreSnapshot } = useSnapshots();
+  const { confirm, notice } = useDialogs();
 
   // Fetch snapshots when git dropdown opens
   const handleGitDropdownToggle = async () => {
@@ -92,23 +94,26 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   // Delete a project: wipes the local directory (so a git repo/branch can be re-cloned
   // fresh) plus its sessions and snapshots. Asks for explicit confirmation first.
   const handleDeleteProject = async (proj: { id: string; name: string }) => {
-    const confirmed = window.confirm(
-      `Delete project "${proj.name}"?\n\nThis permanently removes its local files, chat sessions, and snapshots. ` +
-      `Anything pushed to a git remote is unaffected — you can clone it again afterwards.`
-    );
+    const confirmed = await confirm({
+      title: `Delete project "${proj.name}"?`,
+      message: 'This permanently removes its local files, chat sessions, and snapshots. ' +
+        'Anything pushed to a git remote is unaffected — you can clone it again afterwards.',
+      danger: true,
+      confirmLabel: 'Delete project',
+    });
     if (!confirmed) return;
     setDeletingProjectId(proj.id);
     try {
       const res = await fetch(`/api/projects/${proj.id}`, { method: 'DELETE' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        alert(`Failed to delete project: ${err.error || res.statusText}`);
+        notice({ title: 'Failed to delete project', message: String(err.error || res.statusText) });
         return;
       }
       if (currentProject?.id === proj.id) setCurrentProject(null);
       onRefreshProjects?.();
     } catch (e: any) {
-      alert(`Failed to delete project: ${e?.message || e}`);
+      notice({ title: 'Failed to delete project', message: String(e?.message || e) });
     } finally {
       setDeletingProjectId(null);
     }
@@ -157,7 +162,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
         // Surface the real reason — e.g. a diverged remote that needs a Pull first — instead of
         // failing silently. The backend returns an actionable message in that case.
         console.error('Commit/push failed:', data.error);
-        alert(`Commit & Push failed:\n\n${data.error || 'Unknown error'}`);
+        notice({ title: 'Commit & Push failed', message: String(data.error || 'Unknown error') });
       } else {
         onCommitComplete?.(data.message || 'Committed', data.snapshot_id, wasRestore);
         setLastRestoredSnapshotId(null);
@@ -177,7 +182,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       onPullComplete?.(data.message || 'Pulled latest changes');
     } catch (e: any) {
       console.error('Pull error:', e);
-      alert(`Pull failed:\n\n${e?.message || 'Unknown error'}`);
+      notice({ title: 'Pull failed', message: String(e?.message || 'Unknown error') });
     } finally {
       setPulling(false);
     }

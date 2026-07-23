@@ -4,6 +4,7 @@ import { GitForgeSetup } from './GitForgeSetup';
 import { HostingServicesTab } from './HostingServicesTab';
 import { useHermesAgent } from '../hooks/useHermesAgent';
 import { useAppStore } from '../store/useAppStore';
+import { useDialogs } from './ui/dialogs';
 import { Cpu, GitBranch, Server, Bot, Trash2, Wifi, Star } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -40,6 +41,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
   const [hermesTestingId, setHermesTestingId] = useState<string | null>(null);
   const [hermesTestResults, setHermesTestResults] = useState<Record<string, { success: boolean; status: number; error?: string }>>({});
   const [hermesError, setHermesError] = useState<string | null>(null);
+  const { confirm: confirmDialog, notice } = useDialogs();
 
   // Honor deep links each time the modal opens with a requested tab.
   useEffect(() => {
@@ -61,12 +63,12 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
       await mutate();
     } catch (error) {
       console.error('Failed to add endpoint:', error);
-      alert('Failed to add endpoint. Please check the URL and try again.');
+      notice({ title: 'Failed to add endpoint', message: 'Please check the URL and try again.' });
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this endpoint?')) return;
+    if (!await confirmDialog({ title: 'Delete endpoint?', message: 'Are you sure you want to delete this endpoint?', danger: true, confirmLabel: 'Delete' })) return;
     try {
       await deleteEndpoint(id);
       await mutate();
@@ -445,7 +447,7 @@ export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProp
                             </button>
                             <button
                               onClick={async () => {
-                                if (!confirm(`Delete Hermes connection "${conn.name}"?`)) return;
+                                if (!await confirmDialog({ title: 'Delete Hermes connection?', message: `Delete Hermes connection "${conn.name}"?`, danger: true, confirmLabel: 'Delete' })) return;
                                 await deleteHermes(conn.id);
                               }}
                               className="px-2 py-1.5 text-xs text-red-500 hover:bg-red-500/10 rounded transition-colors"

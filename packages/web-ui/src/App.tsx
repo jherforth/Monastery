@@ -20,10 +20,12 @@ import {
   MAX_ACTIVE_ROLES,
   WORKFLOW_NUDGE_SUPPRESS_KEY,
 } from './hooks/useChatOrchestrator';
+import { useDialogs } from './components/ui/dialogs';
 import { Message } from './types';
 
 export default function App() {
   const { sidebarCollapsed, previewCollapsed, editorCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
+  const { confirm, promptText } = useDialogs();
 
   // Multi-tab editor state (open files, active buffer)
   const {
@@ -262,13 +264,13 @@ export default function App() {
 
   // Shared delete-with-confirmation helper
   const deleteWithConfirm = useCallback(async (
-    _path: string,
+    title: string,
     endpoint: string,
     confirmMsg: string,
     onSuccess?: () => void,
   ) => {
     if (!currentProject?.id) return;
-    if (!window.confirm(confirmMsg)) return;
+    if (!await confirm({ title, message: confirmMsg, danger: true, confirmLabel: 'Delete' })) return;
     try {
       const res = await fetch(endpoint, { method: 'DELETE' });
       if (!res.ok) {
@@ -287,7 +289,7 @@ export default function App() {
   const handleDeleteFile = useCallback(async (path: string) => {
     const name = path.split('/').pop() || path;
     await deleteWithConfirm(
-      path,
+      'Delete file?',
       `/api/projects/${currentProject!.id}/files?path=${encodeURIComponent(path)}`,
       `Delete "${name}"? This cannot be undone.`,
       () => setOpenTabs(prev => prev.filter(t => t.path !== path)),
@@ -297,7 +299,7 @@ export default function App() {
   // Create a new directory (user-initiated, no LLM)
   const handleCreateDirectory = useCallback(async (parentPath: string) => {
     if (!currentProject?.id) return;
-    const name = window.prompt('Directory name:');
+    const name = await promptText({ title: 'New directory', label: 'Directory name', placeholder: 'components' });
     if (!name || !name.trim()) return;
     const dirPath = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
     try {
@@ -319,7 +321,7 @@ export default function App() {
   const handleDeleteDirectory = useCallback(async (path: string) => {
     const name = path.split('/').pop() || path;
     await deleteWithConfirm(
-      path,
+      'Delete directory?',
       `/api/projects/${currentProject!.id}/files/dir?path=${encodeURIComponent(path)}`,
       `Delete directory "${name}" and ALL its contents? This cannot be undone.`,
       () => setOpenTabs(prev => prev.filter(t => !t.path.startsWith(path + '/'))),
@@ -329,7 +331,7 @@ export default function App() {
   // Create a new file (user-initiated, no LLM)
   const handleCreateFile = useCallback(async (parentPath: string) => {
     if (!currentProject?.id) return;
-    const name = window.prompt('File name (e.g., index.ts):');
+    const name = await promptText({ title: 'New file', label: 'File name', placeholder: 'index.ts' });
     if (!name || !name.trim()) return;
     const filePath = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
     try {
