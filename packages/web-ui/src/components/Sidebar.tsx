@@ -1,132 +1,7 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, Plus, Trash2, Loader2, Cpu, GitBranch, Server, CheckCircle2, Bot, FilePlus, FolderPlus, Upload, RefreshCw } from 'lucide-react';
+import { Folder, FileCode, ChevronRight, ChevronDown, Plus, Trash2, Bot, FilePlus, FolderPlus, Upload, RefreshCw } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { FileNode } from '../types';
-import { useEndpoints } from '../hooks/useEndpoints';
-import { useGitForge } from '../hooks/useGitForge';
-import { useHostingServices } from '../hooks/useHostingServices';
 import { AgentsTab } from './AgentsTab';
-
-function IntegrationsStatus() {
-  const { endpoints, isLoading: llmLoading } = useEndpoints();
-  const { connections: gitConns, isLoading: gitLoading } = useGitForge();
-  const { connections: hostingConns, isLoading: hostingLoading } = useHostingServices();
-
-  const isLoading = llmLoading || gitLoading || hostingLoading;
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-8 text-monastery-text-muted">
-        <Loader2 size={18} className="animate-spin" />
-      </div>
-    );
-  }
-
-  const activeLLM = endpoints.filter(e => e.is_favorite).length;
-  const totalLLM = endpoints.length;
-  const activeGit = gitConns.length;
-  const activeHosting = hostingConns.length;
-  const totalActive = activeLLM + activeGit + activeHosting;
-
-  const serviceLabel = (type: string) => {
-    switch (type) {
-      case 'dokploy': return 'Dokploy';
-      case 'coolify': return 'Coolify';
-      case 'pocketbase': return 'Pocketbase';
-      default: return type;
-    }
-  };
-
-  return (
-    <div className="px-3 py-2 space-y-4">
-      {/* Summary */}
-      <div className="flex items-center gap-2 px-1">
-        <div className={`w-2 h-2 rounded-full ${totalActive > 0 ? 'bg-green-400' : 'bg-monastery-text-muted'}`} />
-        <span className="text-xs text-monastery-text-secondary">
-          {totalActive > 0 ? `${totalActive} active` : 'No active integrations'}
-        </span>
-      </div>
-
-      {/* LLM Endpoints */}
-      <div>
-        <div className="flex items-center gap-1.5 px-1 mb-1.5">
-          <Cpu size={12} className="text-monastery-lantern" />
-          <span className="text-xs font-medium text-monastery-text-primary">LLM Endpoints</span>
-          <span className="text-xs text-monastery-text-muted">({totalLLM})</span>
-        </div>
-        {endpoints.length === 0 ? (
-          <p className="px-3 text-xs text-monastery-text-muted italic">None configured</p>
-        ) : (
-          <div className="space-y-0.5">
-            {endpoints.map(ep => (
-              <div key={ep.id} className="flex items-center gap-1.5 px-3 py-1 text-xs">
-                <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
-                <span className="text-monastery-text-secondary truncate">{ep.name}</span>
-                {ep.is_local && (
-                  <span className="text-[10px] text-monastery-text-muted bg-monastery-dark-tertiary px-1 rounded">local</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Git Forges */}
-      <div>
-        <div className="flex items-center gap-1.5 px-1 mb-1.5">
-          <GitBranch size={12} className="text-monastery-pine" />
-          <span className="text-xs font-medium text-monastery-text-primary">Git Forges</span>
-          <span className="text-xs text-monastery-text-muted">({activeGit})</span>
-        </div>
-        {gitConns.length === 0 ? (
-          <p className="px-3 text-xs text-monastery-text-muted italic">None configured</p>
-        ) : (
-          <div className="space-y-0.5">
-            {gitConns.map(conn => (
-              <div key={conn.id} className="flex items-center gap-1.5 px-3 py-1 text-xs">
-                <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
-                <span className="text-monastery-text-secondary truncate">
-                  {conn.forge_type === 'github' ? 'GitHub' : conn.forge_type === 'gitlab' ? 'GitLab' : conn.forge_type === 'forgejo' ? 'Forgejo' : 'Gitea'}
-                </span>
-                {conn.username && (
-                  <span className="text-[10px] text-monastery-text-muted">({conn.username})</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Hosting Services */}
-      <div>
-        <div className="flex items-center gap-1.5 px-1 mb-1.5">
-          <Server size={12} className="text-purple-400" />
-          <span className="text-xs font-medium text-monastery-text-primary">Hosting Services</span>
-          <span className="text-xs text-monastery-text-muted">({activeHosting})</span>
-        </div>
-        {hostingConns.length === 0 ? (
-          <p className="px-3 text-xs text-monastery-text-muted italic">None configured</p>
-        ) : (
-          <div className="space-y-0.5">
-            {hostingConns.map(conn => (
-              <div key={conn.id} className="flex items-center gap-1.5 px-3 py-1 text-xs">
-                <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
-                <span className="text-monastery-text-secondary truncate">{serviceLabel(conn.service_type)}</span>
-                <span className="text-[10px] text-monastery-text-muted truncate">{conn.base_url}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Quick link to Settings */}
-      <div className="pt-1 border-t border-monastery-dark-border">
-        <p className="px-1 text-[10px] text-monastery-text-muted italic">
-          Manage connections in Settings
-        </p>
-      </div>
-    </div>
-  );
-}
 
 interface ContextMenuState {
   visible: boolean;
@@ -334,7 +209,7 @@ export function Sidebar({
   onMoveFile,
   onRefreshFiles,
 }: SidebarProps) {
-  const [activeTab, setActiveTab] = useState<'files' | 'agents' | 'integrations'>('files');
+  const [activeTab, setActiveTab] = useState<'files' | 'agents'>('files');
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const createMenuRef = useRef<HTMLDivElement>(null);
@@ -354,7 +229,6 @@ export function Sidebar({
   const tabs = [
     { id: 'files', label: 'Files', icon: Folder },
     { id: 'agents', label: 'Agents', icon: Bot },
-    { id: 'integrations', label: 'Integrations', icon: Server },
   ] as const;
 
   return (
@@ -474,10 +348,6 @@ export function Sidebar({
         
         {activeTab === 'agents' && (
           <AgentsTab />
-        )}
-        
-        {activeTab === 'integrations' && (
-          <IntegrationsStatus />
         )}
       </div>
     </aside>
