@@ -96,7 +96,7 @@ const stitchContinuation = (base: string, cont: string): string => {
 };
 
 export default function App() {
-  const { sidebarCollapsed, previewCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
+  const { sidebarCollapsed, previewCollapsed, editorCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
   
   // Multi-tab editor state
   interface EditorTab { path: string; content: string; isDirty: boolean; }
@@ -1674,7 +1674,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         <PanelGroup direction="horizontal" className="flex-1">
           {/* Chat Pane — always visible */}
           <Panel
-            defaultSize={sidebarCollapsed ? (previewCollapsed ? 100 : paneLayout.chat) : paneLayout.chat}
+            defaultSize={editorCollapsed && previewCollapsed ? 100 : paneLayout.chat}
             minSize={20}
             onResize={(size) => updatePaneLayout({ ...paneLayout, chat: size })}
           >
@@ -1748,8 +1748,8 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
            </div>
           </Panel>
 
-          {/* Code Editor — only visible when sidebar is open */}
-          {!sidebarCollapsed && (
+          {/* Code Editor — has its own toggle, independent of the file-tree sidebar */}
+          {!editorCollapsed && (
             <>
               <PanelResizeHandle className="w-1 bg-monastery-dark-border hover:bg-monastery-lantern transition-colors cursor-col-resize" />
               <Panel 

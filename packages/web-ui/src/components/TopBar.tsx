@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus, Trash2 } from 'lucide-react';
+import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus, Trash2, Code } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsModal } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
@@ -25,8 +25,10 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
     resourceUsage, 
     toggleSidebar,
     togglePreview,
+    toggleEditor,
     sidebarCollapsed,
     previewCollapsed,
+    editorCollapsed,
     theme,
     setTheme,
     setActiveEndpoint,
@@ -472,6 +474,15 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
 
         {/* Right: Actions */}
         <div className="flex items-center gap-2">
+          {/* Editor Toggle */}
+          <button
+            onClick={toggleEditor}
+            className={`p-2 hover:bg-monastery-dark-surface rounded-lg transition-colors ${editorCollapsed ? 'text-monastery-text-muted' : 'text-monastery-lantern'}`}
+            title={editorCollapsed ? 'Show code editor' : 'Hide code editor'}
+          >
+            <Code size={18} />
+          </button>
+
           {/* Preview Toggle */}
           <button
             onClick={togglePreview}
