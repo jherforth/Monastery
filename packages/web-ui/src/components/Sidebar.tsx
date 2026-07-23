@@ -234,7 +234,9 @@ export function Sidebar({
         {(
           <div>
             {/* Files Toolbar */}
-            <div className="flex items-center gap-1 px-3 py-1.5 border-b border-monastery-dark-border mb-1">
+            {/* No rule under the toolbar — the label + spacing is the header; one soft line
+                per major boundary, none inside a pane. */}
+            <div className="flex items-center gap-1 px-3 py-1.5 mb-1">
               <span className="text-xs text-monastery-text-muted flex-1">Files</span>
 
               {/* Refresh from disk — surfaces files written outside Monastery (e.g. by Hermes) */}

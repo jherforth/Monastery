@@ -35,14 +35,14 @@ export function EditorPane({
 }: EditorPaneProps) {
   return (
     <div className="h-full bg-monastery-dark-surface flex flex-col animate-slideInRight">
-      {/* Tab Bar */}
+      {/* Tab Bar — tabs separate themselves by background, not ruled lines */}
       {tabs.length > 0 && (
-        <div className="flex items-center border-b border-monastery-dark-border bg-monastery-dark-bg overflow-x-auto shrink-0">
+        <div className="flex items-center bg-monastery-dark-bg overflow-x-auto shrink-0">
           {tabs.map((tab, i) => (
             <div
               key={tab.path}
               onClick={() => onSelectTab(i)}
-              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-r border-monastery-dark-border transition-colors shrink-0 ${
+              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer transition-colors shrink-0 ${
                 i === activeTabIndex
                   ? 'bg-monastery-dark-surface text-monastery-text-primary border-t-2 border-t-monastery-lantern'
                   : 'text-monastery-text-secondary hover:bg-monastery-dark-surface hover:text-monastery-text-primary'
@@ -64,7 +64,7 @@ export function EditorPane({
       )}
 
       {/* Editor Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-monastery-dark-border shrink-0">
+      <div className="flex items-center justify-between px-3 py-1.5 shrink-0">
         <span className="text-xs text-monastery-text-muted truncate">
           {currentFile || 'No file selected'}
         </span>

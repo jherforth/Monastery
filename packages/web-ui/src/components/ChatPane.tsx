@@ -332,7 +332,7 @@ export function ChatPane({
 
       {/* Chat header — session switcher (sessions belong to the chat, not the file tree) */}
       {onSelectSession && (
-        <div className="relative z-20 flex items-center gap-1 px-3 py-1.5 border-b border-monastery-dark-border shrink-0">
+        <div className="relative z-20 flex items-center gap-1 px-3 py-1.5 shrink-0">
           <div className="relative min-w-0">
             <button
               onClick={() => setSessionMenuOpen(o => !o)}
