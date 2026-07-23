@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useEndpoints } from '../hooks/useEndpoints';
 import { GitForgeSetup } from './GitForgeSetup';
 import { HostingServicesTab } from './HostingServicesTab';
@@ -9,11 +9,13 @@ import { Cpu, GitBranch, Server, Bot, Trash2, Wifi, Star } from 'lucide-react';
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** Tab to show when the modal opens (deep link, e.g. from "Open Settings" buttons). */
+  initialTab?: SettingsTab;
 }
 
-type SettingsTab = 'llm' | 'git' | 'hosting' | 'hermes';
+export type SettingsTab = 'llm' | 'git' | 'hosting' | 'hermes';
 
-export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
+export function SettingsModal({ isOpen, onClose, initialTab }: SettingsModalProps) {
   const { endpoints, isLoading, addEndpoint, deleteEndpoint, testEndpoint, mutate } = useEndpoints();
   const setActiveEndpoint = useAppStore(s => s.setActiveEndpoint);
   const [newEndpoint, setNewEndpoint] = useState({
@@ -38,6 +40,11 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   const [hermesTestingId, setHermesTestingId] = useState<string | null>(null);
   const [hermesTestResults, setHermesTestResults] = useState<Record<string, { success: boolean; status: number; error?: string }>>({});
   const [hermesError, setHermesError] = useState<string | null>(null);
+
+  // Honor deep links each time the modal opens with a requested tab.
+  useEffect(() => {
+    if (isOpen && initialTab) setActiveTab(initialTab);
+  }, [isOpen, initialTab]);
 
   if (!isOpen) return null;
 

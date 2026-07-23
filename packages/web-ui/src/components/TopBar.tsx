@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Upload, Plus, Trash2, Code } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
-import { SettingsModal } from './SettingsModal';
+import { SettingsModal, type SettingsTab } from './SettingsModal';
 import { useGitForge } from '../hooks/useGitForge';
 import { useSnapshots } from '../hooks/useSnapshots';
 import type { EndpointConfig } from '../hooks/useEndpoints';
@@ -35,6 +35,19 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
   } = useAppStore();
   
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
+
+  // Anywhere in the app can deep-link into Settings via this event
+  // (e.g. "Open Settings" in the Agents tab targets the Hermes tab).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const tab = (e as CustomEvent).detail?.tab as SettingsTab | undefined;
+      setSettingsTab(tab);
+      setIsSettingsOpen(true);
+    };
+    window.addEventListener('monastery:open-settings', handler);
+    return () => window.removeEventListener('monastery:open-settings', handler);
+  }, []);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -527,7 +540,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
         </div>
       </header>
 
-      <SettingsModal isOpen={isSettingsOpen} onClose={() => { setIsSettingsOpen(false); onRefreshProjects?.(); }} />
+      <SettingsModal isOpen={isSettingsOpen} initialTab={settingsTab} onClose={() => { setIsSettingsOpen(false); setSettingsTab(undefined); onRefreshProjects?.(); }} />
 
       {/* New Project modal */}
       {newProjectOpen && (
