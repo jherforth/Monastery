@@ -1,10 +1,10 @@
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { X } from 'lucide-react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { ChatPane } from './components/ChatPane';
-import { CodeEditor } from './components/CodeEditor';
+import { EditorPane } from './components/EditorPane';
+import { useEditorTabs, isImagePath } from './hooks/useEditorTabs';
 import { PreviewPane } from './components/PreviewPane';
 import { SelfHostWizard } from './components/SelfHostWizard';
 import { useAppStore } from './store/useAppStore';
@@ -98,17 +98,24 @@ const stitchContinuation = (base: string, cont: string): string => {
 export default function App() {
   const { sidebarCollapsed, previewCollapsed, editorCollapsed, paneLayout, updatePaneLayout, theme, currentProject, setCurrentProject } = useAppStore();
   
-  // Multi-tab editor state
-  interface EditorTab { path: string; content: string; isDirty: boolean; }
-  // Binary image formats get an image viewer instead of Monaco (SVG stays editable text).
-  const isImagePath = (p: string) =>
-    ['png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'bmp', 'avif'].includes(p.split('.').pop()?.toLowerCase() || '');
-  const [openTabs, setOpenTabs] = useState<EditorTab[]>([]);
-  const [activeTabIndex, setActiveTabIndex] = useState(0);
-  const activeTab = openTabs[activeTabIndex];
-  const currentFile = activeTab?.path || '';
-  const editorContent = activeTab?.content || '// Select a file to edit';
-  
+  // Multi-tab editor state (open files, active buffer)
+  const {
+    openTabs,
+    setOpenTabs,
+    activeTabIndex,
+    setActiveTabIndex,
+    activeTab,
+    currentFile,
+    editorContent,
+    resetTabs,
+    openFileInTab,
+    closeTab,
+    updateTabContent,
+    markTabSaved,
+    updateTabContentByPath,
+  } = useEditorTabs(currentProject?.id);
+
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
@@ -239,8 +246,7 @@ export default function App() {
   // Fetch project files when currentProject changes
   useEffect(() => {
     // Clear tabs when switching projects
-    setOpenTabs([]);
-    setActiveTabIndex(0);
+    resetTabs();
     
     if (!currentProject?.id) {
       setProjectFiles([]);
@@ -495,73 +501,22 @@ export default function App() {
     }
   }, [currentProject?.id, refreshFileTree]);
 
-  // --- Multi-tab editor helpers ---
-  const openFileInTab = useCallback(async (path: string) => {
-    // Check if already open
-    const existingIdx = openTabs.findIndex(t => t.path === path);
-    if (existingIdx >= 0) {
-      setActiveTabIndex(existingIdx);
-      return;
-    }
-    // Images: no text content to fetch (binary on disk) — the tab renders an <img> viewer.
-    if (isImagePath(path)) {
-      setOpenTabs(prev => {
-        const updated = [...prev, { path, content: '', isDirty: false }];
-        setActiveTabIndex(updated.length - 1);
-        return updated;
-      });
-      return;
-    }
-    // Fetch file content and add as new tab
+  // Save the active editor buffer to disk and sync the LLM context map.
+  const handleSaveFile = useCallback(async () => {
+    if (!currentProject?.id || !currentFile) return;
     try {
-      const res = await fetch(`/api/projects/${currentProject!.id}/files/read?path=${encodeURIComponent(path)}`);
-      const data = res.ok ? await res.json() : null;
-      const content = data?.content || `// ${path}`;
-      const newTab: EditorTab = { path, content, isDirty: false };
-      setOpenTabs(prev => {
-        const updated = [...prev, newTab];
-        setActiveTabIndex(updated.length - 1);
-        return updated;
+      await fetch(`/api/projects/${currentProject.id}/files/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: currentFile, content: editorContent }),
       });
-    } catch {
-      const newTab: EditorTab = { path, content: `// ${path}`, isDirty: false };
-      setOpenTabs(prev => {
-        const updated = [...prev, newTab];
-        setActiveTabIndex(updated.length - 1);
-        return updated;
-      });
+      markTabSaved();
+      // Keep the LLM context map in sync with the saved file.
+      setAllFileContents(prev => ({ ...prev, [currentFile]: editorContent }));
+    } catch (e) {
+      console.error('Save failed:', e);
     }
-  }, [currentProject, openTabs]);
-
-  const closeTab = useCallback((index: number) => {
-    setOpenTabs(prev => {
-      const updated = prev.filter((_, i) => i !== index);
-      if (activeTabIndex >= updated.length) {
-        setActiveTabIndex(Math.max(0, updated.length - 1));
-      } else if (index < activeTabIndex) {
-        setActiveTabIndex(prev => prev - 1);
-      }
-      return updated;
-    });
-  }, [activeTabIndex]);
-
-  const updateTabContent = useCallback((content: string) => {
-    setOpenTabs(prev => prev.map((t, i) =>
-      i === activeTabIndex ? { ...t, content, isDirty: true } : t
-    ));
-  }, [activeTabIndex]);
-
-  const markTabSaved = useCallback(() => {
-    setOpenTabs(prev => prev.map((t, i) =>
-      i === activeTabIndex ? { ...t, isDirty: false } : t
-    ));
-  }, [activeTabIndex]);
-
-  const updateTabContentByPath = useCallback((path: string, content: string) => {
-    setOpenTabs(prev => prev.map(t =>
-      t.path === path ? { ...t, content, isDirty: false } : t
-    ));
-  }, []);
+  }, [currentProject?.id, currentFile, editorContent, markTabSaved]);
 
   // Parse an assistant response for code blocks / shell commands and apply them to
   // the project on disk. Shared by the initial send and the manual "Continue" action
@@ -1618,8 +1573,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         }}
         onRestoreComplete={() => {
           // Full refresh after snapshot restore
-          setOpenTabs([]);
-          setActiveTabIndex(0);
+          resetTabs();
           if (currentProject?.id) {
             fetch(`/api/projects/${currentProject.id}/files`)
               .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
@@ -1630,8 +1584,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         onPullComplete={(msg) => {
           // Reload files + LLM context so the pulled-in remote changes are adopted everywhere,
           // and drop a marker in chat. Open tabs are reset so no stale buffer overwrites merged work.
-          setOpenTabs([]);
-          setActiveTabIndex(0);
+          resetTabs();
           if (currentProject?.id) {
             fetch(`/api/projects/${currentProject.id}/files`)
               .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
@@ -1723,8 +1676,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
               onReverted={() => {
                 // Reload everything after an in-chat "Abandon these changes" restore so the
                 // editor tabs and the LLM context map match the restored disk state.
-                setOpenTabs([]);
-                setActiveTabIndex(0);
+                resetTabs();
                 if (currentProject?.id) {
                   fetch(`/api/projects/${currentProject.id}/files`)
                     .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
@@ -1757,122 +1709,35 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
                 minSize={20}
                 onResize={(size) => updatePaneLayout({ ...paneLayout, editor: size })}
               >
-                <div className="h-full bg-monastery-dark-surface flex flex-col animate-slideInRight">
-                  {/* Tab Bar */}
-                  {openTabs.length > 0 && (
-                    <div className="flex items-center border-b border-monastery-dark-border bg-monastery-dark-bg overflow-x-auto shrink-0">
-                      {openTabs.map((tab, i) => (
-                        <div
-                          key={tab.path}
-                          onClick={() => setActiveTabIndex(i)}
-                          className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-r border-monastery-dark-border transition-colors shrink-0 ${
-                            i === activeTabIndex
-                              ? 'bg-monastery-dark-surface text-monastery-text-primary border-t-2 border-t-monastery-lantern'
-                              : 'text-monastery-text-secondary hover:bg-monastery-dark-surface hover:text-monastery-text-primary'
-                          }`}
-                        >
-                          <span className="max-w-[120px] truncate">{tab.path.split('/').pop()}</span>
-                          {tab.isDirty && (
-                            <span className="w-1.5 h-1.5 rounded-full bg-monastery-lantern" title="Unsaved changes" />
-                          )}
-                          <button
-                            onClick={(e) => { e.stopPropagation(); closeTab(i); }}
-                            className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-monastery-dark-tertiary rounded transition-all"
-                          >
-                            <X size={10} />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {/* Editor Toolbar */}
-                  <div className="flex items-center justify-between px-3 py-1.5 border-b border-monastery-dark-border shrink-0">
-                    <span className="text-xs text-monastery-text-muted truncate">
-                      {currentFile || 'No file selected'}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => {
-                          if (!currentFile) return;
-                          const prompt = editorPrompts.reviewer?.(currentFile, editorContent)
-                            ?? `Explain this code in detail:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
-                          triggerAgent('reviewer', prompt);
-                        }}
-                        disabled={!currentFile}
-                        className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
-                      >
-                        Explain
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (!currentFile) return;
-                          const prompt = editorPrompts.coder?.(currentFile, editorContent)
-                            ?? `Refactor this code for better patterns, readability, and performance:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
-                          triggerAgent('coder', prompt);
-                        }}
-                        disabled={!currentFile}
-                        className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
-                      >
-                        Refactor
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (!currentFile) return;
-                          const prompt = editorPrompts.tester?.(currentFile, editorContent)
-                            ?? `Write comprehensive unit and integration tests for this code:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
-                          triggerAgent('tester', prompt);
-                        }}
-                        disabled={!currentFile}
-                        className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
-                      >
-                        Add Tests
-                      </button>
-                      {currentFile && !isImagePath(currentFile) && (
-                        <button
-                          onClick={async () => {
-                            if (!currentProject?.id || !currentFile) return;
-                            try {
-                              await fetch(`/api/projects/${currentProject.id}/files/write`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ path: currentFile, content: editorContent }),
-                              });
-                              markTabSaved();
-                              // Keep the LLM context map in sync with the saved file.
-                              setAllFileContents(prev => ({ ...prev, [currentFile]: editorContent }));
-                            } catch (e) {
-                              console.error('Save failed:', e);
-                            }
-                          }}
-                          className="px-3 py-0.5 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded transition-colors font-medium"
-                        >
-                          Save
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                  
-                  {/* Editor — image files get a viewer (served via the preview route, which also
-                      self-heals legacy data-URL uploads); everything else gets Monaco. */}
-                  <div className="flex-1 overflow-hidden">
-                    {currentFile && isImagePath(currentFile) && currentProject?.id ? (
-                      <div className="h-full w-full flex items-center justify-center bg-monastery-dark-bg overflow-auto p-4">
-                        <img
-                          src={`/api/projects/${currentProject.id}/preview/${currentFile}`}
-                          alt={currentFile}
-                          className="max-w-full max-h-full object-contain rounded border border-monastery-dark-border bg-white/5"
-                        />
-                      </div>
-                    ) : (
-                      <CodeEditor
-                        value={editorContent}
-                        language={currentFile?.endsWith('.tsx') || currentFile?.endsWith('.ts') ? 'typescript' : 'javascript'}
-                        onChange={updateTabContent}
-                      />
-                    )}
-                  </div>
-                </div>
+                <EditorPane
+                  projectId={currentProject?.id}
+                  tabs={openTabs}
+                  activeTabIndex={activeTabIndex}
+                  currentFile={currentFile}
+                  editorContent={editorContent}
+                  onSelectTab={setActiveTabIndex}
+                  onCloseTab={closeTab}
+                  onChange={updateTabContent}
+                  onSave={handleSaveFile}
+                  onExplain={() => {
+                    if (!currentFile) return;
+                    const prompt = editorPrompts.reviewer?.(currentFile, editorContent)
+                      ?? `Explain this code in detail:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
+                    triggerAgent('reviewer', prompt);
+                  }}
+                  onRefactor={() => {
+                    if (!currentFile) return;
+                    const prompt = editorPrompts.coder?.(currentFile, editorContent)
+                      ?? `Refactor this code for better patterns, readability, and performance:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
+                    triggerAgent('coder', prompt);
+                  }}
+                  onAddTests={() => {
+                    if (!currentFile) return;
+                    const prompt = editorPrompts.tester?.(currentFile, editorContent)
+                      ?? `Write comprehensive unit and integration tests for this code:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
+                    triggerAgent('tester', prompt);
+                  }}
+                />
               </Panel>
             </>
           )}
