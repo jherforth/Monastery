@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { GitBranch, Github, Gitlab, Server, Plus, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, ChevronRight, FolderGit2, Upload, Download, ArrowLeft, Eye, EyeOff } from 'lucide-react';
+import { GitBranch, Github, Gitlab, Server, Trash2, CheckCircle, XCircle, Loader2, ExternalLink, ChevronRight, FolderGit2, Upload, Download, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { useGitForge, GitForgeType, ConnectForgeRequest, GitConnection, GitRepo } from '../hooks/useGitForge';
 import type { GitBranchInfo } from '../hooks/useGitForge';
 import { useAppStore } from '../store/useAppStore';
@@ -79,8 +79,8 @@ export function GitForgeSetup() {
   const [token, setToken] = useState('');
   const [gitEmail, setGitEmail] = useState('');
   const [connectionName, setConnectionName] = useState('');
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ healthy: boolean; message: string } | null>(null);
+  // Keyed by connection id so the result banner shows on the card that was tested.
+  const [testResult, setTestResult] = useState<{ id: string; healthy: boolean; message: string } | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -161,14 +161,11 @@ export function GitForgeSetup() {
   };
 
   const handleTestConnection = async (id: string) => {
-    setTesting(true);
     try {
       const result = await testConnection(id);
-      setTestResult(result);
+      setTestResult({ id, ...result });
     } catch (e: any) {
-      setTestResult({ healthy: false, message: e.message });
-    } finally {
-      setTesting(false);
+      setTestResult({ id, healthy: false, message: e.message });
     }
   };
 
@@ -341,6 +338,7 @@ export function GitForgeSetup() {
                   <ConnectionCard
                     key={conn.id}
                     connection={conn}
+                    testResult={testResult?.id === conn.id ? testResult : undefined}
                     onDelete={() => deleteConnection(conn.id)}
                     onTest={() => handleTestConnection(conn.id)}
                     onBrowse={() => handleBrowseRepos(conn)}
@@ -538,6 +536,7 @@ function ConnectionCard({
   onTest,
   onBrowse,
   onPush,
+  testResult,
 }: {
   connection: GitConnection;
   onDelete: () => void;
@@ -564,6 +563,11 @@ function ConnectionCard({
         <div className="text-xs text-monastery-text-muted truncate">
           {connection.username || connection.forge_type} · {connection.base_url}
         </div>
+        {testResult && (
+          <div className={`text-xs mt-0.5 truncate ${testResult.healthy ? 'text-green-400' : 'text-red-400'}`}>
+            {testResult.healthy ? '✓ ' : '✗ '}{testResult.message}
+          </div>
+        )}
       </div>
       <button
         onClick={onBrowse}

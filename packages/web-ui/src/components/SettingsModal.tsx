@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useEndpoints, EndpointConfig } from '../hooks/useEndpoints';
+import { useEndpoints } from '../hooks/useEndpoints';
 import { GitForgeSetup } from './GitForgeSetup';
 import { HostingServicesTab } from './HostingServicesTab';
 import { useHermesAgent } from '../hooks/useHermesAgent';
@@ -28,7 +28,6 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
   // Hermes connection state
   const {
     connections: hermesConnections,
-    defaultConnection: hermesDefault,
     isLoading: hermesLoading,
     createConnection: createHermes,
     deleteConnection: deleteHermes,

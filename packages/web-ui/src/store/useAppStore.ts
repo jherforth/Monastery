@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { AppState, Message, LLMEndpoint, Project, Session, SnapshotSummary, SnapshotDetail, SnapshotDiff } from '../types';
+import { AppState, Message, LLMEndpoint, Project, Session, SnapshotSummary, SnapshotDetail } from '../types';
 
 const defaultLayout = {
   chat: 25,
@@ -38,7 +38,7 @@ interface AppStore extends AppState {
 
 export const useAppStore = create<AppStore>()(
   persist(
-    (set, get) => ({
+    (set) => ({
       // Initial state
       currentProject: null,
       sessions: [],

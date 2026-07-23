@@ -1,6 +1,6 @@
-```
 # Dependencies
 target/
+node_modules/
 
 # Logs and temp files
 *.log
@@ -25,4 +25,3 @@ hermes-agent/
 openclaw/
 coolify/
 dokploy/
-```

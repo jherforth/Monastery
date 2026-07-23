@@ -331,7 +331,7 @@ export default function App() {
 
   // Shared delete-with-confirmation helper
   const deleteWithConfirm = useCallback(async (
-    path: string,
+    _path: string,
     endpoint: string,
     confirmMsg: string,
     onSuccess?: () => void,
@@ -1036,7 +1036,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         sessionId = session.id;
       } else {
         // Fallback: still show messages locally even if session creation fails
-        sessionId = null;
+        sessionId = undefined;
       }
     }
 

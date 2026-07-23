@@ -1,6 +1,6 @@
-import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, Database, CheckCircle2, Bot, FilePlus, FolderPlus, Upload, RefreshCw } from 'lucide-react';
+import { Folder, FileCode, ChevronRight, ChevronDown, MessageSquare, Plus, Trash2, Loader2, Cpu, GitBranch, Server, CheckCircle2, Bot, FilePlus, FolderPlus, Upload, RefreshCw } from 'lucide-react';
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { FileNode, SessionInfo, SessionDetail } from '../types';
+import { FileNode, SessionInfo } from '../types';
 import { useEndpoints } from '../hooks/useEndpoints';
 import { useGitForge } from '../hooks/useGitForge';
 import { useHostingServices } from '../hooks/useHostingServices';
@@ -33,13 +33,6 @@ function IntegrationsStatus() {
       case 'coolify': return 'Coolify';
       case 'pocketbase': return 'Pocketbase';
       default: return type;
-    }
-  };
-
-  const serviceIcon = (type: string) => {
-    switch (type) {
-      case 'pocketbase': return <Database size={12} className="text-amber-400" />;
-      default: return <Server size={12} className="text-blue-400" />;
     }
   };
 
@@ -190,7 +183,7 @@ function FileTreeItem({ node, depth, onSelectFile, onDeleteFile, onCreateFile, o
     setIsDragOver(true);
   }, [isDirectory]);
 
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
+  const handleDragLeave = useCallback(() => {
     setIsDragOver(false);
   }, []);
 
@@ -402,7 +395,6 @@ export function Sidebar({
       {/* Tabs */}
       <div className="flex border-b border-monastery-dark-border">
         {tabs.map((tab) => {
-          const Icon = tab.icon;
           return (
             <button
               key={tab.id}
