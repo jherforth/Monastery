@@ -355,7 +355,7 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
             </button>
           )}
 
-          {/* Git Status Indicator */}
+          {/* Git Menu — the one home for source control: status, pull, commit & push, snapshots */}
           {gitStatus && currentProject && (
             <div className="relative">
               <button
@@ -382,57 +382,66 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                     <ArrowDown size={10} />{gitStatus.behind}
                   </span>
                 )}
-                {availableProjects.length > 1 && (
-                  <ChevronDown size={12} className="text-monastery-text-muted" />
-                )}
+                <ChevronDown size={12} className="text-monastery-text-muted" />
               </button>
 
-              {/* Project Switcher Dropdown */}
-              {gitDropdownOpen && availableProjects.length > 1 && (
+              {gitDropdownOpen && (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setGitDropdownOpen(false)} />
-                  <div className="absolute top-full right-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-60 overflow-y-auto">
-                    {availableProjects.map((proj) => {
-                      const isActive = currentProject?.id === proj.id;
-                      return (
-                        <button
-                          key={proj.id}
-                          onClick={() => {
-                            setCurrentProject({
-                              id: proj.id,
-                              name: proj.name,
-                              path: '',
-                              lastOpened: Date.now(),
-                              files: [],
-                            });
-                            setGitDropdownOpen(false);
-                          }}
-                          className={`w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 ${
-                            isActive
-                              ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
-                              : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
-                          }`}
-                        >
-                          <GitBranch size={14} className="text-monastery-text-muted shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <div className="truncate">{proj.name}</div>
-                            {proj.description && (
-                              <div className="text-xs text-monastery-text-muted truncate">{proj.description}</div>
-                            )}
-                          </div>
-                          {isActive && (
-                            <div className="w-2 h-2 rounded-full bg-status-success shrink-0" />
-                          )}
-                        </button>
-                      );
-                    })}
-                    
+                  <div className="absolute top-full right-0 mt-1 w-72 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-20 py-1 max-h-96 overflow-y-auto">
+                    {/* Status summary */}
+                    <div className="px-3 py-2 text-xs text-monastery-text-secondary">
+                      <div className="flex items-center gap-1.5">
+                        <GitBranch size={12} className="text-monastery-text-muted" />
+                        <span className="font-medium">{gitStatus.branch}</span>
+                        <span className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'}>
+                          {gitStatus.is_clean ? 'clean' : `${gitStatus.changed_files.length} changed file${gitStatus.changed_files.length === 1 ? '' : 's'}`}
+                        </span>
+                      </div>
+                      {(gitStatus.ahead > 0 || gitStatus.behind > 0) && (
+                        <div className="mt-1 text-monastery-text-muted">
+                          {gitStatus.ahead > 0 && `${gitStatus.ahead} ahead`}
+                          {gitStatus.ahead > 0 && gitStatus.behind > 0 && ' · '}
+                          {gitStatus.behind > 0 && `${gitStatus.behind} behind origin/${gitStatus.branch}`}
+                        </div>
+                      )}
+                    </div>
+                    <div className="border-t border-monastery-dark-border my-1" />
+
+                    {/* Actions — always present, enabled by state, so the menu is predictable */}
+                    <button
+                      onClick={() => { setGitDropdownOpen(false); handlePull(); }}
+                      disabled={pulling || gitStatus.behind === 0}
+                      className="w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary disabled:opacity-40 disabled:hover:bg-transparent"
+                      title={gitStatus.behind > 0
+                        ? `origin/${gitStatus.branch} has ${gitStatus.behind} new commit(s) — pull them into your local copy (snapshots first)`
+                        : 'Nothing to pull — local copy is up to date with the remote'}
+                    >
+                      {pulling
+                        ? <span className="w-3.5 h-3.5 border border-amber-300 border-t-transparent rounded-full animate-spin" />
+                        : <ArrowDown size={14} className="text-amber-400" />}
+                      <span className="flex-1">{pulling ? 'Pulling…' : 'Pull from remote'}</span>
+                      {gitStatus.behind > 0 && <span className="text-xs text-amber-400">{gitStatus.behind}</span>}
+                    </button>
+                    <button
+                      onClick={() => { setGitDropdownOpen(false); handleCommitPush(); }}
+                      disabled={committing || gitStatus.is_clean}
+                      className="w-full text-left px-3 py-2 text-sm transition-colors flex items-center gap-2 text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary disabled:opacity-40 disabled:hover:bg-transparent"
+                      title={gitStatus.is_clean ? 'No local changes to commit' : 'Commit all changes and push to remote'}
+                    >
+                      {committing
+                        ? <span className="w-3.5 h-3.5 border border-white border-t-transparent rounded-full animate-spin" />
+                        : <Upload size={14} className="text-monastery-pine" />}
+                      <span className="flex-1">{committing ? 'Pushing…' : 'Commit & Push'}</span>
+                      {!gitStatus.is_clean && <span className="text-xs text-amber-400">{gitStatus.changed_files.length}</span>}
+                    </button>
+
                     {/* Snapshot History */}
                     {snapshots.length > 0 && (
                       <>
                         <div className="border-t border-monastery-dark-border my-1" />
                         <div className="px-3 py-1 text-xs text-monastery-text-muted font-medium uppercase tracking-wider">
-                          History
+                          Snapshots
                         </div>
                         {snapshots.map((snap: any) => (
                           <div key={snap.id} className="flex items-center gap-2 px-3 py-1.5 text-sm text-monastery-text-secondary hover:bg-monastery-dark-tertiary transition-colors">
@@ -458,41 +467,6 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                 </>
               )}
             </div>
-          )}
-
-          {/* Pull Button — appears when the branch is behind the remote (another contributor
-              pushed). Rebases local edits on top; snapshots first so it's revertible. */}
-          {gitStatus && currentProject && gitStatus.behind > 0 && (
-            <button
-              onClick={handlePull}
-              disabled={pulling}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface border border-amber-500/40 hover:border-amber-400 text-amber-300 rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-              title={`origin/${gitStatus.branch} has ${gitStatus.behind} new commit(s) — pull them into your local copy`}
-            >
-              {pulling ? (
-                <span className="w-3 h-3 border border-amber-300 border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <ArrowDown size={12} />
-              )}
-              {pulling ? 'Pulling...' : `Pull ${gitStatus.behind}`}
-            </button>
-          )}
-
-          {/* Commit & Push Button */}
-          {gitStatus && currentProject && !gitStatus.is_clean && (
-            <button
-              onClick={handleCommitPush}
-              disabled={committing}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50"
-              title="Commit all changes and push to remote"
-            >
-              {committing ? (
-                <span className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <Upload size={12} />
-              )}
-              {committing ? 'Pushing...' : 'Commit & Push'}
-            </button>
           )}
         </div>
 
