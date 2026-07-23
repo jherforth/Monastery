@@ -6,11 +6,14 @@ import { useAppStore } from '../store/useAppStore';
 import {
   Server, Database, CheckCircle2, AlertTriangle, Rocket, GitBranch,
   Loader2, Globe, Copy, Check, ChevronRight, ChevronLeft, Eye, EyeOff,
-  Terminal, Upload, XCircle, Cloud, Wrench,
+  Terminal, Cloud, Wrench, Settings,
 } from 'lucide-react';
 import { FilePreviewCard } from './FilePreviewCard';
 
-const STEPS = ['Platform', 'Connect', 'Configure', 'Deploy'] as const;
+// Connecting a platform is Settings' job (Settings → Hosting) — the wizard only picks,
+// configures, and deploys. Unconnected platforms deep-link there instead of re-implementing
+// the connect form.
+const STEPS = ['Platform', 'Configure', 'Deploy'] as const;
 
 interface SelfHostWizardProps {
   isOpen: boolean;
@@ -22,16 +25,11 @@ interface SelfHostWizardProps {
 }
 
 export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWizardProps) {
-  const { connections: hostingConns, deployProject, previewDeploy, connectService, listServers, fetchDeploymentLog } = useHostingServices();
+  const { connections: hostingConns, deployProject, previewDeploy, listServers, fetchDeploymentLog } = useHostingServices();
   const { connections: gitConns } = useGitForge();
   const currentProject = useAppStore(s => s.currentProject);
 
   const [step, setStep] = useState(0);
-  const [connectUrl, setConnectUrl] = useState('');
-  const [connectToken, setConnectToken] = useState('');
-  const [connectName, setConnectName] = useState('');
-  const [connectError, setConnectError] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
   const [appName, setAppName] = useState(currentProject?.name || 'my-app');
   const [domain, setDomain] = useState('');
   const [port, setPort] = useState('3000');
@@ -65,8 +63,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
   const platformConnected = !!activePlatformConn;
 
   const resetState = useCallback(() => {
-    setStep(0); setConnectUrl(''); setConnectToken(''); setConnectName('');
-    setConnectError(null); setConnecting(false); setPreview(null);
+    setStep(0); setPreview(null);
     setShowPreview(false); setDeployResult(null); setDeployError(null);
     setDeployTab('auto'); setIncludePocketbase(false); setDomain('');
     setIncludeCloudflareTunnel(false); setCloudflareTunnelToken('');
@@ -78,7 +75,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
   }, [currentProject?.name]);
 
   useEffect(() => {
-    if (step === 2 && currentProject?.id) {
+    if (step === 1 && currentProject?.id) {
       setLoadingPreview(true);
       previewDeploy(
         currentProject.id,
@@ -97,7 +94,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
   // a deploy target (avoids the default "localhost" server trap on Coolify/Dokploy).
   useEffect(() => {
     const platform = activePlatformConn?.service_type;
-    if (step !== 2 || !activePlatformConn?.id || (platform !== 'coolify' && platform !== 'dokploy')) {
+    if (step !== 1 || !activePlatformConn?.id || (platform !== 'coolify' && platform !== 'dokploy')) {
       return;
     }
     let cancelled = false;
@@ -118,21 +115,16 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
   }, [step, activePlatformConn?.id, activePlatformConn?.service_type, listServers]);
 
   const handleSelectPlatform = (platform: string) => {
-    setSelectedPlatform(platform);
-    setConnectName(`${platform}-monastery`);
     const connected = platform === 'dokploy' ? !!dokploy : !!coolify;
-    setStep(connected ? 2 : 1);
-  };
-
-  const handleConnect = async () => {
-    if (!connectUrl.trim() || !connectToken.trim()) { setConnectError('URL and API token are required.'); return; }
-    setConnecting(true); setConnectError(null);
-    try {
-      await connectService({ name: connectName || selectedPlatform, service_type: selectedPlatform as 'dokploy' | 'coolify', base_url: connectUrl.trim(), api_token: connectToken.trim() });
-      setStep(2);
-    } catch (e: any) {
-      setConnectError(e.message || 'Connection failed');
-    } finally { setConnecting(false); }
+    if (!connected) {
+      // One home for connections: hand off to Settings → Hosting (the wizard would
+      // otherwise render underneath the Settings view, so close it first).
+      onClose();
+      window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'hosting' } }));
+      return;
+    }
+    setSelectedPlatform(platform);
+    setStep(1);
   };
 
   const handleDeploy = async () => {
@@ -232,8 +224,8 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
           <div className="flex items-center gap-1 mt-4">
             {STEPS.map((label, i) => (
               <div key={label} className="flex items-center gap-1 flex-1">
-                <button onClick={() => { if (i <= step || (i === 1 && platformConnected)) setStep(i); }}
-                  disabled={i > step && !(i === 1 && platformConnected)}
+                <button onClick={() => { if (i <= step) setStep(i); }}
+                  disabled={i > step}
                   className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${
                     i === step ? 'bg-monastery-pine/20 text-monastery-pine font-medium' :
                     i < step ? 'text-monastery-text-muted hover:text-monastery-text-secondary' : 'text-monastery-text-muted/50'}`}>
@@ -252,7 +244,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
           {/* STEP 0: Select Platform */}
           {step === 0 && (<div className="space-y-3">
             <h3 className="text-sm font-medium text-monastery-text-primary flex items-center gap-2"><Server size={16} className="text-blue-400" /> Choose Your Deployment Platform</h3>
-            <p className="text-xs text-monastery-text-muted">Select where to deploy. Connect your platform in Settings first, or set it up here.</p>
+            <p className="text-xs text-monastery-text-muted">Select where to deploy. Choosing an unconnected platform opens Settings → Hosting to connect it.</p>
             {(['dokploy', 'coolify'] as const).map(platform => {
               const conn = platform === 'dokploy' ? dokploy : coolify;
               const Icon = Server;
@@ -264,35 +256,15 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
                     <div className="flex items-center gap-2"><Icon size={16} className={color} />
                       <span className="text-sm font-medium text-monastery-text-primary">{platform === 'dokploy' ? 'Dokploy' : 'Coolify'}</span>
                       {conn ? <span className="flex items-center gap-1 text-xs text-green-400"><CheckCircle2 size={12} /> Connected</span>
-                        : <span className="text-xs text-monastery-text-muted">Not configured</span>}</div>
+                        : <span className="flex items-center gap-1 text-xs text-monastery-text-muted"><Settings size={11} /> Connect in Settings</span>}</div>
                     <ChevronRight size={16} className="text-monastery-text-muted" /></div>
                   <p className="text-xs text-monastery-text-muted mt-1">{platform === 'dokploy' ? 'Self-hosted PaaS — deploy apps, databases, and Docker containers' : 'Self-hosted deployment platform — Vercel/Netlify alternative'}</p>
                 </button>);
             })}
           </div>)}
 
-          {/* STEP 1: Connect */}
-          {step === 1 && (<div className="space-y-3">
-            <h3 className="text-sm font-medium text-monastery-text-primary flex items-center gap-2"><Upload size={16} className="text-monastery-lantern" /> Connect to {selectedPlatform === 'dokploy' ? 'Dokploy' : 'Coolify'}</h3>
-            <p className="text-xs text-monastery-text-muted">Enter your platform's URL and API token from the dashboard under Settings → API Tokens.</p>
-            <div><label className="block text-xs font-medium text-monastery-text-secondary mb-1">Instance URL</label>
-              <input type="text" value={connectUrl} onChange={e => setConnectUrl(e.target.value)}
-                placeholder={selectedPlatform === 'dokploy' ? 'https://dokploy.yourdomain.com' : 'https://coolify.yourdomain.com'}
-                className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" /></div>
-            <div><label className="block text-xs font-medium text-monastery-text-secondary mb-1">API Token</label>
-              <input type="password" value={connectToken} onChange={e => setConnectToken(e.target.value)} placeholder="Enter your API token..."
-                className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" /></div>
-            <div><label className="block text-xs font-medium text-monastery-text-secondary mb-1">Connection Name (optional)</label>
-              <input type="text" value={connectName} onChange={e => setConnectName(e.target.value)} placeholder="My Server"
-                className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" /></div>
-            {connectError && <div className="p-3 rounded-lg text-xs bg-red-400/10 text-red-400 flex items-center gap-2"><XCircle size={14} /> {connectError}</div>}
-            <button onClick={handleConnect} disabled={connecting || !connectUrl.trim() || !connectToken.trim()}
-              className="w-full px-4 py-2 text-sm bg-monastery-pine text-white rounded-lg hover:bg-opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 font-medium transition-colors">
-              {connecting ? <><Loader2 size={14} className="animate-spin" /> Connecting...</> : 'Connect & Continue'}</button>
-          </div>)}
-
-          {/* STEP 2: Configure */}
-          {step === 2 && (<div className="space-y-4">
+          {/* STEP 1: Configure */}
+          {step === 1 && (<div className="space-y-4">
             <h3 className="text-sm font-medium text-monastery-text-primary flex items-center gap-2"><Rocket size={16} className="text-monastery-lantern" /> Configure Your Deployment</h3>
             <div className={`p-2 rounded-lg border text-xs flex items-center gap-2 ${activePlatformConn ? 'border-green-400/30 bg-green-400/5 text-green-400' : 'border-monastery-dark-border bg-monastery-dark-bg text-monastery-text-muted'}`}>
               <CheckCircle2 size={12} />{activePlatformConn ? `Deploying to ${activePlatformConn.service_type} (${activePlatformConn.base_url})` : 'No platform connected'}</div>
@@ -377,8 +349,8 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
                   <FilePreviewCard key={file.name} file={file} copiedFile={copiedFile} onCopy={copyToClipboard} />
                 ))}</div>)}</div></div>)}
 
-          {/* STEP 3: Deploy */}
-          {step === 3 && (<div className="space-y-4">
+          {/* STEP 2: Deploy */}
+          {step === 2 && (<div className="space-y-4">
             <h3 className="text-sm font-medium text-monastery-text-primary flex items-center gap-2"><Rocket size={16} className="text-monastery-lantern" /> Deploy</h3>
             <div className="p-3 rounded-lg border border-monastery-dark-border bg-monastery-dark-bg space-y-1 text-xs">
               <div className="flex justify-between"><span className="text-monastery-text-muted">App:</span><span className="text-monastery-text-primary">{appName}</span></div>
@@ -469,7 +441,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
             {step > 0 && <button onClick={() => setStep(step - 1)} className="px-3 py-1.5 text-xs bg-monastery-dark-tertiary text-monastery-text-primary rounded-md hover:bg-monastery-dark-border transition-colors flex items-center gap-1"><ChevronLeft size={14} /> Back</button>}</div>
           <div className="flex items-center gap-2">
             <button onClick={() => { resetState(); onClose(); }} className="px-3 py-1.5 text-xs text-monastery-text-muted hover:text-monastery-text-primary transition-colors">Close</button>
-            {step < 3 && <button onClick={() => setStep(step + 1)} disabled={step === 0 && !selectedPlatform}
+            {step < 2 && <button onClick={() => setStep(step + 1)} disabled={step === 0 && !platformConnected}
               className="px-4 py-1.5 text-xs bg-monastery-pine text-white rounded-md hover:bg-opacity-90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 font-medium transition-colors">Next <ChevronRight size={14} /></button>}</div></div>
         {!currentProject && <div className="px-5 pb-4"><p className="text-xs text-monastery-text-muted text-center">Open a project first to enable deployment.</p></div>}
       </div></div>);
