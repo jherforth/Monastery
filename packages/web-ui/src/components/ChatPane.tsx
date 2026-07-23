@@ -75,6 +75,9 @@ interface ChatPaneProps {
   onDeleteSession?: (sessionId: string) => void;
   /** Context & behavior options for the composer popover. */
   contextToggles?: ComposerToggle[];
+  /** Active task chip in the header ("🛠 title · stage"); null label shows a plain Tasks chip. */
+  activeTaskLabel?: string | null;
+  onOpenTasks?: () => void;
   /** Currently active agent role ids (a persistent "lens" over chat messages). */
   activeAgentIds?: string[];
   /** Toggle an agent role on/off (caller enforces the max). */
@@ -110,6 +113,8 @@ export function ChatPane({
   onSelectSession,
   onDeleteSession,
   contextToggles = [],
+  activeTaskLabel = null,
+  onOpenTasks,
   activeAgentIds = [],
   onToggleAgent,
   maxActiveRoles = 2,
@@ -394,6 +399,21 @@ export function ChatPane({
               title="New session"
             >
               <Plus size={14} />
+            </button>
+          )}
+
+          {/* Task chip — the staged workflow lives in a drawer, not a stacked panel */}
+          {onOpenTasks && (
+            <button
+              onClick={onOpenTasks}
+              className={`ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors shrink-0 max-w-[45%] ${
+                activeTaskLabel
+                  ? 'bg-monastery-lantern/15 text-monastery-lantern hover:bg-monastery-lantern/25'
+                  : 'text-monastery-text-secondary hover:bg-monastery-dark-surface hover:text-monastery-text-primary'
+              }`}
+              title={activeTaskLabel ? 'Open the active task' : 'Structured tasks: Plan → Implement → Verify → Review'}
+            >
+              <span className="truncate">🛠 {activeTaskLabel || 'Tasks'}</span>
             </button>
           )}
         </div>

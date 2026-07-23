@@ -15,7 +15,7 @@ import { useAgents } from './hooks/useAgents';
 import { useHermesAgent } from './hooks/useHermesAgent';
 import { useHostingServices } from './hooks/useHostingServices';
 import { useWorkflow, type Stage } from './hooks/useWorkflow';
-import { WorkflowPanel } from './components/WorkflowPanel';
+import { TaskDrawer, STAGE_LABEL } from './components/TaskDrawer';
 import {
   useChatOrchestrator,
   MAX_ACTIVE_ROLES,
@@ -49,6 +49,7 @@ export default function App() {
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [isWizardOpen, setIsWizardOpen] = useState(false);
+  const [isTaskDrawerOpen, setIsTaskDrawerOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string }>>([]);
 
   // Endpoints for LLM selector in TopBar
@@ -503,6 +504,18 @@ export default function App() {
 
       <SelfHostWizard isOpen={isWizardOpen} onClose={() => setIsWizardOpen(false)} onFixBuildError={handleFixBuildError} />
 
+      <TaskDrawer
+        open={isTaskDrawerOpen}
+        onClose={() => setIsTaskDrawerOpen(false)}
+        projectId={currentProject?.id}
+        workflow={workflow}
+        onRunStage={(s: Stage) => runStage(s, false)}
+        onHandToHermes={(s: Stage) => runStage(s, true)}
+        hermesAvailable={!!hermesConnection}
+        onApplySkills={(ids) => ids.forEach(id => toggleSkill(id, true))}
+        templateCtx={{ pocketbaseConfigured: !!pocketbaseConn }}
+      />
+
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar — slides in/out with CSS transition */}
         <div
@@ -534,17 +547,10 @@ export default function App() {
             onResize={(size) => updatePaneLayout({ ...paneLayout, chat: size })}
           >
            <div className="h-full flex flex-col">
-            <WorkflowPanel
-              projectId={currentProject?.id}
-              workflow={workflow}
-              onRunStage={(s: Stage) => runStage(s, false)}
-              onHandToHermes={(s: Stage) => runStage(s, true)}
-              hermesAvailable={!!hermesConnection}
-              onApplySkills={(ids) => ids.forEach(id => toggleSkill(id, true))}
-              templateCtx={{ pocketbaseConfigured: !!pocketbaseConn }}
-            />
             <div className="flex-1 min-h-0">
             <ChatPane
+              activeTaskLabel={workflow.activeTask ? `${workflow.activeTask.title} · ${STAGE_LABEL[workflow.activeTask.stage]}` : null}
+              onOpenTasks={currentProject?.id ? () => setIsTaskDrawerOpen(true) : undefined}
               messages={messages}
               onSendMessage={handleSendMessage}
               sessions={sessions}
