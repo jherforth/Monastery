@@ -52,7 +52,9 @@ export const useAppStore = create<AppStore>()(
       integrations: [],
       theme: 'monastery-dark',
       sidebarCollapsed: true,
-      previewCollapsed: true,
+      // Preview open by default — app generation is the product, so the running app is
+      // visible from the first response.
+      previewCollapsed: false,
       editorCollapsed: false,
       paneLayout: defaultLayout,
       
@@ -141,6 +143,15 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: 'monastery-storage',
+      version: 1,
+      // v0 → v1: open the preview pane once for existing users, who all have
+      // previewCollapsed: true persisted from when collapsed was the default.
+      migrate: (persisted: any, version) => {
+        if (version === 0 && persisted) {
+          return { ...persisted, previewCollapsed: false };
+        }
+        return persisted;
+      },
       partialize: (state) => ({
         theme: state.theme,
         paneLayout: state.paneLayout,

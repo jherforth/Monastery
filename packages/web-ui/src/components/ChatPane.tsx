@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, Loader2, Coins, MessageSquare, Plus, Trash2, SlidersHorizontal, Settings } from 'lucide-react';
 import { Message, Attachment, SessionInfo } from '../types';
+import { DiffCard } from './DiffCard';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
 import { useAgents } from '../hooks/useAgents';
@@ -487,6 +488,17 @@ export function ChatPane({
           </div>
         ) : (
           messages.map((message) => {
+            // Activity chatter (context pulls, recovery steps) renders as a slim inline row,
+            // not a bubble — the conversation stays about the conversation.
+            if (message.kind === 'activity') {
+              return (
+                <div key={message.id} className="flex justify-start">
+                  <div className="px-2 py-0.5 text-[11px] text-monastery-text-muted leading-relaxed">
+                    {renderInline(message.content)}
+                  </div>
+                </div>
+              );
+            }
             // Compact timestamp: time-of-day for today's messages, date + time for older ones.
             // Hidden when the timestamp is missing/unparseable (e.g. a malformed session row).
             const ts = new Date(message.timestamp);
@@ -515,7 +527,7 @@ export function ChatPane({
                 {message.role === 'user' && message.agentLabels && message.agentLabels.length > 0 && (
                   <div className="flex flex-wrap gap-1 mb-1.5">
                     {message.agentLabels.map((label, i) => (
-                      <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-white/15 font-medium">
+                      <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] bg-white/15 font-medium">
                         {label}
                       </span>
                     ))}
@@ -536,7 +548,7 @@ export function ChatPane({
                 )}
                 {/* Badge showing which backend answered (Hermes agent vs local LLM) */}
                 {message.role === 'assistant' && message.via === 'hermes' && (
-                  <span className="inline-flex items-center gap-1 mb-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-monastery-lantern/15 text-monastery-lantern">
+                  <span className="inline-flex items-center gap-1 mb-1.5 px-1.5 py-0.5 rounded text-[11px] font-medium bg-monastery-lantern/15 text-monastery-lantern">
                     <Bot size={10} /> via Hermes
                   </span>
                 )}
@@ -547,6 +559,10 @@ export function ChatPane({
                 <div className={`text-sm ${message.role === 'system' ? 'text-monastery-text-secondary' : ''}`}>
                   {renderContent(message.content)}
                 </div>
+                {/* Per-file diff cards on AI-change feedback messages */}
+                {message.fileChanges && message.fileChanges.map(change => (
+                  <DiffCard key={change.path} change={change} />
+                ))}
                 {/* Auto-continuation status + token usage (when the endpoint reports usage). */}
                 {message.role === 'assistant' && (message.continuing || (message.autoContinueCount ?? 0) > 0 || message.usage?.total_tokens) && (
                   <div className="mt-1.5 flex items-center flex-wrap gap-x-3 gap-y-1 text-[11px] text-monastery-text-muted">
@@ -617,7 +633,7 @@ export function ChatPane({
                 {/* Timestamp footer on every message */}
                 {timeLabel && (
                   <div
-                    className={`mt-1 text-[10px] leading-none ${
+                    className={`mt-1 text-[11px] leading-none ${
                       message.role === 'user'
                         ? 'text-white/50 text-right'
                         : message.role === 'system'

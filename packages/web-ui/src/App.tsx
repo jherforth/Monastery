@@ -484,6 +484,8 @@ export default function App() {
       markTabSaved();
       // Keep the LLM context map in sync with the saved file.
       setAllFileContents(prev => ({ ...prev, [currentFile]: editorContent }));
+      // The live preview listens for this and reloads.
+      window.dispatchEvent(new CustomEvent('monastery:files-written'));
     } catch (e) {
       console.error('Save failed:', e);
     }

@@ -218,12 +218,12 @@ export function TaskDrawer({ open, onClose, projectId, workflow, onRunStage, onH
               </div>
 
               {verifyOut && (
-                <pre className="text-[10px] bg-monastery-dark-surface border border-monastery-dark-border rounded-lg p-2 max-h-48 overflow-auto whitespace-pre-wrap">{verifyOut}</pre>
+                <pre className="text-[11px] bg-monastery-dark-surface border border-monastery-dark-border rounded-lg p-2 max-h-48 overflow-auto whitespace-pre-wrap">{verifyOut}</pre>
               )}
 
               {/* Exit-state chain (chain of custody) */}
               {activeTask.exit_states.length > 0 && (
-                <div className="text-[10px] text-monastery-text-muted space-y-0.5">
+                <div className="text-[11px] text-monastery-text-muted space-y-0.5">
                   {activeTask.exit_states.map((e, i) => (
                     <div key={i} className="flex items-center gap-1">
                       <span className={e.status === 'failed' ? 'text-red-400' : 'text-green-400'}>{e.status === 'failed' ? '✗' : '✓'}</span>
@@ -233,7 +233,7 @@ export function TaskDrawer({ open, onClose, projectId, workflow, onRunStage, onH
                   ))}
                 </div>
               )}
-              <button onClick={() => refresh()} className="text-[10px] underline text-monastery-text-muted hover:text-monastery-text-primary">refresh</button>
+              <button onClick={() => refresh()} className="text-[11px] underline text-monastery-text-muted hover:text-monastery-text-primary">refresh</button>
             </>
           )}
 

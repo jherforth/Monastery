@@ -731,7 +731,7 @@ function RepoBrowser({
                         >
                           {b.name}
                           {b.is_default && (
-                            <span className="ml-1 text-[10px] opacity-70">(default)</span>
+                            <span className="ml-1 text-[11px] opacity-70">(default)</span>
                           )}
                         </button>
                       ))}

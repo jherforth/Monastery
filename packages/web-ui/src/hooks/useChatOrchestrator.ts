@@ -3,7 +3,7 @@ import { useAppStore } from '../store/useAppStore';
 import { buildSkillInstructions } from '../lib/skills';
 import { useWorkflow, WORKFLOW_ROLE_IDS, type Stage, type TaskMeta } from './useWorkflow';
 import { parseSSEStream } from '../lib/sse';
-import { Message, Project } from '../types';
+import { Message, Project, FileChange } from '../types';
 import type { EditorTab } from './useEditorTabs';
 
 // Below this total corpus size the whole project is sent as context; above it, only the
@@ -194,6 +194,10 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
   // Holds the latest recoverFailedEdits so applyAssistantOutput (defined earlier) can invoke it
   // without a forward reference in its dependency array.
   const recoverFailedEditsRef = useRef<((failed: Array<{ path: string; hunks: EditHunk[] }>) => void) | null>(null);
+  // Live view of the context map for applyAssistantOutput's before/after diff capture —
+  // allFileContents isn't in that callback's deps, so a ref avoids stale closure reads.
+  const allFileContentsRef = useRef(allFileContents);
+  allFileContentsRef.current = allFileContents;
 
   // When a task is active, its stage roles are driven by the Workflow panel — drop any active
   // stage-role chips so a now-hidden role can't keep silently injecting into context.
@@ -292,6 +296,10 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
     }
 
     if (fileWrites.length === 0 && fileEdits.length === 0 && shellCommands.length === 0) return;
+
+    // Pre-apply contents, for the per-file diff cards on the feedback message.
+    const beforeContents: Record<string, string> = {};
+    for (const p of modifiedFiles) beforeContents[p] = allFileContentsRef.current[p] ?? '';
 
     (async () => {
       // Safety checkpoint: snapshot the project's on-disk state BEFORE applying anything,
@@ -409,6 +417,11 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
             .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
         }
 
+        // Anything on disk may have changed — the live preview listens for this and reloads.
+        if (okResults.length > 0 || shellCommands.length > 0) {
+          window.dispatchEvent(new CustomEvent('monastery:files-written'));
+        }
+
         // Feedback: separate whole-file writes, targeted edits, and failures.
         const wroteFiles = okResults.filter(r => r.kind !== 'edit').map(r => r.path);
         const editedResults = okResults.filter(r => r.kind === 'edit');
@@ -435,12 +448,22 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
             note += (note ? '\n\n' : '') + `❌ Failed **${failFiles.length}** file${failFiles.length > 1 ? 's' : ''}: ${failFiles.map(f => `\`${f.path}\` (${f.error})`).join(', ')}`;
           }
           const anyChange = wroteFiles.length > 0 || editedResults.length > 0;
+          // Per-file before/after for the diff cards (successful writes/edits only).
+          const fileChanges: FileChange[] = okResults
+            .filter(r => editedContents[r.path] !== undefined)
+            .map(r => ({
+              path: r.path,
+              kind: r.kind === 'edit' ? 'edit' as const : 'write' as const,
+              before: beforeContents[r.path] ?? '',
+              after: editedContents[r.path],
+            }));
           if (note) {
             setMessages(prev => [...prev, {
               id: `write-feedback-${Date.now()}`,
               role: 'system' as const,
               content: note,
               timestamp: Date.now(),
+              fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
               // Carrying the snapshot id makes ChatPane render its restore button inline,
               // so abandoning an AI edit is one click on the message itself.
               model: (anyChange && checkpointSnapshotId) || undefined,
@@ -612,9 +635,11 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
   const recoverFailedEdits = useCallback(async (failed: Array<{ path: string; hunks: EditHunk[] }>) => {
     if (!currentProject?.id || failed.length === 0) return;
     const pid = currentProject.id;
-    const post = (content: string) => setMessages(prev => [...prev, {
+    // Recovery status chatter renders as compact activity rows; only the final
+    // "need more information" ask (which requires the user) gets a full bubble.
+    const post = (content: string, kind?: 'activity') => setMessages(prev => [...prev, {
       id: `edit-recover-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      role: 'system' as const, content, timestamp: Date.now(),
+      role: 'system' as const, kind, content, timestamp: Date.now(),
     }]);
     const refreshFile = (path: string) => {
       fetch(`/api/projects/${pid}/files/read?path=${encodeURIComponent(path)}`)
@@ -624,7 +649,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
     };
 
     // --- Stage 1: digging deeper (looser backend match) ---
-    post('🔍 Digging deeper — retrying the change with a looser match…');
+    post('🔍 Digging deeper — retrying the change with a looser match…', 'activity');
     let remaining: Array<{ path: string; hunks: EditHunk[] }> = [];
     for (const { path, hunks } of failed) {
       try {
@@ -640,10 +665,10 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         remaining.push({ path, hunks });
       }
     }
-    if (remaining.length === 0) { post('✅ Recovered on a looser match — the change is applied.'); return; }
+    if (remaining.length === 0) { post('✅ Recovered on a looser match — the change is applied.', 'activity'); return; }
 
     // --- Stage 2: double checking files (LLM redo against fresh content) ---
-    post('📂 Double checking files — re-reading them and asking the model to redo the change…');
+    post('📂 Double checking files — re-reading them and asking the model to redo the change…', 'activity');
     const nextRemaining: Array<{ path: string; hunks: EditHunk[] }> = [];
     for (const { path, hunks } of remaining) {
       try {
@@ -661,7 +686,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         nextRemaining.push({ path, hunks });
       }
     }
-    if (nextRemaining.length === 0) { post('✅ Recovered after re-checking the files — the change is applied.'); return; }
+    if (nextRemaining.length === 0) { post('✅ Recovered after re-checking the files — the change is applied.', 'activity'); return; }
 
     // --- Stage 3: need more information ---
     const files = nextRemaining.map(f => `\`${f.path}\``).join(', ');
@@ -947,6 +972,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
           setMessages(prev => [...prev, {
             id: `ctx-miss-${Date.now()}`,
             role: 'system' as const,
+            kind: 'activity' as const,
             content: `⚠️ Requested file(s) not found: ${missing.join(', ')}`,
             timestamp: Date.now(),
           }]);
@@ -985,6 +1011,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
           setMessages(prev => [...prev, {
             id: `ctx-${Date.now()}`,
             role: 'system' as const,
+            kind: 'activity' as const,
             content: `${pulled} — send your next message (or "continue") and the results will be included.`,
             timestamp: Date.now(),
           }]);
@@ -995,6 +1022,7 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         setMessages(prev => [...prev, {
           id: `ctx-${Date.now()}`,
           role: 'system' as const,
+          kind: 'activity' as const,
           content: `${pulled} — continuing automatically…`,
           timestamp: Date.now(),
         }]);

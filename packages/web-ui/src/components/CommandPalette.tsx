@@ -119,7 +119,7 @@ export function CommandPalette({ commands, files = [], onOpenFile }: CommandPale
             placeholder="Type a command or file name…"
             className="flex-1 bg-transparent text-sm text-monastery-text-primary placeholder-monastery-text-muted focus:outline-none"
           />
-          <kbd className="text-[10px] text-monastery-text-muted border border-monastery-dark-border rounded px-1">Esc</kbd>
+          <kbd className="text-[11px] text-monastery-text-muted border border-monastery-dark-border rounded px-1">Esc</kbd>
         </div>
         <div ref={listRef} className="max-h-80 overflow-y-auto py-1">
           {matches.length === 0 && (
@@ -132,7 +132,7 @@ export function CommandPalette({ commands, files = [], onOpenFile }: CommandPale
             return (
               <div key={m.kind === 'command' ? m.item.id : `file-${m.path}`}>
                 {header && (
-                  <div className="px-3 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wider text-monastery-text-muted">
+                  <div className="px-3 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wider text-monastery-text-muted">
                     {header}
                   </div>
                 )}
@@ -149,7 +149,7 @@ export function CommandPalette({ commands, files = [], onOpenFile }: CommandPale
                   {m.kind === 'file' && <FileCode size={13} className="text-monastery-text-muted shrink-0" />}
                   <span className="flex-1 truncate">{m.kind === 'command' ? m.item.label : m.path}</span>
                   {m.kind === 'command' && m.item.hint && (
-                    <span className="text-[10px] text-monastery-text-muted shrink-0">{m.item.hint}</span>
+                    <span className="text-[11px] text-monastery-text-muted shrink-0">{m.item.hint}</span>
                   )}
                   {i === selected && <CornerDownLeft size={12} className="text-monastery-text-muted shrink-0" />}
                 </button>

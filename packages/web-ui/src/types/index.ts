@@ -26,6 +26,19 @@ export interface Message {
   /** On system messages: proposed workflow-task title. ChatPane renders a one-click
    *  "create task & plan it" button for it (the large-project workflow nudge). */
   suggestTaskTitle?: string;
+  /** Per-file before/after captured when this system message reports applied AI changes —
+   *  rendered as expandable diff cards under the message. */
+  fileChanges?: FileChange[];
+  /** 'activity' renders as a compact inline row (tool/step chatter) instead of a bubble. */
+  kind?: 'activity';
+}
+
+/** One applied AI file change, with the content before and after for the diff card. */
+export interface FileChange {
+  path: string;
+  kind: 'write' | 'edit';
+  before: string;
+  after: string;
 }
 
 export interface Attachment {

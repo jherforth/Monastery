@@ -19,6 +19,14 @@ export function PreviewPane({ projectId }: PreviewPaneProps) {
     }
   }, [projectId]);
 
+  // Auto-refresh whenever the AI (or a manual save) writes files — generation-first flow:
+  // the running app updates as the code lands, no manual refresh needed.
+  useEffect(() => {
+    const handler = () => setPreviewKey(k => k + 1);
+    window.addEventListener('monastery:files-written', handler);
+    return () => window.removeEventListener('monastery:files-written', handler);
+  }, []);
+
   return (
     <div className="h-full flex flex-col bg-monastery-dark-bg">
       <div className="flex items-center justify-between px-3 py-2 border-b border-monastery-dark-border bg-monastery-dark-surface">

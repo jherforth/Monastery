@@ -197,14 +197,14 @@ export function SourceShipDrawer({ open, onClose, onCommitComplete, onRestoreCom
                   <div key={snap.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-monastery-dark-surface transition-colors text-sm text-monastery-text-secondary">
                     <div className="flex-1 min-w-0">
                       <div className="text-xs truncate">{snap.name}</div>
-                      <div className="text-[10px] text-monastery-text-muted">
+                      <div className="text-[11px] text-monastery-text-muted">
                         {new Date(snap.created_at).toLocaleString()} · {snap.files_count} files
                       </div>
                     </div>
                     <button
                       onClick={() => handleRestoreSnapshot(snap.id)}
                       disabled={restoringId === snap.id}
-                      className="px-2 py-0.5 text-[10px] bg-monastery-dark-tertiary hover:bg-monastery-lantern hover:text-monastery-dark-bg rounded transition-colors disabled:opacity-50 shrink-0"
+                      className="px-2 py-0.5 text-[11px] bg-monastery-dark-tertiary hover:bg-monastery-lantern hover:text-monastery-dark-bg rounded transition-colors disabled:opacity-50 shrink-0"
                       title="Revert project to this snapshot"
                     >
                       {restoringId === snap.id ? '...' : 'Revert'}

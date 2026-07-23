@@ -229,7 +229,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
                   className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${
                     i === step ? 'bg-monastery-pine/20 text-monastery-pine font-medium' :
                     i < step ? 'text-monastery-text-muted hover:text-monastery-text-secondary' : 'text-monastery-text-muted/50'}`}>
-                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold ${
                     i === step ? 'bg-monastery-pine text-white' : i < step ? 'bg-green-400/20 text-green-400' : 'bg-monastery-dark-border text-monastery-text-muted'}`}>
                     {i < step ? '✓' : i + 1}</span>
                   <span className="hidden sm:inline">{label}</span>
