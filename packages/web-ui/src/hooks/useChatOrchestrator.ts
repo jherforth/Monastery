@@ -56,18 +56,50 @@ const extractFileBlock = (response: string, path: string): string | null => {
   return m ? m[1] : null;
 };
 
+// Provider-native tool-call markup that models sometimes leak as plain text when they
+// decide to "call a tool" in a chat that has none — e.g. DeepSeek's <｜DSML｜…> blocks,
+// <|tool▁calls▁begin|>, Qwen/Hermes-style <tool_call>. Matches both ASCII | and the
+// fullwidth ｜ (U+FF5C) these templates use.
+const TOOL_MARKUP_RE = /<\/?[｜|]?\s*DSML\s*[｜|][^>\n]*>|<\|tool[▁_]?calls?[▁_]?(?:begin|end)?\|>|<\/?tool_call>|<\/?function_call>/gi;
+
+const hasToolMarkup = (text: string) => { TOOL_MARKUP_RE.lastIndex = 0; return TOOL_MARKUP_RE.test(text); };
+
+// Pull file-path-looking arguments out of leaked tool-call markup so the read intent can
+// be rescued through the @read loop (the model asked to read a file; serve it).
+const extractToolMarkupPaths = (text: string): string[] => {
+  const paths = new Set<string>();
+  // Only look inside/near markup lines to avoid grabbing paths from ordinary prose.
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!hasToolMarkup(lines[i])) continue;
+    const region = lines.slice(i, i + 3).join('\n');
+    for (const m of region.matchAll(/[\w][\w./-]*\.\w{1,8}/g)) {
+      const p = m[0].replace(/^\.\//, '');
+      if (p.includes('.') && !p.startsWith('http')) paths.add(p);
+    }
+  }
+  return [...paths].slice(0, 5);
+};
+
+// Strip leaked tool markup from assistant history so the format doesn't self-perpetuate
+// (once one response contains it, models keep imitating it on every following turn).
+const stripToolMarkup = (text: string): string =>
+  hasToolMarkup(text)
+    ? text.replace(TOOL_MARKUP_RE, '').replace(/\n{3,}/g, '\n\n')
+    : text;
+
 // Replace fenced code blocks in OLDER assistant messages with short placeholders before
 // sending history to the LLM. Without this, history accumulates multiple stale versions of
 // each file that compete with the current PROJECT FILE CONTENTS in the system message —
 // models routinely copy from their own outdated output and "overwrite" newer work.
 // (The in-flight response being continued is never stripped — the model needs its own text.)
 const stripHistoryCodeBlocks = (text: string): string =>
-  text.replace(/```([^\n]*)\n[\s\S]*?```/g, (_m, info) => {
+  stripToolMarkup(text.replace(/```([^\n]*)\n[\s\S]*?```/g, (_m, info) => {
     const path = String(info).includes(':') ? String(info).split(':').slice(1).join(':').trim() : '';
     return path
       ? `[previous version of \`${path}\` omitted — the CURRENT contents are in PROJECT FILE CONTENTS]`
       : '[code block omitted]';
-  });
+  }));
 
 // Repair the seam where a continuation resumes a response that was cut off INSIDE a code
 // block. Despite the "continue exactly where you left off" instruction, models often restart
@@ -524,7 +556,8 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
 
 CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTIRE contents. NEVER put just a section, fragment, or "…rest unchanged…" in one — the omitted parts are permanently deleted. If you are changing only part of a file, you MUST use mode 1. Monastery will reject a whole-file block that is only a slice of the existing file.
 - The path after the colon determines where the code is written; you can edit/create multiple files in one response.
-- For illustrative snippets you do NOT want saved to disk, use a plain code block with NO file path.`);
+- For illustrative snippets you do NOT want saved to disk, use a plain code block with NO file path.
+- You have NO native function/tool calling in this chat. NEVER emit tool-call markup of any kind (<|DSML|…>, <tool_call>, <|tool_calls_begin|>, JSON function calls) — it is not executed and breaks the conversation. To read a project file output a plain \`@read path\` line; to search, \`@search term\`.`);
 
     // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
     // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.
@@ -952,6 +985,11 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
           .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
           .filter(Boolean)
           .slice(0, 3);
+        // Rescue leaked native tool calls (e.g. DeepSeek's <｜DSML｜invoke name="read">):
+        // treat file paths inside the markup as @read requests so the turn continues,
+        // instead of the model stalling on a tool result that will never arrive.
+        const leakedToolCall = requestedRaw.length === 0 && searchQueries.length === 0 && hasToolMarkup(pendingContent);
+        if (leakedToolCall) requestedRaw.push(...extractToolMarkupPaths(pendingContent));
         if (requestedRaw.length === 0 && searchQueries.length === 0) break;
 
         // Resolve @read from DISK, not the in-memory map: the map can lag behind writes made
@@ -1034,10 +1072,15 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         if (searchBlocks.length > 0) {
           feedbackParts.push(`Search results:\n\n${searchBlocks.join('\n\n')}`);
         }
+        // When the round was rescued from leaked tool markup, tell the model plainly why —
+        // otherwise it keeps emitting the same markup on the next turn.
+        const toolCallNote = leakedToolCall
+          ? 'IMPORTANT: native tool/function calling does NOT work in this chat — your tool-call markup was ignored. The file(s) it referenced are provided below. From now on use plain `@read <path>` / `@search <term>` lines or path-tagged code blocks only.\n\n'
+          : '';
         pendingChatMessages = [
           ...pendingChatMessages,
           { role: 'assistant' as const, content: pendingContent },
-          { role: 'user' as const, content: `${feedbackParts.join('\n\n')}\n\nContinue the task using this context. You may issue further \`@read\` or \`@search\` lines if you still need more.` },
+          { role: 'user' as const, content: `${toolCallNote}${feedbackParts.join('\n\n')}\n\nContinue the task using this context. You may issue further \`@read\` or \`@search\` lines if you still need more.` },
         ];
 
         const roundMsgId = `${aiMsgId}-read${readRounds}`;
@@ -1098,17 +1141,21 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
 
       setIsGenerating(false);
     } catch (err: any) {
+      // A failed/aborted request can leave behind the empty streaming placeholder bubble —
+      // drop it so the chat doesn't show a blank "via Hermes" message.
+      const dropEmptyPlaceholder = (msgs: Message[]) =>
+        msgs.filter(m => !(m.role === 'assistant' && m.content === '' && !m.reasoning));
       // Don't show an error if the user intentionally stopped generation. Clear any in-progress
       // auto-continuation status and leave the message resumable via the manual Continue button.
       if (err?.name === 'AbortError') {
-        setMessages(prev => prev.map(m => m.continuing ? { ...m, continuing: false, truncated: true } : m));
+        setMessages(prev => dropEmptyPlaceholder(prev).map(m => m.continuing ? { ...m, continuing: false, truncated: true } : m));
         setIsGenerating(false);
         return;
       }
       console.error('Chat request failed:', err);
       // Surface the real error so the user can debug (e.g. a Hermes/LLM failure) instead of a
       // misleading "simulated response".
-      setMessages((prev) => [...prev, {
+      setMessages((prev) => [...dropEmptyPlaceholder(prev), {
         id: (Date.now() + 1).toString(),
         role: 'system' as const,
         content: `⚠️ Request failed: ${err?.message || 'Unknown error'}`,

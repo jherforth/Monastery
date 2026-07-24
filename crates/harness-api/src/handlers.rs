@@ -2308,9 +2308,13 @@ pub async fn project_preview(
     };
 
     let file_path = state.config.data_dir.join(&project_name).join(&path);
-    
-    // Security: prevent directory traversal
+
+    // Security: prevent directory traversal. The base must be canonicalized too —
+    // comparing a canonicalized file path against a raw base fails whenever data_dir
+    // is relative or crosses a symlink (common with Docker volumes), which used to
+    // surface as a bogus 400 for perfectly valid files.
     let base = state.config.data_dir.join(&project_name);
+    let base = base.canonicalize().unwrap_or(base);
     match file_path.canonicalize() {
         Ok(resolved) if resolved.starts_with(&base) => {
             match tokio::fs::read(&resolved).await {
@@ -2370,7 +2374,32 @@ pub async fn project_preview(
                 Err(_) => Err(ApiError::NotFound("File not found".into())),
             }
         }
-        _ => Err(ApiError::Config("Path traversal not allowed".into())),
+        Ok(_) => Err(ApiError::Config("Path traversal not allowed".into())),
+        // canonicalize() fails when the file simply doesn't exist — that's a 404, not a
+        // traversal attempt. For the default preview entry point, serve a friendly
+        // placeholder instead: the preview pane is open by default, and an empty or
+        // just-created project shouldn't greet the user with an error.
+        Err(_) => {
+            if path == "index.html" {
+                let placeholder = format!(
+                    "<!doctype html><html><head><meta charset=\"utf-8\"><title>Preview</title></head>\
+                     <body style=\"margin:0;display:flex;align-items:center;justify-content:center;\
+                     min-height:100vh;font-family:system-ui,sans-serif;background:#F5F0E8;color:#57534e\">\
+                     <div style=\"text-align:center;max-width:24rem;padding:2rem\">\
+                     <div style=\"font-size:2.5rem\">🏛️</div>\
+                     <h1 style=\"font-size:1.1rem;margin:0.75rem 0 0.25rem\">Nothing to preview yet</h1>\
+                     <p style=\"font-size:0.9rem;line-height:1.5\">Ask the assistant to build something — \
+                     when <code>index.html</code> lands in \"{}\", it appears here automatically.</p>\
+                     </div></body></html>",
+                    project_name
+                );
+                return Ok((
+                    [(axum::http::header::CONTENT_TYPE, "text/html")],
+                    placeholder.into_bytes(),
+                ));
+            }
+            Err(ApiError::NotFound("File not found".into()))
+        }
     }
 }
 
@@ -5371,5 +5400,15 @@ pub async fn hermes_agent_run(
         yield Ok(Event::default().data("[DONE]"));
     };
 
-    Ok(Sse::new(sse_stream).into_response())
+    // Keep-alive is critical on THIS route: Hermes can go silent for minutes while it runs
+    // tools on a slow machine, and an idle connection gets killed by intermediaries (the
+    // Cloudflare tunnel drops idle requests at ~100s → "network error" in the UI). The
+    // other chat SSE routes already ping; this one was missing it.
+    Ok(Sse::new(sse_stream)
+        .keep_alive(
+            axum::response::sse::KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response())
 }
