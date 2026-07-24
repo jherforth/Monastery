@@ -32,10 +32,18 @@ pub async fn health_check() -> impl IntoResponse {
 }
 
 /// List available models from configured endpoints
+#[derive(Debug, Deserialize)]
+pub struct ListModelsQuery {
+    /// Scope the list to one endpoint (the UI passes the active endpoint) — without it,
+    /// models from every configured endpoint are flattened together indistinguishably.
+    pub endpoint_id: Option<uuid::Uuid>,
+}
+
 pub async fn list_models(
     State(state): State<AppState>,
+    Query(query): Query<ListModelsQuery>,
 ) -> Result<Json<Vec<harness_core::models::ModelInfo>>, ApiError> {
-    
+
     let mut all_models = Vec::new();
     
     // Fetch all endpoints from database
@@ -78,6 +86,12 @@ pub async fn list_models(
             .collect()
     };
     
+    // Scope to the requested endpoint when given
+    let endpoint_configs: Vec<_> = match query.endpoint_id {
+        Some(eid) => endpoint_configs.into_iter().filter(|e| e.id == eid).collect(),
+        None => endpoint_configs,
+    };
+
     // Fetch models from each endpoint
     for endpoint_config in endpoint_configs {
         let client = harness_core::LLMClient::new(endpoint_config);

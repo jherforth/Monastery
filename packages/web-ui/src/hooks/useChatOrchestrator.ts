@@ -231,6 +231,20 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
   const allFileContentsRef = useRef(allFileContents);
   allFileContentsRef.current = allFileContents;
 
+  // Resolve which model to send: the user's persisted pick when the active endpoint still
+  // serves it, else the endpoint's first model, else null. Never a hardcoded guess —
+  // silently defaulting to a provider-specific name (the old 'deepseek-chat' fallback)
+  // produced baffling 400s for everyone not on that provider.
+  const resolveModelId = useCallback((): string | null => {
+    const selected = useAppStore.getState().selectedModelId;
+    if (selected && availableModels.some(m => m.id === selected)) return selected;
+    return availableModels[0]?.id ?? null;
+  }, [availableModels]);
+
+  const NO_MODEL_MSG =
+    '⚠️ No model is available from the active endpoint. Open the LLM menu in the top bar to pick a model, ' +
+    'or validate the endpoint in Settings → Models (its /v1/models list may be empty or unreachable).';
+
   // When a task is active, its stage roles are driven by the Workflow panel — drop any active
   // stage-role chips so a now-hidden role can't keep silently injecting into context.
   useEffect(() => {
@@ -617,7 +631,8 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
     const activeEndpoint = useAppStore.getState().activeEndpoint;
     const params = new URLSearchParams();
     if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
-    const modelId = availableModels[0]?.id || 'deepseek-chat';
+    const modelId = resolveModelId();
+    if (!modelId) throw new Error('No model available from the active endpoint');
     const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -822,7 +837,17 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         { role: userMessage.role, content: userMessage.content },
       ];
 
-      const modelId = availableModels[0]?.id || 'deepseek-chat';
+      const modelId = resolveModelId();
+      if (!modelId) {
+        setMessages(prev => [...prev, {
+          id: `no-model-${Date.now()}`,
+          role: 'system' as const,
+          content: NO_MODEL_MSG,
+          timestamp: Date.now(),
+        }]);
+        setIsGenerating(false);
+        return;
+      }
 
       // Route to the Hermes agent when Agent mode is on, or an agent button forced it, and a
       // connection exists; otherwise use the standard LLM chat stream. Both endpoints emit the
@@ -1228,7 +1253,16 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
       const activeEndpoint = useAppStore.getState().activeEndpoint;
       const params = new URLSearchParams();
       if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
-      const modelId = availableModels[0]?.id || 'deepseek-chat';
+      const modelId = resolveModelId();
+      if (!modelId) {
+        // Restore the truncated flag (cleared above) so the Continue button stays available.
+        setMessages(prev => [
+          ...prev.map(m => m.id === truncatedMsgId ? { ...m, truncated: true } : m),
+          { id: `no-model-${Date.now()}`, role: 'system' as const, content: NO_MODEL_MSG, timestamp: Date.now() },
+        ]);
+        setIsGenerating(false);
+        return;
+      }
 
       // Send the full system context (previously this path sent NONE — continuations had no
       // project files or editing rules), then the conversation up to and including the

@@ -10,6 +10,8 @@ import type { EndpointConfig } from '../hooks/useEndpoints';
 interface TopBarProps {
   availableProjects?: Array<{ id: string; name: string; description?: string | null }>;
   endpoints?: EndpointConfig[];
+  /** Models reported by the active endpoint — the LLM menu offers them for selection. */
+  availableModels?: Array<{ id: string; name?: string }>;
   onRefreshProjects?: () => void;
   onCommitComplete?: (message: string, snapshotId?: string, wasRestore?: boolean) => void;
   onRestoreComplete?: () => void;
@@ -18,12 +20,14 @@ interface TopBarProps {
   onPullComplete?: (message: string) => void;
 }
 
-export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjects, onCommitComplete, onRestoreComplete, onOpenWizard, onPullComplete }: TopBarProps) {
-  const { 
+export function TopBar({ availableProjects = [], endpoints = [], availableModels = [], onRefreshProjects, onCommitComplete, onRestoreComplete, onOpenWizard, onPullComplete }: TopBarProps) {
+  const {
     currentProject,
     setCurrentProject,
-    activeEndpoint, 
-    resourceUsage, 
+    activeEndpoint,
+    selectedModelId,
+    setSelectedModelId,
+    resourceUsage,
     toggleSidebar,
     togglePreview,
     toggleEditor,
@@ -129,6 +133,13 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
       setCreatingProject(false);
     }
   };
+
+  // The model chats will actually use: the user's pick when the active endpoint still
+  // serves it, else the endpoint's first model (mirrors the orchestrator's resolution).
+  const resolvedModelId =
+    (selectedModelId && availableModels.some(m => m.id === selectedModelId))
+      ? selectedModelId
+      : availableModels[0]?.id ?? null;
 
   // Derive clean repo name by stripping known branch suffix
   const getRepoName = () => {
@@ -264,12 +275,15 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                 <span className="text-sm font-medium text-monastery-text-primary">
                   {activeEndpoint?.name || 'Select LLM'}
                 </span>
-                {endpoints.length > 1 && (
-                  <ChevronDown size={12} className="text-monastery-text-muted" />
+                {resolvedModelId && (
+                  <span className="text-xs text-monastery-text-muted truncate max-w-[140px]" title={`Model: ${resolvedModelId}`}>
+                    · {resolvedModelId}
+                  </span>
                 )}
+                <ChevronDown size={12} className="text-monastery-text-muted" />
               </button>
-              
-              {llmDropdownOpen && endpoints.length > 1 && (
+
+              {llmDropdownOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setLlmDropdownOpen(false)} />
                   <div className="absolute top-full right-0 mt-1 w-64 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-50 py-1">
@@ -296,6 +310,37 @@ export function TopBar({ availableProjects = [], endpoints = [], onRefreshProjec
                         )}
                       </button>
                     ))}
+
+                    {/* Models of the active endpoint — pick which one chats use. No list means
+                        the endpoint's /v1/models came back empty or unreachable. */}
+                    <div className="border-t border-monastery-dark-border mt-1 pt-1">
+                      <div className="px-3 py-1 text-[11px] text-monastery-text-muted font-medium uppercase tracking-wider">
+                        Model
+                      </div>
+                      {availableModels.length === 0 ? (
+                        <p className="px-3 py-1.5 text-xs text-monastery-text-muted italic">
+                          No models reported — validate the endpoint in Settings.
+                        </p>
+                      ) : (
+                        availableModels.map(m => (
+                          <button
+                            key={m.id}
+                            onClick={() => { setSelectedModelId(m.id); setLlmDropdownOpen(false); }}
+                            className={`w-full text-left px-3 py-1.5 text-sm transition-colors flex items-center gap-2 ${
+                              resolvedModelId === m.id
+                                ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
+                                : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
+                            }`}
+                          >
+                            <span className="flex-1 truncate font-mono text-xs">{m.id}</span>
+                            {resolvedModelId === m.id && (
+                              <div className="w-2 h-2 rounded-full bg-status-success shrink-0" />
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+
                     <div className="border-t border-monastery-dark-border mt-1 pt-1 px-1">
                       <button
                         onClick={() => { setIsSettingsOpen(true); setLlmDropdownOpen(false); }}

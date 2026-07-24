@@ -69,7 +69,8 @@ export default function App() {
     window.addEventListener('monastery:open-source-ship', handler);
     return () => window.removeEventListener('monastery:open-source-ship', handler);
   }, []);
-  const [availableModels, setAvailableModels] = useState<Array<{ id: string }>>([]);
+  const [availableModels, setAvailableModels] = useState<Array<{ id: string; name?: string }>>([]);
+  const activeEndpoint = useAppStore(s => s.activeEndpoint);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
@@ -82,14 +83,17 @@ export default function App() {
   // Staged coding workflow (SAW-inspired): task spec + stages + gates + evidence, stored locally.
   const workflow = useWorkflow(currentProject?.id);
 
-  // Fetch available models whenever endpoints change so we always send the right model ID
+  // Fetch the ACTIVE endpoint's models whenever endpoints or the selection change. Always
+  // replace the list (an empty result must clear stale models from a previous endpoint) —
+  // sending a model the endpoint doesn't serve is how hardcoded-fallback 400s happened.
   useEffect(() => {
-    if (endpoints.length === 0) return;
-    fetch('/api/models')
+    if (endpoints.length === 0) { setAvailableModels([]); return; }
+    const params = activeEndpoint?.id ? `?endpoint_id=${encodeURIComponent(activeEndpoint.id)}` : '';
+    fetch(`/api/models${params}`)
       .then(r => r.ok ? r.json() : [])
-      .then((m: Array<{ id: string }>) => { if (m.length > 0) setAvailableModels(m); })
-      .catch(() => {});
-  }, [endpoints]);
+      .then((m: Array<{ id: string; name?: string }>) => setAvailableModels(m))
+      .catch(() => setAvailableModels([]));
+  }, [endpoints, activeEndpoint?.id]);
 
   // Session management
   const {
@@ -524,7 +528,7 @@ export default function App() {
         files={flattenFiles(projectFiles)}
         onOpenFile={openFileInTab}
       />
-      <TopBar availableProjects={availableProjects} endpoints={endpoints} onRefreshProjects={refreshProjects}
+      <TopBar availableProjects={availableProjects} endpoints={endpoints} availableModels={availableModels} onRefreshProjects={refreshProjects}
         onOpenWizard={() => setIsWizardOpen(true)}
         onCommitComplete={(msg, snapshotId, wasRestore) => {
           const markerMsg: Message = {

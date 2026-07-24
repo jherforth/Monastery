@@ -27,6 +27,9 @@ interface AppStore extends AppState {
   /** The code editor pane has its own visibility, independent of the file-tree sidebar. */
   editorCollapsed: boolean;
   toggleEditor: () => void;
+  /** The user's chosen model id (validated against the live model list before use). */
+  selectedModelId: string | null;
+  setSelectedModelId: (id: string | null) => void;
   updatePaneLayout: (layout: { chat: number; editor: number; preview: number }) => void;
   setResourceUsage: (usage: { cpu: number; memory: number; gpu?: number }) => void;
   
@@ -120,6 +123,9 @@ export const useAppStore = create<AppStore>()(
       toggleEditor: () => set((state) => ({
         editorCollapsed: !state.editorCollapsed
       })),
+
+      selectedModelId: null,
+      setSelectedModelId: (id) => set({ selectedModelId: id }),
       
       updatePaneLayout: (layout) => set({ paneLayout: layout }),
       
@@ -158,6 +164,7 @@ export const useAppStore = create<AppStore>()(
         sidebarCollapsed: state.sidebarCollapsed,
         previewCollapsed: state.previewCollapsed,
         editorCollapsed: state.editorCollapsed,
+        selectedModelId: state.selectedModelId,
         endpoints: state.endpoints,
       }),
     }
