@@ -317,21 +317,62 @@ impl LLMClient {
         }
     }
     
-    /// Fetch available models from the endpoint
+    /// Fetch available models from the endpoint.
+    ///
+    /// Raw GET + lenient parsing on purpose: the typed async-openai client hard-fails when a
+    /// provider omits an OpenAI field (DeepSeek's /models entries have no `created`), which
+    /// produced the classic "Validate passes but no models appear" — Validate does a raw GET
+    /// to the same URL and succeeded while this call choked on deserialization. Only `id` is
+    /// required here; everything else is optional. Also tolerates non-OpenAI shapes: a bare
+    /// array, or Ollama's native `{"models":[{"name": …}]}`.
     pub async fn list_models(&self) -> Result<Vec<crate::models::ModelInfo>> {
-        let client = self.create_client();
-        let response = client.models().list().await?;
-        
-        let models = response.data.iter().map(|m| {
-            crate::models::ModelInfo {
-                id: m.id.clone(),
-                name: m.id.clone(), // Use ID as name if no separate name
-                owned_by: m.owned_by.clone(),
-                context_window: None, // Would need additional API call or config
-                is_local: self.config.is_local,
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| Error::OpenAIWithMessage(format!("Failed to build HTTP client: {}", e)))?;
+
+        let base = self.config.base_url.trim_end_matches('/');
+        let url = format!("{}/models", base);
+        let mut req = http_client.get(&url);
+        if let Some(ref api_key) = self.config.api_key {
+            if !api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", api_key));
             }
+        }
+
+        let resp = req.send().await.map_err(|e| {
+            Error::OpenAIWithMessage(format!("Model list request to {} failed: {}", url, e))
+        })?;
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let truncated: String = body.chars().take(300).collect();
+            return Err(Error::OpenAIWithMessage(format!(
+                "HTTP {} from {}: {}", status.as_u16(), url, truncated
+            )));
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            Error::OpenAIWithMessage(format!("Invalid JSON from {}: {}", url, e))
+        })?;
+        let items = json.get("data").and_then(|d| d.as_array())
+            .or_else(|| json.as_array())
+            .or_else(|| json.get("models").and_then(|d| d.as_array()))
+            .cloned()
+            .unwrap_or_default();
+
+        let models = items.iter().filter_map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str())
+                .or_else(|| m.get("name").and_then(|v| v.as_str()))?;
+            Some(crate::models::ModelInfo {
+                id: id.to_string(),
+                name: id.to_string(),
+                owned_by: m.get("owned_by").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                context_window: None,
+                is_local: self.config.is_local,
+            })
         }).collect();
-        
+
         Ok(models)
     }
 }

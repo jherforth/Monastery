@@ -238,6 +238,9 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
   const resolveModelId = useCallback((): string | null => {
     const selected = useAppStore.getState().selectedModelId;
     if (selected && availableModels.some(m => m.id === selected)) return selected;
+    // An empty list doesn't invalidate an explicit pick — some endpoints can't list
+    // models at all, and "Custom model…" exists precisely for them.
+    if (selected && availableModels.length === 0) return selected;
     return availableModels[0]?.id ?? null;
   }, [availableModels]);
 

@@ -76,7 +76,7 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
   const [sourceShipOpen, setSourceShipOpen] = useState(false);
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null);
   const { gitStatus } = useGitForge(currentProject?.id);
-  const { confirm, notice } = useDialogs();
+  const { confirm, notice, promptText } = useDialogs();
 
   // Delete a project: wipes the local directory (so a git repo/branch can be re-cloned
   // fresh) plus its sessions and snapshots. Asks for explicit confirmation first.
@@ -135,9 +135,10 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
   };
 
   // The model chats will actually use: the user's pick when the active endpoint still
-  // serves it, else the endpoint's first model (mirrors the orchestrator's resolution).
+  // serves it (or can't list models at all — custom entry), else the endpoint's first
+  // model (mirrors the orchestrator's resolution).
   const resolvedModelId =
-    (selectedModelId && availableModels.some(m => m.id === selectedModelId))
+    (selectedModelId && (availableModels.length === 0 || availableModels.some(m => m.id === selectedModelId)))
       ? selectedModelId
       : availableModels[0]?.id ?? null;
 
@@ -317,28 +318,50 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
                       <div className="px-3 py-1 text-[11px] text-monastery-text-muted font-medium uppercase tracking-wider">
                         Model
                       </div>
-                      {availableModels.length === 0 ? (
+                      {availableModels.length === 0 && (
                         <p className="px-3 py-1.5 text-xs text-monastery-text-muted italic">
-                          No models reported — validate the endpoint in Settings.
+                          No models reported by this endpoint — pick one manually below.
                         </p>
-                      ) : (
-                        availableModels.map(m => (
-                          <button
-                            key={m.id}
-                            onClick={() => { setSelectedModelId(m.id); setLlmDropdownOpen(false); }}
-                            className={`w-full text-left px-3 py-1.5 text-sm transition-colors flex items-center gap-2 ${
-                              resolvedModelId === m.id
-                                ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
-                                : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
-                            }`}
-                          >
-                            <span className="flex-1 truncate font-mono text-xs">{m.id}</span>
-                            {resolvedModelId === m.id && (
-                              <div className="w-2 h-2 rounded-full bg-status-success shrink-0" />
-                            )}
-                          </button>
-                        ))
                       )}
+                      {availableModels.map(m => (
+                        <button
+                          key={m.id}
+                          onClick={() => { setSelectedModelId(m.id); setLlmDropdownOpen(false); }}
+                          className={`w-full text-left px-3 py-1.5 text-sm transition-colors flex items-center gap-2 ${
+                            resolvedModelId === m.id
+                              ? 'bg-monastery-dark-tertiary text-monastery-text-primary'
+                              : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
+                          }`}
+                        >
+                          <span className="flex-1 truncate font-mono text-xs">{m.id}</span>
+                          {resolvedModelId === m.id && (
+                            <div className="w-2 h-2 rounded-full bg-status-success shrink-0" />
+                          )}
+                        </button>
+                      ))}
+                      {/* Custom entry — shown as a row when active but not in the list */}
+                      {selectedModelId && resolvedModelId === selectedModelId && !availableModels.some(m => m.id === selectedModelId) && (
+                        <div className="px-3 py-1.5 text-sm flex items-center gap-2 bg-monastery-dark-tertiary text-monastery-text-primary">
+                          <span className="flex-1 truncate font-mono text-xs">{selectedModelId}</span>
+                          <span className="text-[11px] text-monastery-text-muted shrink-0">custom</span>
+                          <div className="w-2 h-2 rounded-full bg-status-success shrink-0" />
+                        </div>
+                      )}
+                      <button
+                        onClick={async () => {
+                          setLlmDropdownOpen(false);
+                          const id = await promptText({
+                            title: 'Custom model',
+                            label: 'Model id (sent verbatim to the endpoint)',
+                            placeholder: 'e.g. deepseek-v4-flash, llama3.3:70b',
+                            initialValue: selectedModelId ?? '',
+                          });
+                          if (id?.trim()) setSelectedModelId(id.trim());
+                        }}
+                        className="w-full text-left px-3 py-1.5 text-xs text-monastery-lantern hover:bg-monastery-dark-tertiary transition-colors"
+                      >
+                        Custom model…
+                      </button>
                     </div>
 
                     <div className="border-t border-monastery-dark-border mt-1 pt-1 px-1">
