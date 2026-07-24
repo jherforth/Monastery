@@ -1139,6 +1139,49 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         workflow.loadTask(workflow.activeTaskId).catch(() => {});
       }
 
+      // Hermes writes files through its own tools, not through Monastery — on a shared
+      // workspace they land in this project's folder, invisibly to the chat stream. Re-read
+      // the project after every Hermes response so they appear immediately (not just on
+      // window refocus), and when Hermes CLAIMS writes that never landed here, say so —
+      // the classic un-bridged-workspace trap (files went to Hermes's own terminal.cwd).
+      if (useHermes && currentProject?.id) {
+        const transcript = `${fullContent}\n${pendingContent}`;
+        const claimsWrites =
+          /running tool `?(write|edit|create|save|apply|patch)/i.test(transcript) ||
+          /\b(created|wrote|saved|generated|built)\b[^.\n]{0,80}\b(files?|index\.html)/i.test(transcript);
+        try {
+          const sig = (m: Record<string, string>) =>
+            Object.keys(m).sort().map(k => `${k}:${m[k].length}`).join('|');
+          const beforeSig = sig(allFileContentsRef.current);
+          const [fRes, cRes] = await Promise.all([
+            fetch(`/api/projects/${currentProject.id}/files`),
+            fetch(`/api/projects/${currentProject.id}/files/read-all`),
+          ]);
+          if (fRes.ok) setProjectFiles(await fRes.json());
+          const contents = cRes.ok ? (await cRes.json())?.files : null;
+          if (contents) {
+            const changed = sig(contents) !== beforeSig;
+            setAllFileContents(contents);
+            if (changed) {
+              window.dispatchEvent(new CustomEvent('monastery:files-written'));
+            } else if (claimsWrites) {
+              setMessages(prev => [...prev, {
+                id: `hermes-ws-${Date.now()}`,
+                role: 'system' as const,
+                content:
+                  `⚠️ Hermes reported creating files, but nothing changed in this project's folder — ` +
+                  `it most likely wrote to its own workspace on the Hermes machine (its \`terminal.cwd\`). ` +
+                  `To make Hermes write directly into Monastery projects, set up the shared workspace ` +
+                  `(docs/HERMES_SHARED_WORKSPACE.md). To recover this run's files: on the Hermes machine, ` +
+                  `push its working directory to your git forge, then clone it here as a project ` +
+                  `(Settings → Git Forges → Browse).`,
+                timestamp: Date.now(),
+              }]);
+            }
+          }
+        } catch { /* refresh is best-effort */ }
+      }
+
       setIsGenerating(false);
     } catch (err: any) {
       // A failed/aborted request can leave behind the empty streaming placeholder bubble —
