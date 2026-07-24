@@ -53,6 +53,8 @@ export interface ConnectForgeRequest {
 
 interface GitPushRequest {
   connection_id: string;
+  /** The project to push — required by the backend. */
+  project_id: string;
   repo_name: string;
   repo_description?: string;
   private: boolean;

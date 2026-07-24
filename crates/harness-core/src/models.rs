@@ -240,6 +240,10 @@ pub struct GitStatus {
 #[derive(Debug, Deserialize)]
 pub struct GitPushRequest {
     pub connection_id: Uuid,
+    /// The project to push. Optional only for wire compatibility — the handler rejects
+    /// requests without it (pushing the whole data_dir was the old, wrong behavior).
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
     pub repo_name: String,
     pub repo_description: Option<String>,
     pub private: bool,

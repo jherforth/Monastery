@@ -1752,8 +1752,26 @@ pub async fn git_push(
         last_synced_at: None,
     };
 
+    // Resolve the project directory — the push targets ONE project, never the whole
+    // data_dir (the old behavior git-inited the root and pushed every project at once).
+    let project_id = req.project_id.ok_or_else(|| {
+        ApiError::Config("project_id is required — select a project to push".into())
+    })?;
+    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
+        .bind(project_id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+    let project_name: String = match row {
+        Some(r) => r.get(0),
+        None => return Err(ApiError::NotFound("Project not found".into())),
+    };
+    let project_dir = state.config.data_dir.join(&project_name);
+    if !project_dir.is_dir() {
+        return Err(ApiError::NotFound(format!("Project directory not found: {}", project_name)));
+    }
+
     // Init git if needed
-    GitService::git_init(&state.config.data_dir)
+    GitService::git_init(&project_dir)
         .map_err(|e| ApiError::Core(e))?;
 
     // Create the repo on the forge
@@ -1770,7 +1788,7 @@ pub async fn git_push(
     let commit_msg = req.commit_message.unwrap_or_else(|| "Initial commit from Monastery".to_string());
 
     GitService::git_push(
-        &state.config.data_dir,
+        &project_dir,
         &repo.clone_url,
         &connection.api_token,
         &branch,

@@ -250,11 +250,17 @@ export function GitForgeSetup() {
 
   const handlePush = async () => {
     if (!activeConnection || !pushRepoName.trim()) return;
+    const project = useAppStore.getState().currentProject;
+    if (!project?.id) {
+      setPushResult('Push failed: no project is open — select the project to push first.');
+      return;
+    }
     setPushing(true);
     setPushResult(null);
     try {
       const result = await pushProject({
         connection_id: activeConnection.id,
+        project_id: project.id,
         repo_name: pushRepoName.trim(),
         repo_description: pushDescription.trim() || undefined,
         private: pushPrivate,

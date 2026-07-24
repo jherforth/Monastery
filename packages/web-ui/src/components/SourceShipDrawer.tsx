@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { GitBranch, ArrowUp, ArrowDown, Upload, X, Rocket, History, FileDiff } from 'lucide-react';
+import { GitBranch, ArrowUp, ArrowDown, Upload, X, Rocket, History, FileDiff, FolderGit2 } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { useGitForge } from '../hooks/useGitForge';
 import { useSnapshots } from '../hooks/useSnapshots';
@@ -148,7 +148,29 @@ export function SourceShipDrawer({ open, onClose, onCommitComplete, onRestoreCom
                 </div>
               )}
 
-              {/* Sync actions — always present, enabled by state */}
+              {/* No remote yet → the one action that helps is creating the repo. Pull /
+                  Commit & Push need a remote and would only error. */}
+              {!gitStatus.has_remote && (
+                <div className="mt-3">
+                  <button
+                    onClick={() => {
+                      onClose();
+                      window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'git' } }));
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-monastery-dark-border text-monastery-text-secondary hover:border-monastery-pine hover:text-monastery-text-primary transition-colors"
+                  >
+                    <FolderGit2 size={14} className="text-monastery-lantern" />
+                    <span className="flex-1 text-left">Create repo on your forge &amp; push this project</span>
+                  </button>
+                  <p className="mt-1.5 text-[11px] text-monastery-text-muted">
+                    No remote yet. In Git Forges, use the <Upload size={10} className="inline" /> push
+                    action on your connection — it creates the repo and pushes this project in one step.
+                  </p>
+                </div>
+              )}
+
+              {/* Sync actions — shown once a remote exists, enabled by state */}
+              {gitStatus.has_remote && (
               <div className="mt-3 flex items-center gap-2">
                 <button
                   onClick={handlePull}
@@ -175,11 +197,25 @@ export function SourceShipDrawer({ open, onClose, onCommitComplete, onRestoreCom
                   {committing ? 'Pushing…' : 'Commit & Push'}
                 </button>
               </div>
+              )}
             </section>
           ) : (
-            <p className="text-xs text-monastery-text-muted">
-              No git remote for this project yet — connect a forge and push it from Settings → Git Forges.
-            </p>
+            <div>
+              <button
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'git' } }));
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm rounded-lg border border-monastery-dark-border text-monastery-text-secondary hover:border-monastery-pine hover:text-monastery-text-primary transition-colors"
+              >
+                <FolderGit2 size={14} className="text-monastery-lantern" />
+                <span className="flex-1 text-left">Create repo on your forge &amp; push this project</span>
+              </button>
+              <p className="mt-1.5 text-[11px] text-monastery-text-muted">
+                This project isn't a git repo yet. The repo doesn't need to exist first — the push
+                action on your forge connection creates it and pushes in one step.
+              </p>
+            </div>
           )}
 
           {/* Snapshots */}
