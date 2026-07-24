@@ -110,6 +110,33 @@ with `TERMINAL_CWD` set to that project.
 
 ---
 
+## Alternative bridge: git (Hermes on a separate machine)
+
+When Hermes runs on a **different machine** than Monastery, a shared directory means a network
+mount — clunky. If the project has a git remote (create one from Source & Ship → "Create repo on
+your forge & push this project"), **the repo is a better bridge**:
+
+1. **On the Hermes machine**, clone the project's repo and point Hermes at the clone:
+   ```yaml
+   # ~/.hermes/config.yaml
+   terminal:
+     cwd: /path/to/clone
+   ```
+   Give that machine push rights (PAT embedded in the remote URL, or an SSH key). For the Docker
+   image, set `TERMINAL_CWD` to the clone and make sure `HERMES_WRITE_SAFE_ROOT` covers it.
+2. **Make sync part of the task.** End your task prompt (or template) with:
+   *"Start by running `git pull`. When complete and verified: `git add -A && git commit -m '<summary>' && git push`."*
+   Hermes has terminal tools — it ships its own work.
+3. **In Monastery**, the git chip shows the behind count as soon as Hermes pushes. Open
+   **Source & Ship → Pull** — Monastery snapshots first, rebases local edits on top, and reloads
+   files, context, and the live preview.
+
+Rhythm to keep: Hermes pulls before starting, pushes when done; you Pull before editing in
+Monastery. Bonus: `.monastery/tasks/` specs travel through the repo too, so Hermes's clone sees
+the task spec Monastery wrote once it pulls.
+
+---
+
 ## Caveats & safety
 
 - **One project at a time.** `TERMINAL_CWD` is a single value (not a per-request parameter on the
