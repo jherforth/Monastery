@@ -190,8 +190,8 @@ export interface FileDiff {
   change_type: 'added' | 'removed' | 'modified' | 'unchanged';
 }
 
-// Hosting service types (Self-Host Wizard)
-export type HostingServiceType = 'dokploy' | 'coolify' | 'pocketbase';
+// Hosting service types (Self-Host Wizard + Cloudflare routing automation)
+export type HostingServiceType = 'dokploy' | 'coolify' | 'pocketbase' | 'cloudflare';
 
 export interface HostingServiceConnection {
   id: string;

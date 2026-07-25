@@ -209,13 +209,15 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
         .execute(&pool)
         .await;
     
-    // Hosting service connections table (Self-Host Wizard)
+    // Hosting service connections table (Self-Host Wizard + Cloudflare routing).
+    // No CHECK on service_type — the allowed set is validated app-level in
+    // connect_hosting_service, so adding a service type doesn't need a table rebuild.
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS hosting_connections (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            service_type TEXT NOT NULL CHECK(service_type IN ('dokploy', 'coolify', 'pocketbase')),
+            service_type TEXT NOT NULL,
             base_url TEXT NOT NULL,
             api_token TEXT NOT NULL,
             username TEXT,
@@ -228,6 +230,50 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
     )
     .execute(&pool)
     .await?;
+
+    // Migration: pre-existing DBs created hosting_connections with
+    // CHECK(service_type IN ('dokploy','coolify','pocketbase')), which rejects the newer
+    // 'cloudflare' type. SQLite can't alter a CHECK, so rebuild the table without it.
+    // Guarded on the stored DDL, transactional, and re-run tolerant.
+    let ddl: Option<(String,)> = sqlx::query_as(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'hosting_connections'",
+    )
+    .fetch_optional(&pool)
+    .await?;
+    if let Some((sql,)) = ddl {
+        if sql.contains("CHECK") && !sql.contains("cloudflare") {
+            tracing::info!("Migrating hosting_connections: dropping service_type CHECK constraint");
+            let mut tx = pool.begin().await?;
+            sqlx::query(
+                r#"
+                CREATE TABLE hosting_connections_new (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    service_type TEXT NOT NULL,
+                    base_url TEXT NOT NULL,
+                    api_token TEXT NOT NULL,
+                    username TEXT,
+                    email TEXT,
+                    is_default INTEGER DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    last_synced_at TEXT
+                )
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO hosting_connections_new SELECT id, name, service_type, base_url, api_token, username, email, is_default, created_at, last_synced_at FROM hosting_connections",
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DROP TABLE hosting_connections").execute(&mut *tx).await?;
+            sqlx::query("ALTER TABLE hosting_connections_new RENAME TO hosting_connections")
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+        }
+    }
 
     // Deployments table — maps a (project, hosting connection) to the remote app it created,
     // so subsequent deploys redeploy the SAME app instead of creating a new one each time.

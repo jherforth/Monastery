@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Server, Database, Loader2, CheckCircle, XCircle, Trash2, AlertTriangle } from 'lucide-react';
+import { Server, Database, Cloud, Loader2, CheckCircle, XCircle, Trash2, AlertTriangle } from 'lucide-react';
 import { useHostingServices, ConnectHostingRequest } from '../hooks/useHostingServices';
 import type { HostingServiceConnection, HostingServiceType } from '../types';
 
@@ -12,6 +12,8 @@ interface ServiceTemplate {
   tokenLabel: string;
   tokenPlaceholder: string;
   hasEmail: boolean;
+  /** Services with a well-known API base (e.g. Cloudflare) skip the URL input. */
+  fixedBaseUrl?: string;
 }
 
 const SERVICE_TEMPLATES: ServiceTemplate[] = [
@@ -45,6 +47,17 @@ const SERVICE_TEMPLATES: ServiceTemplate[] = [
     tokenPlaceholder: 'Paste your admin password...',
     hasEmail: true,
   },
+  {
+    type: 'cloudflare',
+    label: 'Cloudflare',
+    description: 'Automates tunnel Public Hostnames + DNS on deploy — no more manual Zero Trust dashboard steps. Token needs: Account → Cloudflare Tunnel: Edit, Zone → DNS: Edit.',
+    icon: Cloud,
+    color: 'text-orange-400',
+    tokenLabel: 'API Token',
+    tokenPlaceholder: 'Paste your Cloudflare API token...',
+    hasEmail: false,
+    fixedBaseUrl: 'https://api.cloudflare.com/client/v4',
+  },
 ];
 
 export function HostingServicesTab() {
@@ -59,6 +72,7 @@ export function HostingServicesTab() {
     dokploy: { url: '', token: '', email: '', name: 'My Dokploy' },
     coolify: { url: '', token: '', email: '', name: 'My Coolify' },
     pocketbase: { url: '', token: '', email: '', name: 'My Pocketbase' },
+    cloudflare: { url: '', token: '', email: '', name: 'My Cloudflare' },
   });
 
   const handleFormChange = (serviceType: HostingServiceType, field: string, value: string) => {
@@ -70,7 +84,8 @@ export function HostingServicesTab() {
 
   const handleConnect = async (template: ServiceTemplate) => {
     const form = formState[template.type];
-    if (!form.url.trim() || !form.token.trim()) {
+    const baseUrl = template.fixedBaseUrl ?? form.url.trim();
+    if (!baseUrl || !form.token.trim()) {
       setError(`Please provide both URL and ${template.tokenLabel.toLowerCase()} for ${template.label}`);
       return;
     }
@@ -82,7 +97,7 @@ export function HostingServicesTab() {
       const req: ConnectHostingRequest = {
         name: form.name || `My ${template.label}`,
         service_type: template.type,
-        base_url: form.url.trim(),
+        base_url: baseUrl,
         api_token: form.token.trim(),
         email: template.hasEmail ? form.email.trim() || undefined : undefined,
       };
@@ -209,18 +224,20 @@ export function HostingServicesTab() {
               ) : (
                 /* Not connected — show setup form */
                 <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-monastery-text-secondary mb-1">
-                      Instance URL
-                    </label>
-                    <input
-                      type="url"
-                      value={formState[template.type].url}
-                      onChange={e => handleFormChange(template.type, 'url', e.target.value)}
-                      placeholder={`https://${template.type.toLowerCase()}.yourdomain.com`}
-                      className="w-full px-3 py-2 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
-                    />
-                  </div>
+                  {!template.fixedBaseUrl && (
+                    <div>
+                      <label className="block text-xs font-medium text-monastery-text-secondary mb-1">
+                        Instance URL
+                      </label>
+                      <input
+                        type="url"
+                        value={formState[template.type].url}
+                        onChange={e => handleFormChange(template.type, 'url', e.target.value)}
+                        placeholder={`https://${template.type.toLowerCase()}.yourdomain.com`}
+                        className="w-full px-3 py-2 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
+                      />
+                    </div>
+                  )}
 
                   {template.hasEmail && (
                     <div>

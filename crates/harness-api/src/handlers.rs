@@ -2949,7 +2949,7 @@ pub async fn connect_hosting_service(
     Json(req): Json<ConnectHostingRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Validate service type
-    if !["dokploy", "coolify", "pocketbase"].contains(&req.service_type.as_str()) {
+    if !["dokploy", "coolify", "pocketbase", "cloudflare"].contains(&req.service_type.as_str()) {
         return Err(ApiError::Config(format!(
             "Invalid service_type '{}'. Must be one of: dokploy, coolify, pocketbase",
             req.service_type
@@ -3037,6 +3037,9 @@ pub async fn test_hosting_connection(
         "dokploy" => (format!("{}/api/health", base_url.trim_end_matches('/')), "x-api-key"),
         "coolify" => (format!("{}/api/v1/health", base_url.trim_end_matches('/')), "Authorization"),
         "pocketbase" => (format!("{}/api/health", base_url.trim_end_matches('/')), "Authorization"),
+        // Cloudflare: verify the API token itself. On auth failure the message below names
+        // the scopes routing automation needs.
+        "cloudflare" => (format!("{}/user/tokens/verify", base_url.trim_end_matches('/')), "Authorization"),
         _ => (format!("{}/api", base_url.trim_end_matches('/')), "Authorization"),
     };
 
@@ -3051,6 +3054,12 @@ pub async fn test_hosting_connection(
     {
         Ok(resp) => {
             let status = resp.status();
+            if !status.is_success() && service_type == "cloudflare" && (status.as_u16() == 401 || status.as_u16() == 403) {
+                return Ok(Json(serde_json::json!({
+                    "healthy": false,
+                    "message": "Cloudflare rejected the token. It needs: Account → Cloudflare Tunnel: Edit, and Zone → DNS: Edit (for every zone you deploy to).",
+                })));
+            }
             if status.is_success() {
                 // Update last_synced_at
                 let now = chrono::Utc::now().to_rfc3339();
@@ -3214,6 +3223,10 @@ pub(crate) struct DeployRequest {
     pub include_cloudflare_tunnel: bool,
     #[serde(default)]
     pub cloudflare_tunnel_token: Option<String>,
+    /// Cloudflare API connection for automated tunnel routing (Public Hostname + DNS).
+    /// When omitted, the backend falls back to the newest 'cloudflare' hosting connection.
+    #[serde(default)]
+    pub cloudflare_connection_id: Option<uuid::Uuid>,
 }
 
 /// Preview generated deploy files without actually deploying
@@ -3402,6 +3415,154 @@ async fn save_deployment(
     .execute(&*state.db)
     .await?;
     Ok(())
+}
+
+/// Update the deploy manifest's target entry for a platform and write it into the project dir.
+/// Best-effort persistence: a failed write logs a warning but never fails the deploy.
+fn record_manifest_target(
+    project_path: &std::path::Path,
+    manifest: &mut crate::deploy_manifest::DeployManifest,
+    platform: &str,
+    app_name: &str,
+    branch: &str,
+    host_port: u16,
+    domain: Option<&str>,
+    tunnel: Option<&crate::cloudflare::TunnelRef>,
+) {
+    {
+        let entry = manifest
+            .targets
+            .entry(platform.to_string())
+            .or_insert_with(|| crate::deploy_manifest::TargetState {
+                app_name: app_name.to_string(),
+                branch: None,
+                host_port,
+                domain: None,
+                cloudflare: None,
+            });
+        entry.app_name = app_name.to_string();
+        entry.branch = Some(branch.to_string());
+        entry.host_port = host_port;
+        if let Some(d) = domain.filter(|d| !d.is_empty()) {
+            entry.domain = Some(d.to_string());
+        }
+        if let Some(t) = tunnel {
+            let hostname = domain
+                .filter(|d| !d.is_empty())
+                .map(str::to_string)
+                .or_else(|| entry.cloudflare.as_ref().and_then(|c| c.hostname.clone()));
+            entry.cloudflare = Some(crate::deploy_manifest::CloudflareState {
+                account_id: t.account_id.clone(),
+                tunnel_id: t.tunnel_id.clone(),
+                hostname,
+            });
+        }
+    }
+    if let Err(e) = crate::deploy_manifest::save(project_path, manifest) {
+        tracing::warn!("Deploy manifest not written: {}", e);
+    }
+}
+
+/// Run Cloudflare routing automation (ingress rule + proxied CNAME), best-effort.
+/// Returns (routing_configured, routing_error, routed_url) for the DeployResult. All-None means
+/// routing wasn't applicable (no domain, or no tunnel identity to route through).
+async fn run_cloudflare_routing(
+    state: &AppState,
+    api_token: Option<&str>,
+    tunnel: Option<&crate::cloudflare::TunnelRef>,
+    domain: Option<&str>,
+    host_port: u16,
+) -> (Option<bool>, Option<String>, Option<String>) {
+    let Some(domain) = domain.filter(|d| !d.is_empty()) else { return (None, None, None) };
+    let Some(tun) = tunnel else { return (None, None, None) };
+    let Some(token) = api_token else {
+        return (
+            Some(false),
+            Some("No Cloudflare connection configured — add one in Settings → Hosting to automate Public Hostname + DNS, or add them manually in the Zero Trust dashboard.".into()),
+            None,
+        );
+    };
+    let client = match reqwest::Client::builder().timeout(std::time::Duration::from_secs(20)).build() {
+        Ok(c) => c,
+        Err(e) => return (Some(false), Some(format!("Failed to build HTTP client: {}", e)), None),
+    };
+    // The ingress list is replaced wholesale (read-modify-write) — serialize against other
+    // Monastery deploys so parallel writers can't drop each other's rules.
+    let _guard = state.cloudflare_config_lock.lock().await;
+    match crate::cloudflare::ensure_routing(&client, token, tun, domain, host_port).await {
+        Ok(url) => (Some(true), None, Some(url)),
+        Err(e) => {
+            tracing::warn!("Cloudflare routing automation failed: {}", e);
+            (Some(false), Some(e), None)
+        }
+    }
+}
+
+/// Cross-instance discovery: find a Coolify application whose description carries the deploy
+/// manifest marker. Returns (app_uuid, server_uuid_if_present).
+async fn discover_coolify_app_by_marker(
+    client: &reqwest::Client,
+    base: &str,
+    api_token: &str,
+    marker: &str,
+) -> Option<(String, Option<String>)> {
+    let resp = client
+        .get(format!("{}/api/v1/applications", base))
+        .header("Authorization", format!("Bearer {}", api_token))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let apps: Vec<serde_json::Value> = resp.json().await.ok()?;
+    let app = apps.iter().find(|a| {
+        a["description"].as_str().map(|d| d.contains(marker)).unwrap_or(false)
+    })?;
+    let uuid = app["uuid"].as_str()?.to_string();
+    let server = app["server_uuid"]
+        .as_str()
+        .or_else(|| app["destination"]["server"]["uuid"].as_str())
+        .map(str::to_string);
+    Some((uuid, server))
+}
+
+/// Cross-instance discovery for Dokploy: walk project.all → environments → applications and
+/// match the manifest marker in each application's description.
+async fn discover_dokploy_app_by_marker(
+    client: &reqwest::Client,
+    base: &str,
+    api_token: &str,
+    marker: &str,
+) -> Option<String> {
+    let resp = client
+        .get(format!("{}/api/trpc/project.all", base))
+        .header("x-api-key", api_token)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let data: serde_json::Value = resp.json().await.ok()?;
+    let projects = data["result"]["data"]["json"]
+        .as_array()
+        .or_else(|| data["result"]["data"].as_array())
+        .or_else(|| data["result"].as_array())?;
+    for project in projects {
+        let envs = project["environments"].as_array().cloned().unwrap_or_default();
+        for env in envs {
+            let apps = env["applications"].as_array().cloned().unwrap_or_default();
+            for app in apps {
+                if app["description"].as_str().map(|d| d.contains(marker)).unwrap_or(false) {
+                    if let Some(id) = app["applicationId"].as_str().or_else(|| app["id"].as_str()) {
+                        return Some(id.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// POST a Dokploy tRPC mutation (`{ "json": input }`) and return the parsed response, mapping a
@@ -3679,6 +3840,35 @@ pub async fn deploy_to_hosting(
     // user requested a Pocketbase backend for this deploy.
     let pocketbase_url = resolve_pocketbase_url(&state, &req).await;
 
+    // Deployment identity: the committed manifest (.monastery/deploy.json) travels with the repo
+    // so other Monastery instances / collaborators adopt the same platform app instead of
+    // creating duplicates. Missing → new identity; corrupt → surface it (don't silently fork).
+    let manifest_existed;
+    let mut manifest = match crate::deploy_manifest::load(&project_path) {
+        Ok(Some(m)) => { manifest_existed = true; m }
+        Ok(None) => { manifest_existed = false; crate::deploy_manifest::DeployManifest::new(&req.app_name) }
+        Err(e) => return Err(ApiError::Config(format!("{} — fix or delete the file and retry.", e))),
+    };
+
+    // Cloudflare API connection for automated tunnel routing (optional). Explicit id from the
+    // wizard wins; else fall back to the newest configured cloudflare connection.
+    let cloudflare_api_token: Option<String> = {
+        let row = match req.cloudflare_connection_id {
+            Some(cid) => sqlx::query(
+                "SELECT api_token FROM hosting_connections WHERE id = ? AND service_type = 'cloudflare'",
+            )
+            .bind(cid.to_string())
+            .fetch_optional(&*state.db)
+            .await?,
+            None => sqlx::query(
+                "SELECT api_token FROM hosting_connections WHERE service_type = 'cloudflare' ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_optional(&*state.db)
+            .await?,
+        };
+        row.map(|r| r.get::<String, _>(0))
+    };
+
     // Build and deploy based on service type
     let base = base_url.trim_end_matches('/');
     let client = reqwest::Client::new();
@@ -3706,20 +3896,67 @@ pub async fn deploy_to_hosting(
             // http://<server-ip>:<host_port> on the LAN — no DNS / sslip.io / Traefik domain
             // needed (the all-local case). Must NOT be 80/443 — those are owned by Coolify's
             // proxy on the deploy host, so publishing there fails with "port is already
-            // allocated". Pick a stable high port per app (deterministic so redeploys keep the
-            // same port); the Cloudflare tunnel, when used, also points at this port.
-            let host_port: u16 = {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                req.app_name.hash(&mut h);
-                20000 + (h.finish() % 10000) as u16
-            };
+            // allocated". The manifest PINS the port once assigned (stable across renames and
+            // Monastery instances — Cloudflare Public Hostname rules keep working forever);
+            // first deploy derives it deterministically from the app name.
+            let host_port: u16 = manifest
+                .targets
+                .get("coolify")
+                .map(|t| t.host_port)
+                .unwrap_or_else(|| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    req.app_name.hash(&mut h);
+                    20000 + (h.finish() % 10000) as u16
+                });
+
+            // Tunnel identity for automated routing: a freshly pasted connector token wins,
+            // else whatever an earlier deploy recorded in the manifest (token-less redeploys).
+            let tunnel_ref = req
+                .cloudflare_tunnel_token
+                .as_deref()
+                .and_then(crate::cloudflare::parse_tunnel_token)
+                .or_else(|| {
+                    manifest
+                        .targets
+                        .get("coolify")
+                        .and_then(|t| t.cloudflare.as_ref())
+                        .map(|c| c.tunnel_ref())
+                });
+
+            // Branch note: the manifest records which branch this target tracks; a mismatch is
+            // surfaced (not blocked) so accidental cross-branch deploys are visible.
+            let branch_mismatch = manifest
+                .targets
+                .get("coolify")
+                .and_then(|t| t.branch.as_deref())
+                .map(|b| b != git.branch)
+                .unwrap_or(false);
+
+            // Resolve the app to redeploy: local cache first; else cross-instance discovery via
+            // the manifest marker embedded in the Coolify app description (a collaborator's
+            // instance or a rebuilt DB adopts the existing app instead of duplicating it).
+            let mut adopted = false;
+            let mut existing = lookup_deployment(&state, req.project_id, req.connection_id).await?;
+            if existing.is_none() && manifest_existed && manifest.targets.contains_key("coolify") {
+                if let Some((found_uuid, found_server)) =
+                    discover_coolify_app_by_marker(&client, base, &api_token, &manifest.marker()).await
+                {
+                    tracing::info!("Adopted existing Coolify app {} via deploy manifest marker", found_uuid);
+                    let _ = save_deployment(
+                        &state, req.project_id, req.connection_id, "coolify",
+                        &found_uuid, &req.app_name, found_server.as_deref().unwrap_or(""),
+                    ).await;
+                    existing = Some(found_uuid);
+                    adopted = true;
+                }
+            }
 
             // If already deployed for this (project, connection), redeploy the SAME app with a
             // forced (no-cache) rebuild so the in-Dockerfile clone re-fetches the latest commit.
             // If the app was deleted in Coolify (404), drop the stale mapping and fall through to
             // create a fresh one — so a user who wipes the app in Coolify can just redeploy.
-            if let Some(existing_uuid) = lookup_deployment(&state, req.project_id, req.connection_id).await? {
+            if let Some(existing_uuid) = existing {
                 // Refresh the app's stored Dockerfile FIRST. A Coolify redeploy rebuilds from the
                 // Dockerfile it saved at create time; because that Dockerfile was byte-identical
                 // every redeploy, the `git clone` layer stayed cached and the app kept serving the
@@ -3759,6 +3996,33 @@ pub async fn deploy_to_hosting(
                     .await
                 {
                     Ok(r) if r.status().is_success() => {
+                        // Redeploys also refresh identity + routing: the manifest is (re)written
+                        // (this is how pre-manifest deployments gain one), and Cloudflare routing
+                        // is re-ensured — redeploy is exactly when domains change.
+                        record_manifest_target(
+                            &project_path, &mut manifest, "coolify", &req.app_name,
+                            &git.branch, host_port, req.domain.as_deref(), tunnel_ref.as_ref(),
+                        );
+                        if !manifest_existed {
+                            // Legacy migration: stamp the marker into the app description so other
+                            // instances can discover it. Best-effort.
+                            let _ = client
+                                .patch(format!("{}/api/v1/applications/{}", base, existing_uuid))
+                                .header("Authorization", format!("Bearer {}", api_token))
+                                .header("Content-Type", "application/json")
+                                .json(&serde_json::json!({
+                                    "description": format!(
+                                        "Deployed from Monastery — project: {} [{}]",
+                                        project_name, manifest.marker()
+                                    ),
+                                }))
+                                .send()
+                                .await;
+                        }
+                        let (routing_configured, routing_error, routed_url) = run_cloudflare_routing(
+                            &state, cloudflare_api_token.as_deref(), tunnel_ref.as_ref(),
+                            req.domain.as_deref(), host_port,
+                        ).await;
                         return Ok(Json(serde_json::json!({
                             "success": true,
                             "platform": "coolify",
@@ -3766,9 +4030,18 @@ pub async fn deploy_to_hosting(
                             "app_name": req.app_name,
                             "deploy_triggered": true,
                             "redeployed": true,
+                            "adopted": adopted,
+                            "deploy_id": manifest.deploy_id,
+                            "branch_mismatch": branch_mismatch,
                             "dashboard_url": format!("{}/projects", base.trim_end_matches("/api/v1")),
                             "framework": framework,
                             "port": port,
+                            "host_port": host_port,
+                            "host_service_url": format!("http://127.0.0.1:{}", host_port),
+                            "tunnel_service_url": format!("http://127.0.0.1:{}", host_port),
+                            "routing_configured": routing_configured,
+                            "routing_error": routing_error,
+                            "routed_url": routed_url,
                         })));
                     }
                     // 404 = the app no longer exists in Coolify (deleted by the user). Forget the
@@ -3913,7 +4186,9 @@ pub async fn deploy_to_hosting(
                 "server_uuid": server_uuid,
                 "environment_name": "production",
                 "name": req.app_name,
-                "description": format!("Deployed from Monastery — project: {}", project_name),
+                // The manifest marker makes this app discoverable/adoptable by other Monastery
+                // instances working from the same repo (see deploy_manifest.rs).
+                "description": format!("Deployed from Monastery — project: {} [{}]", project_name, manifest.marker()),
                 "build_pack": "dockerfile",
                 "dockerfile": dockerfile_b64,
                 "ports_exposes": port.to_string(),
@@ -3961,6 +4236,12 @@ pub async fn deploy_to_hosting(
 
             // Remember this app so future deploys redeploy it in place instead of creating a new one.
             let _ = save_deployment(&state, req.project_id, req.connection_id, "coolify", app_uuid, &req.app_name, server_uuid).await;
+
+            // Persist the portable identity + desired state into the repo.
+            record_manifest_target(
+                &project_path, &mut manifest, "coolify", &req.app_name,
+                &git.branch, host_port, req.domain.as_deref(), tunnel_ref.as_ref(),
+            );
 
             // Inject the shared Pocketbase URL (build-time + runtime) then deploy; otherwise
             // instant_deploy already queued the build.
@@ -4039,6 +4320,13 @@ pub async fn deploy_to_hosting(
                 }
             }
 
+            // Automated Cloudflare routing (Public Hostname + DNS) — best-effort, never fails
+            // the deploy; the wizard shows manual instructions on routing_error.
+            let (routing_configured, routing_error, routed_url) = run_cloudflare_routing(
+                &state, cloudflare_api_token.as_deref(), tunnel_ref.as_ref(),
+                req.domain.as_deref(), host_port,
+            ).await;
+
             Ok(Json(serde_json::json!({
                 "success": true,
                 "platform": "coolify",
@@ -4046,6 +4334,9 @@ pub async fn deploy_to_hosting(
                 "app_name": req.app_name,
                 "deploy_triggered": deploy_success,
                 "redeployed": false,
+                "adopted": adopted,
+                "deploy_id": manifest.deploy_id,
+                "branch_mismatch": branch_mismatch,
                 "dashboard_url": format!("{}/projects", base.trim_end_matches("/api/v1")),
                 "framework": framework,
                 "port": port,
@@ -4058,10 +4349,15 @@ pub async fn deploy_to_hosting(
                 "tunnel_requested": req.include_cloudflare_tunnel,
                 "tunnel_deployed": tunnel_deployed,
                 "tunnel_error": tunnel_error,
-                // The exact "Service" URL to set for the Public Hostname in the Cloudflare dashboard.
+                // The exact "Service" URL for a tunnel Public Hostname. ALWAYS returned (tunnel
+                // toggle or not) so an app can be added to an existing tunnel after the fact.
                 // Use 127.0.0.1 (not "localhost"): cloudflared resolves "localhost" to IPv6 ::1,
                 // but the published host port binds on IPv4 — so localhost gives "connection refused".
-                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://127.0.0.1:{}", host_port)) } else { None },
+                "host_service_url": format!("http://127.0.0.1:{}", host_port),
+                "tunnel_service_url": format!("http://127.0.0.1:{}", host_port),
+                "routing_configured": routing_configured,
+                "routing_error": routing_error,
+                "routed_url": routed_url,
                 "pocketbase_url": pocketbase_url,
             })))
         }
@@ -4075,6 +4371,43 @@ pub async fn deploy_to_hosting(
             // endpoints are `server.all` / `project.all` (no `*.list`); `project.all` returns each
             // project with its nested (auto-created "production") environments.
             let git = resolve_project_git(&state, &project_path).await?;
+
+            // Pinned host port + tunnel identity + branch note (see the Coolify arm for details).
+            let host_port: u16 = manifest
+                .targets
+                .get("dokploy")
+                .map(|t| t.host_port)
+                .unwrap_or_else(|| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    req.app_name.hash(&mut h);
+                    20000 + (h.finish() % 10000) as u16
+                });
+            let tunnel_ref = req
+                .cloudflare_tunnel_token
+                .as_deref()
+                .and_then(crate::cloudflare::parse_tunnel_token)
+                .or_else(|| {
+                    manifest
+                        .targets
+                        .get("dokploy")
+                        .and_then(|t| t.cloudflare.as_ref())
+                        .map(|c| c.tunnel_ref())
+                });
+            let branch_mismatch = manifest
+                .targets
+                .get("dokploy")
+                .and_then(|t| t.branch.as_deref())
+                .map(|b| b != git.branch)
+                .unwrap_or(false);
+
+            // Write the manifest BEFORE the pre-deploy push so the identity file rides the same
+            // commit Dokploy clones — collaborators get it with the repo.
+            record_manifest_target(
+                &project_path, &mut manifest, "dokploy", &req.app_name,
+                &git.branch, host_port, req.domain.as_deref(), tunnel_ref.as_ref(),
+            );
+
             // Ensure the generated Dockerfile (written above if missing) and any local changes are
             // committed and pushed so Dokploy's clone includes them.
             if let Err(e) = harness_core::GitService::git_push(
@@ -4085,9 +4418,27 @@ pub async fn deploy_to_hosting(
             }
             let git_repository = build_authed_clone_url(&git.remote_url, &git.token);
 
+            // Resolve the app: local cache first, else adopt via the manifest marker
+            // (cross-instance discovery — see the Coolify arm).
+            let mut adopted = false;
+            let mut existing = lookup_deployment(&state, req.project_id, req.connection_id).await?;
+            if existing.is_none() && manifest_existed && manifest.targets.contains_key("dokploy") {
+                if let Some(found_id) =
+                    discover_dokploy_app_by_marker(&client, base, &api_token, &manifest.marker()).await
+                {
+                    tracing::info!("Adopted existing Dokploy app {} via deploy manifest marker", found_id);
+                    let _ = save_deployment(
+                        &state, req.project_id, req.connection_id, "dokploy",
+                        &found_id, &req.app_name, "",
+                    ).await;
+                    existing = Some(found_id);
+                    adopted = true;
+                }
+            }
+
             // Redeploy the SAME app if we've deployed this (project, connection) before. On 404
             // (app deleted in Dokploy) drop the stale mapping and fall through to recreate.
-            if let Some(existing_app_id) = lookup_deployment(&state, req.project_id, req.connection_id).await? {
+            if let Some(existing_app_id) = existing {
                 let deploy_url = format!("{}/api/trpc/application.deploy", base);
                 match client.post(&deploy_url)
                     .header("x-api-key", &api_token).header("Content-Type", "application/json")
@@ -4095,6 +4446,21 @@ pub async fn deploy_to_hosting(
                     .send().await
                 {
                     Ok(r) if r.status().is_success() => {
+                        if !manifest_existed {
+                            // Legacy migration: stamp the marker so other instances can adopt.
+                            // Best-effort — Dokploy's update schema varies across versions.
+                            let _ = dokploy_mutation(&client, base, &api_token, "application.update", serde_json::json!({
+                                "applicationId": existing_app_id,
+                                "description": format!(
+                                    "Deployed from Monastery — project: {} [{}]",
+                                    project_name, manifest.marker()
+                                ),
+                            })).await;
+                        }
+                        let (routing_configured, routing_error, routed_url) = run_cloudflare_routing(
+                            &state, cloudflare_api_token.as_deref(), tunnel_ref.as_ref(),
+                            req.domain.as_deref(), host_port,
+                        ).await;
                         return Ok(Json(serde_json::json!({
                             "success": true,
                             "platform": "dokploy",
@@ -4102,9 +4468,18 @@ pub async fn deploy_to_hosting(
                             "app_name": req.app_name,
                             "deploy_triggered": true,
                             "redeployed": true,
+                            "adopted": adopted,
+                            "deploy_id": manifest.deploy_id,
+                            "branch_mismatch": branch_mismatch,
                             "dashboard_url": format!("{}/dashboard/home", base.trim_end_matches("/api")),
                             "framework": framework,
                             "port": port,
+                            "host_port": host_port,
+                            "host_service_url": format!("http://127.0.0.1:{}", host_port),
+                            "tunnel_service_url": format!("http://127.0.0.1:{}", host_port),
+                            "routing_configured": routing_configured,
+                            "routing_error": routing_error,
+                            "routed_url": routed_url,
                         })));
                     }
                     Ok(r) if r.status().as_u16() == 404 => {
@@ -4262,7 +4637,9 @@ pub async fn deploy_to_hosting(
             let create_body = dokploy_mutation(&client, base, &api_token, "application.create", serde_json::json!({
                 "name": req.app_name,
                 "appName": req.app_name,
-                "description": format!("Deployed from Monastery — project: {}", project_name),
+                // The manifest marker makes this app discoverable/adoptable by other Monastery
+                // instances working from the same repo (see deploy_manifest.rs).
+                "description": format!("Deployed from Monastery — project: {} [{}]", project_name, manifest.marker()),
                 "environmentId": env_id,
                 "serverId": server_id,
             })).await?;
@@ -4313,13 +4690,7 @@ pub async fn deploy_to_hosting(
                 }
             }
 
-            // Stable host port for tunnel / LAN access (derived from the app name).
-            let host_port: u16 = {
-                use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                req.app_name.hash(&mut h);
-                20000 + (h.finish() % 10000) as u16
-            };
+            // (host_port was pinned/derived above, before the manifest write.)
             let mut tunnel_error: Option<String> = None;
 
             // The container port the app actually listens on = the LAST `EXPOSE` in the Dockerfile
@@ -4334,18 +4705,20 @@ pub async fn deploy_to_hosting(
                 }))
                 .unwrap_or(port);
 
-            // If a tunnel is requested, publish the app's port on the host BEFORE deploying —
-            // Swarm applies port mappings at deploy time, so adding it afterwards never takes effect.
-            if req.include_cloudflare_tunnel {
-                if let Err(e) = dokploy_mutation(&client, base, &api_token, "port.create", serde_json::json!({
-                    "applicationId": app_id,
-                    "publishedPort": host_port,
-                    "targetPort": container_port,
-                    "publishMode": "host",
-                    "protocol": "tcp",
-                })).await {
-                    tunnel_error = Some(format!("port publish failed: {:?}", e));
-                }
+            // Always publish the app's port on the host BEFORE deploying (Swarm applies port
+            // mappings at deploy time). Previously this only happened when the tunnel toggle was
+            // on — but the published port is what makes host_service_url truthful, lets the app
+            // be added to an existing tunnel later, and matches the Coolify arm's behavior.
+            if let Err(e) = dokploy_mutation(&client, base, &api_token, "port.create", serde_json::json!({
+                "applicationId": app_id,
+                "publishedPort": host_port,
+                "targetPort": container_port,
+                "publishMode": "host",
+                "protocol": "tcp",
+            })).await {
+                let msg = format!("port publish failed: {:?}", e);
+                tracing::warn!("Dokploy {}", msg);
+                if req.include_cloudflare_tunnel { tunnel_error = Some(msg); }
             }
 
             // Step 9: Trigger the deploy (clones the repo, builds the Dockerfile, applies the port).
@@ -4401,6 +4774,12 @@ pub async fn deploy_to_hosting(
                 }
             }
 
+            // Automated Cloudflare routing (Public Hostname + DNS) — best-effort.
+            let (routing_configured, routing_error, routed_url) = run_cloudflare_routing(
+                &state, cloudflare_api_token.as_deref(), tunnel_ref.as_ref(),
+                req.domain.as_deref(), host_port,
+            ).await;
+
             Ok(Json(serde_json::json!({
                 "success": true,
                 "platform": "dokploy",
@@ -4408,17 +4787,25 @@ pub async fn deploy_to_hosting(
                 "app_name": req.app_name,
                 "deploy_triggered": deploy_success,
                 "redeployed": false,
+                "adopted": adopted,
+                "deploy_id": manifest.deploy_id,
+                "branch_mismatch": branch_mismatch,
                 "dashboard_url": format!("{}/dashboard/home", base.trim_end_matches("/api")),
                 "framework": framework,
                 "port": port,
                 "host_port": host_port,
-                "access_url": if req.include_cloudflare_tunnel { server_ip.as_ref().map(|ip| format!("http://{}:{}", ip, host_port)) } else { None },
+                // The port is now always published, so the LAN URL is always real.
+                "access_url": server_ip.as_ref().map(|ip| format!("http://{}:{}", ip, host_port)),
                 "tunnel_requested": req.include_cloudflare_tunnel,
                 "tunnel_deployed": tunnel_deployed,
                 "tunnel_error": tunnel_error,
-                // Use 127.0.0.1 (not "localhost"): cloudflared resolves "localhost" to IPv6 ::1,
-                // but the published host port binds on IPv4 — so localhost gives "connection refused".
-                "tunnel_service_url": if req.include_cloudflare_tunnel { Some(format!("http://127.0.0.1:{}", host_port)) } else { None },
+                // Always returned (tunnel toggle or not) — see the Coolify arm for the
+                // 127.0.0.1-vs-localhost rationale.
+                "host_service_url": format!("http://127.0.0.1:{}", host_port),
+                "tunnel_service_url": format!("http://127.0.0.1:{}", host_port),
+                "routing_configured": routing_configured,
+                "routing_error": routing_error,
+                "routed_url": routed_url,
                 "pocketbase_url": pocketbase_url,
             })))
         }

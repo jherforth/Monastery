@@ -104,16 +104,69 @@ dropdown:
 If you supply a Cloudflare Tunnel token, Monastery launches a `cloudflared` connector as a
 sidecar Coolify **Service** (host networking) and publishes the app's port on the host.
 
-One manual step remains, because token tunnels are **remotely managed**: in the Cloudflare
-Zero Trust dashboard → Networks → Tunnels → your tunnel → **Public Hostname**, set the
-**Service** to:
+### Automated routing (recommended)
+
+Connect **Cloudflare** in Settings → Hosting (an API token with **Account → Cloudflare
+Tunnel: Edit** and **Zone → DNS: Edit**). Then, whenever a deploy specifies a domain and a
+tunnel, Monastery configures the routing itself via the Cloudflare API:
+
+- adds/updates the tunnel **Public Hostname** ingress rule (`your-domain → http://127.0.0.1:<host_port>`), and
+- creates/updates the proxied **CNAME** (`your-domain → <tunnel-id>.cfargotunnel.com`).
+
+No Zero Trust dashboard steps. Routing failures never fail the deploy — the wizard shows the
+error plus the manual instructions below as fallback. (Locally-managed config-file tunnels
+ignore remote config; use a token tunnel for automation.)
+
+### Manual routing (fallback)
+
+Token tunnels are **remotely managed**: in the Cloudflare Zero Trust dashboard → Networks →
+Tunnels → your tunnel → **Public Hostname**, set the **Service** to:
 
 ```
-http://localhost:<port>
+http://127.0.0.1:<host_port>
 ```
 
-(The wizard prints the exact URL.) Never point it at the public HTTPS URL — that loops back
-out through Cloudflare.
+(The wizard prints the exact URL.) Use **127.0.0.1, not `localhost`** — cloudflared resolves
+`localhost` to IPv6 `::1`, but the published port binds IPv4, so `localhost` gives
+"connection refused". Never point it at the public HTTPS URL — that loops back out through
+Cloudflare.
+
+### Multiple sites behind one tunnel
+
+One tunnel (and one connector per server) fronts **any number of sites across any number of
+domains** in the same Cloudflare account:
+
+- Every app Monastery deploys gets its **own stable host port** (recorded in the deploy
+  manifest), published on the server — so a host-networked connector reaches each app at
+  `http://127.0.0.1:<that app's host_port>`.
+- To add another site: deploy it with the tunnel toggle **off** (a second connector is
+  unnecessary), then add one Public Hostname per site — or let the Cloudflare connection do
+  it automatically. The wizard prints each app's service URL even when the tunnel toggle is
+  off.
+- Per-app `{app}-cloudflared` sidecars from earlier tunnel-on deploys are legal duplicates
+  (Cloudflare treats them as replica connectors of the same tunnel). Keep one and remove the
+  rest, or leave them.
+- **Different-server caveat:** a connector reaches `127.0.0.1` ports only on its *own*
+  server. An app on a different server needs that server's LAN IP as the Service target, or
+  its own connector.
+
+---
+
+## The deploy manifest — `.monastery/deploy.json`
+
+The first deploy writes a small identity file into the project (commit it — it contains no
+secrets, only identifiers):
+
+- `deploy_id` — stable unique id; also embedded in the platform app's description as
+  `monastery-deploy-id:<id>`. Another Monastery instance (a collaborator, a rebuilt DB)
+  deploying the same repo **adopts** the existing platform app instead of creating a
+  duplicate.
+- `targets.<platform>` — app name, tracked branch, the **pinned host port** (stable across
+  renames and instances, so tunnel routing keeps working), the domain, and the Cloudflare
+  account/tunnel ids (so token-less redeploys can still re-ensure routing).
+
+Merge-conflict rule: keep the **older** `deploy_id`. Deleting the file simply mints a new
+identity on the next deploy (a fresh platform app).
 
 ---
 

@@ -4,6 +4,8 @@ mod handlers;
 mod db;
 mod middleware;
 mod snapshot_service;
+mod cloudflare;
+mod deploy_manifest;
 
 use axum::{Router, routing::get, routing::post, routing::patch, routing::delete};
 use tower_http::{cors::{CorsLayer, Any}, trace::TraceLayer};
@@ -19,6 +21,9 @@ pub struct AppState {
     pub config: Arc<HarnessConfig>,
     pub db: Arc<sqlx::SqlitePool>,
     pub snapshot_service: Arc<SnapshotService>,
+    /// Serializes Cloudflare tunnel-config read-modify-write cycles across concurrent deploys
+    /// (the ingress list is replaced wholesale; parallel writers would drop each other's rules).
+    pub cloudflare_config_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[tokio::main]
@@ -57,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: Arc::new(config),
         db: Arc::new(db),
         snapshot_service: Arc::new(snapshot_service),
+        cloudflare_config_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
     
     // Configure CORS for web UI

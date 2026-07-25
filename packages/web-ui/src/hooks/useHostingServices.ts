@@ -22,6 +22,8 @@ interface DeployRequest {
   pocketbase_connection_id?: string;
   include_cloudflare_tunnel?: boolean;
   cloudflare_tunnel_token?: string;
+  /** Cloudflare API connection for automated tunnel routing (Public Hostname + DNS). */
+  cloudflare_connection_id?: string;
 }
 
 export interface HostingServer {
@@ -51,6 +53,19 @@ export interface DeployResult {
   tunnel_deployed?: boolean;
   tunnel_error?: string | null;
   tunnel_service_url?: string | null;
+  /** Always present: the app's published URL on the deploy host (http://127.0.0.1:<host_port>) —
+   *  the Service target for a tunnel Public Hostname, tunnel toggle or not. */
+  host_service_url?: string | null;
+  /** Portable deployment identity from .monastery/deploy.json. */
+  deploy_id?: string;
+  /** True when an existing platform app was adopted via the manifest marker (no duplicate created). */
+  adopted?: boolean;
+  /** True when the deployed branch differs from the one the manifest recorded. */
+  branch_mismatch?: boolean;
+  /** Cloudflare routing automation outcome (undefined = not applicable). */
+  routing_configured?: boolean | null;
+  routing_error?: string | null;
+  routed_url?: string | null;
   pocketbase_url?: string | null;
 }
 

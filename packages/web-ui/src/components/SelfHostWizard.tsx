@@ -55,6 +55,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
   const dokploy = hostingConns.find(c => c.service_type === 'dokploy');
   const coolify = hostingConns.find(c => c.service_type === 'coolify');
   const pocketbase = hostingConns.find(c => c.service_type === 'pocketbase');
+  const cloudflare = hostingConns.find(c => c.service_type === 'cloudflare');
   const hasGit = gitConns.length > 0;
   const activePlatformConn =
     selectedPlatform === 'dokploy' ? dokploy :
@@ -140,6 +141,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
         pocketbase_connection_id: includePocketbase ? pocketbase?.id : undefined,
         include_cloudflare_tunnel: includeCloudflareTunnel,
         cloudflare_tunnel_token: includeCloudflareTunnel ? cloudflareTunnelToken || undefined : undefined,
+        cloudflare_connection_id: cloudflare?.id,
       });
       setDeployResult(result);
     } catch (e: any) { setDeployError(e.message || 'Deployment failed'); }
@@ -198,7 +200,7 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
     if (includeCloudflareTunnel) {
       lines.push('# After deploy, in Cloudflare Zero Trust dashboard:');
       lines.push('#   Tunnels → your tunnel → Configure → Public Hostname');
-      lines.push(`#   Add: ${domain || 'app.yourdomain.com'} → http://localhost:${preview.port}`);
+      lines.push(`#   Add: ${domain || 'app.yourdomain.com'} → http://127.0.0.1:${preview.port}`);
     } else {
       lines.push('# To make your app public:');
       lines.push('#   Option 1: Add an ingress rule to your existing Cloudflare Tunnel');
@@ -334,6 +336,18 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
                     placeholder="Paste your Cloudflare tunnel token..."
                     className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" />
                   <p className="text-xs text-monastery-text-muted mt-1">Find this in Cloudflare Zero Trust → Networks → Tunnels → your tunnel → Configure → copy token.</p>
+                  {domain.trim() && (
+                    cloudflare ? (
+                      <p className="text-xs text-green-400 mt-1 flex items-start gap-1">
+                        <CheckCircle2 size={11} className="shrink-0 mt-0.5" />
+                        Routing (Public Hostname + DNS) for {domain.trim()} will be configured automatically via your Cloudflare connection.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-monastery-text-muted mt-1">
+                        Tip: connect Cloudflare in Settings → Hosting and Monastery will set the Public Hostname + DNS automatically — no dashboard steps.
+                      </p>
+                    )
+                  )}
                 </div>
               )}
             </div>
@@ -401,22 +415,65 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
                     Pocketbase wired in as <code className="px-1 rounded bg-monastery-dark-bg text-monastery-lantern break-all ml-1">POCKETBASE_URL={deployResult.pocketbase_url}</code>
                   </p>
                 )}
+                {deployResult.branch_mismatch && (
+                  <p className="text-amber-300 flex items-start gap-1"><AlertTriangle size={11} className="shrink-0 mt-0.5" /> This deploy targets a different branch than the one recorded in .monastery/deploy.json — intended?</p>
+                )}
+                {deployResult.adopted && (
+                  <p className="text-monastery-text-secondary">Adopted the existing platform app for this repo (found via its deploy manifest) — no duplicate was created.</p>
+                )}
+                {/* Cloudflare routing outcome — three states: automated, failed (manual fallback),
+                    or not attempted (tunnel-off hint below). */}
+                {deployResult.routing_configured && deployResult.routed_url && (
+                  <div className="mt-1 pt-2 border-t border-green-400/20 space-y-1">
+                    <div className="flex items-center gap-2 font-medium"><Cloud size={13} /> Routing configured automatically</div>
+                    <p className="text-monastery-text-secondary">
+                      Public Hostname and DNS were set via the Cloudflare API — no dashboard steps needed. Live at:
+                    </p>
+                    <a href={deployResult.routed_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 px-2 py-1 rounded bg-monastery-dark-bg text-monastery-lantern hover:underline break-all">
+                      <Globe size={12} className="shrink-0" /> {deployResult.routed_url}
+                    </a>
+                    <p className="text-monastery-text-muted">DNS may take a minute to propagate on first setup.</p>
+                  </div>
+                )}
+                {deployResult.routing_configured === false && deployResult.routing_error && (
+                  <div className="mt-1 pt-2 border-t border-amber-400/20 space-y-1 text-amber-300">
+                    <div className="flex items-start gap-1"><AlertTriangle size={12} className="shrink-0 mt-0.5" /> <span>Automatic routing failed: {deployResult.routing_error}</span></div>
+                    <p className="text-monastery-text-secondary">
+                      Manual fallback — Zero Trust → Networks → Tunnels → your tunnel → <strong>Public Hostname</strong> → add your domain with <strong>Service</strong>:
+                    </p>
+                    <code className="block px-2 py-1 rounded bg-monastery-dark-bg text-monastery-lantern">{deployResult.host_service_url || deployResult.tunnel_service_url}</code>
+                  </div>
+                )}
                 {deployResult.tunnel_requested && (
                   deployResult.tunnel_deployed ? (
                     <div className="mt-1 pt-2 border-t border-green-400/20 space-y-1">
                       <div className="flex items-center gap-2 font-medium"><Cloud size={13} /> Cloudflare connector launched</div>
-                      <p className="text-monastery-text-secondary">
-                        Last step (one-time, in Cloudflare): Zero Trust → Networks → Tunnels → your tunnel → <strong>Public Hostname</strong> → add your domain with <strong>Service</strong> set to:
-                      </p>
-                      <code className="block px-2 py-1 rounded bg-monastery-dark-bg text-monastery-lantern">{deployResult.tunnel_service_url}</code>
-                      <p className="text-monastery-text-muted">The connector should show <strong>HEALTHY</strong> in the dashboard within a minute.</p>
+                      {deployResult.routing_configured ? (
+                        <p className="text-monastery-text-muted">The connector should show <strong>HEALTHY</strong> in the dashboard within a minute.</p>
+                      ) : (
+                        <>
+                          <p className="text-monastery-text-secondary">
+                            Last step (one-time, in Cloudflare): Zero Trust → Networks → Tunnels → your tunnel → <strong>Public Hostname</strong> → add your domain with <strong>Service</strong> set to:
+                          </p>
+                          <code className="block px-2 py-1 rounded bg-monastery-dark-bg text-monastery-lantern">{deployResult.host_service_url || deployResult.tunnel_service_url}</code>
+                          <p className="text-monastery-text-muted">Or skip this forever: connect Cloudflare in Settings → Hosting and Monastery will configure routing on every deploy. The connector should show <strong>HEALTHY</strong> within a minute.</p>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <div className="mt-1 pt-2 border-t border-amber-400/20 flex items-start gap-1 text-amber-300">
                       <AlertTriangle size={12} className="shrink-0 mt-0.5" />
-                      <span>Connector not launched{deployResult.tunnel_error ? `: ${deployResult.tunnel_error}` : ''}. Run cloudflared manually, then point the Public Hostname at {deployResult.tunnel_service_url || `http://localhost:${deployResult.port}`}.</span>
+                      <span>Connector not launched{deployResult.tunnel_error ? `: ${deployResult.tunnel_error}` : ''}. Run cloudflared manually, then point the Public Hostname at {deployResult.host_service_url || deployResult.tunnel_service_url || `http://127.0.0.1:${deployResult.host_port ?? deployResult.port}`}.</span>
                     </div>
                   )
+                )}
+                {!deployResult.tunnel_requested && deployResult.host_service_url && (
+                  <div className="mt-1 pt-2 border-t border-green-400/20 space-y-1">
+                    <p className="text-monastery-text-secondary">
+                      Already running a Cloudflare tunnel on this server? Serve this app through it by adding a <strong>Public Hostname</strong> with <strong>Service</strong>:
+                    </p>
+                    <code className="block px-2 py-1 rounded bg-monastery-dark-bg text-monastery-lantern">{deployResult.host_service_url}</code>
+                  </div>
                 )}
                 <a href={deployResult.dashboard_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-monastery-lantern hover:underline"><Globe size={12} /> Open {deployResult.platform} Dashboard</a></div>)}
               <button onClick={handleDeploy} disabled={deploying || !activePlatformConn || !currentProject}
