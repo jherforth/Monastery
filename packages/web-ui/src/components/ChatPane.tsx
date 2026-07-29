@@ -458,12 +458,14 @@ export function ChatPane({
                   <div className="font-medium text-monastery-text-primary mb-0.5">Testing</div>
                   Add tests to the existing module
                 </button>
-                <button 
-                  onClick={() => onSendMessage('Deploy this project to my homelab server')}
+                <button
+                  // Deploying is a real flow (Source & Ship → wizard), not a chat request —
+                  // point first-time users at the actual door.
+                  onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
                   className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
-                  <div className="font-medium text-monastery-text-primary mb-0.5">Deploy</div>
-                  Deploy this to my homelab
+                  <div className="font-medium text-monastery-text-primary mb-0.5">Deploy 🚀</div>
+                  Ship this to your homelab (Source & Ship)
                 </button>
               </div>
 

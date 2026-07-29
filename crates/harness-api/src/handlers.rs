@@ -3332,12 +3332,23 @@ pub async fn preview_deploy(
         }));
     }
 
+    // The port the deployed CONTAINER will actually listen on — same rule the Coolify deploy
+    // uses (generate_clone_dockerfile): nginx-served frameworks are always 80 regardless of the
+    // wizard's Port field; Node-server frameworks use the requested port. Surfacing this in the
+    // preview is what lets the wizard warn when the user's Port entry will be ignored — the
+    // field-found failure mode was a port mapping targeting :3000 while nginx served :80.
+    let container_port: u16 = match framework.as_str() {
+        "nextjs" | "express" | "fastify" | "node" => port,
+        _ => 80, // vite-react | vue | react | static | unknown → nginx
+    };
+
     Ok(Json(serde_json::json!({
         "framework": framework,
         "build_command": build_cmd,
         "output_dir": output_dir,
         "default_port": default_port,
         "port": port,
+        "container_port": container_port,
         "app_name": app_name,
         "files": files,
     })))

@@ -75,6 +75,9 @@ export interface PreviewResult {
   output_dir: string;
   default_port: number;
   port: number;
+  /** The port the deployed container will ACTUALLY listen on (nginx-served frameworks are
+   *  always 80; the wizard's Port field only applies to Node-server frameworks). */
+  container_port?: number;
   app_name: string;
   files: Array<{
     name: string;

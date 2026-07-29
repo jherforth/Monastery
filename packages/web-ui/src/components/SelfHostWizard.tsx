@@ -305,9 +305,24 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
               <div className="flex-1"><label className="block text-xs font-medium text-monastery-text-secondary mb-1">Domain (optional)</label>
                 <input type="text" value={domain} onChange={e => setDomain(e.target.value)} placeholder="app.yourdomain.com"
                   className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" /></div>
-              <div className="w-24"><label className="block text-xs font-medium text-monastery-text-secondary mb-1">Port</label>
+              <div className="w-24"><label className="block text-xs font-medium text-monastery-text-secondary mb-1">App Port</label>
                 <input type="number" value={port} onChange={e => setPort(e.target.value)}
                   className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine focus:outline-none" /></div></div>
+            {/* The Port field is a classic trap: nginx-served builds always listen on 80, so a
+                mismatched entry used to produce a port mapping pointing at nothing. Say which
+                port will really be used, up front. */}
+            {preview?.container_port !== undefined && (
+              String(preview.container_port) !== port ? (
+                <p className="text-xs text-amber-300 flex items-start gap-1 -mt-2">
+                  <AlertTriangle size={11} className="shrink-0 mt-0.5" />
+                  Detected <b>{preview.framework}</b> — the container serves on port <b>{preview.container_port}</b> (nginx serves the built site), so the App Port field is ignored and the published mapping targets {preview.container_port}.
+                </p>
+              ) : (
+                <p className="text-xs text-monastery-text-muted -mt-2">
+                  Container listens on port {preview.container_port}; it will be published on a stable high port on the server (shown after deploy).
+                </p>
+              )
+            )}
             {dokploy && coolify && (<div><label className="block text-xs font-medium text-monastery-text-secondary mb-1">Platform</label>
               <select value={selectedPlatform || (dokploy ? 'dokploy' : 'coolify')} onChange={e => setSelectedPlatform(e.target.value)}
                 className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm focus:border-monastery-pine focus:outline-none">

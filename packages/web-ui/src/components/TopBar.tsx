@@ -393,7 +393,7 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
-                title={`Source & Ship — branch ${gitStatus.branch}, ${gitStatus.changed_files.length} changed, ${gitStatus.ahead} ahead / ${gitStatus.behind} behind`}
+                title={`Source & Ship — pull, commit & push, snapshots, and DEPLOY. Branch ${gitStatus.branch}, ${gitStatus.changed_files.length} changed, ${gitStatus.ahead} ahead / ${gitStatus.behind} behind`}
               >
                 <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
                 <span className="text-xs text-monastery-text-secondary">
@@ -414,6 +414,9 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
                     <ArrowDown size={10} />{gitStatus.behind}
                   </span>
                 )}
+                {/* Deployment lives behind this chip too — the rocket says so. */}
+                <span className="h-3.5 w-px bg-monastery-dark-border" aria-hidden />
+                <Rocket size={12} className="text-monastery-lantern" />
                 <ChevronDown size={12} className="text-monastery-text-muted" />
               </button>
             ) : (
