@@ -3966,16 +3966,35 @@ pub async fn deploy_to_hosting(
                 // forced rebuild below (no worse than before).
                 let dockerfile_b64 = base64::engine::general_purpose::STANDARD.encode(clone_dockerfile.as_bytes());
                 let patch_url = format!("{}/api/v1/applications/{}", base, existing_uuid);
+                // The PATCH also re-syncs port + domain config (same field names as create):
+                // redeploys must CONVERGE drifted or missing settings. Field-tested reason: an
+                // app created without ports_mappings could never gain one — the published host
+                // port (which tunnel routing points at) only takes effect via this PATCH plus
+                // the forced redeploy below.
+                let mut patch_body = serde_json::json!({
+                    "dockerfile": dockerfile_b64,
+                    "ports_exposes": port.to_string(),
+                    "ports_mappings": format!("{}:{}", host_port, port),
+                });
+                if let Some(ref domain) = req.domain {
+                    if !domain.is_empty() {
+                        patch_body["domains"] = serde_json::Value::String(domain.clone());
+                    }
+                }
                 match client
                     .patch(&patch_url)
                     .header("Authorization", format!("Bearer {}", api_token))
                     .header("Content-Type", "application/json")
-                    .json(&serde_json::json!({ "dockerfile": dockerfile_b64 }))
+                    .json(&patch_body)
                     .send()
                     .await
                 {
                     Ok(r) if r.status().is_success() => {
-                        tracing::info!("Refreshed Coolify Dockerfile for app {} before redeploy", existing_uuid);
+                        tracing::info!(
+                            "Refreshed Coolify app {} before redeploy (dockerfile + ports {}:{}{})",
+                            existing_uuid, host_port, port,
+                            req.domain.as_deref().filter(|d| !d.is_empty()).map(|d| format!(" + domain {}", d)).unwrap_or_default()
+                        );
                     }
                     Ok(r) => {
                         tracing::warn!(
