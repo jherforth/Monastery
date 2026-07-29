@@ -275,6 +275,14 @@ pub async fn init_db(database_path: &Path) -> Result<SqlitePool, sqlx::Error> {
         }
     }
 
+    // Migration: per-connection Cloudflare tunnel token (the connector token for the tunnel
+    // running on that platform's server) — deploys fall back to it when none is pasted.
+    // MUST run after the CHECK-rebuild above: the rebuild recreates the table from the
+    // original column list and would drop a column added before it.
+    let _ = sqlx::query("ALTER TABLE hosting_connections ADD COLUMN tunnel_token TEXT")
+        .execute(&pool)
+        .await;
+
     // Deployments table — maps a (project, hosting connection) to the remote app it created,
     // so subsequent deploys redeploy the SAME app instead of creating a new one each time.
     sqlx::query(

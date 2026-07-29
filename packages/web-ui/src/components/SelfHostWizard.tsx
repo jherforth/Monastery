@@ -331,11 +331,22 @@ export function SelfHostWizard({ isOpen, onClose, onFixBuildError }: SelfHostWiz
                 : 'Skip if your server already has cloudflared or a reverse proxy. Enable to bundle cloudflared into the deployment.'}</p>
               {includeCloudflareTunnel && (
                 <div>
-                  <label className="block text-xs font-medium text-monastery-text-secondary mb-1">Tunnel Token</label>
+                  <label className="block text-xs font-medium text-monastery-text-secondary mb-1">
+                    Tunnel Token{activePlatformConn?.has_tunnel_token ? ' (optional — saved token on file)' : ''}
+                  </label>
                   <input type="password" value={cloudflareTunnelToken} onChange={e => setCloudflareTunnelToken(e.target.value)}
-                    placeholder="Paste your Cloudflare tunnel token..."
+                    placeholder={activePlatformConn?.has_tunnel_token
+                      ? `Leave blank to use the saved token for ${activePlatformConn.name}`
+                      : 'Paste your Cloudflare tunnel token...'}
                     className="w-full px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-monastery-text-primary text-sm placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none" />
-                  <p className="text-xs text-monastery-text-muted mt-1">Find this in Cloudflare Zero Trust → Networks → Tunnels → your tunnel → Configure → copy token.</p>
+                  {activePlatformConn?.has_tunnel_token ? (
+                    <p className="text-xs text-green-400 mt-1 flex items-start gap-1">
+                      <CheckCircle2 size={11} className="shrink-0 mt-0.5" />
+                      A tunnel token is saved for this service (Settings → Hosting → Tunnel tokens) and will be used automatically.
+                    </p>
+                  ) : (
+                    <p className="text-xs text-monastery-text-muted mt-1">Find this in Cloudflare Zero Trust → Networks → Tunnels → your tunnel → Configure → copy token. Save it once under Settings → Hosting → Tunnel tokens to skip this field on every deploy.</p>
+                  )}
                   {domain.trim() && (
                     cloudflare ? (
                       <p className="text-xs text-green-400 mt-1 flex items-start gap-1">

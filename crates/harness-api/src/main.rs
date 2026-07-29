@@ -135,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/hosting/connections", post(handlers::connect_hosting_service))
         .route("/api/hosting/connections/:id", delete(handlers::delete_hosting_connection))
         .route("/api/hosting/connections/:id/test", post(handlers::test_hosting_connection))
+        .route("/api/hosting/connections/:id/tunnel-token", patch(handlers::set_hosting_tunnel_token))
         .route("/api/hosting/connections/:id/servers", get(handlers::list_hosting_servers))
         .route("/api/hosting/connections/:id/deployment-log", get(handlers::get_deployment_log))
         .route("/api/hosting/deploy", post(handlers::deploy_to_hosting))

@@ -204,4 +204,7 @@ export interface HostingServiceConnection {
   is_default: boolean;
   created_at: string;
   last_synced_at: string | null;
+  /** Whether a Cloudflare tunnel connector token is saved on this connection (the secret
+   *  itself never leaves the server). */
+  has_tunnel_token?: boolean;
 }

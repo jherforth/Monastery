@@ -108,6 +108,21 @@ export function useHostingServices() {
     return res.json() as Promise<{ healthy: boolean; message: string }>;
   }, []);
 
+  /** Set (or clear, with null) the Cloudflare tunnel connector token saved on a
+   *  dokploy/coolify connection — deploys use it when no token is pasted in the wizard. */
+  const setTunnelToken = useCallback(async (id: string, token: string | null) => {
+    const res = await fetch(`/api/hosting/connections/${id}/tunnel-token`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tunnel_token: token }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Failed to save tunnel token' }));
+      throw new Error(err.error || 'Failed to save tunnel token');
+    }
+    await mutate();
+  }, [mutate]);
+
   const listServers = useCallback(async (connectionId: string): Promise<HostingServer[]> => {
     const res = await fetch(`/api/hosting/connections/${connectionId}/servers`);
     if (!res.ok) {
@@ -171,6 +186,7 @@ export function useHostingServices() {
     connectService,
     deleteConnection,
     testConnection,
+    setTunnelToken,
     listServers,
     fetchDeploymentLog,
     deployProject,

@@ -2910,7 +2910,7 @@ pub async fn list_hosting_connections(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
     let rows = sqlx::query(
-        "SELECT id, name, service_type, base_url, api_token, username, email, is_default, created_at, last_synced_at FROM hosting_connections ORDER BY created_at DESC"
+        "SELECT id, name, service_type, base_url, api_token, username, email, is_default, created_at, last_synced_at, tunnel_token FROM hosting_connections ORDER BY created_at DESC"
     )
     .fetch_all(&*state.db)
     .await?;
@@ -2926,6 +2926,8 @@ pub async fn list_hosting_connections(
         let is_default: i64 = row.get(7);
         let created_at: String = row.get(8);
         let last_synced_at: Option<String> = row.get(9);
+        // Like api_token: presence only, never the secret itself.
+        let tunnel_token: Option<String> = row.get(10);
 
         serde_json::json!({
             "id": id,
@@ -2937,10 +2939,46 @@ pub async fn list_hosting_connections(
             "is_default": is_default != 0,
             "created_at": created_at,
             "last_synced_at": last_synced_at,
+            "has_tunnel_token": tunnel_token.map(|t| !t.trim().is_empty()).unwrap_or(false),
         })
     }).collect();
 
     Ok(Json(connections))
+}
+
+/// Set (or clear, with null/empty) the Cloudflare tunnel connector token stored on a
+/// dokploy/coolify connection. Each platform server runs its own tunnel, so tokens live
+/// per-connection; deploys with the tunnel enabled fall back to this when no token is pasted.
+#[derive(Debug, Deserialize)]
+pub struct SetTunnelTokenRequest {
+    pub tunnel_token: Option<String>,
+}
+
+pub async fn set_hosting_tunnel_token(
+    Path(id): Path<uuid::Uuid>,
+    State(state): State<AppState>,
+    Json(req): Json<SetTunnelTokenRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let row = sqlx::query("SELECT service_type FROM hosting_connections WHERE id = ?")
+        .bind(id.to_string())
+        .fetch_optional(&*state.db)
+        .await?;
+    let service_type: String = match row {
+        Some(r) => r.get(0),
+        None => return Err(ApiError::NotFound("Connection not found".into())),
+    };
+    if !["dokploy", "coolify"].contains(&service_type.as_str()) {
+        return Err(ApiError::Config(
+            "Tunnel tokens attach to deployment platforms (Dokploy or Coolify) — the token belongs to the tunnel running on that platform's server.".into(),
+        ));
+    }
+    let token = req.tunnel_token.as_deref().map(str::trim).filter(|t| !t.is_empty());
+    sqlx::query("UPDATE hosting_connections SET tunnel_token = ? WHERE id = ?")
+        .bind(token)
+        .bind(id.to_string())
+        .execute(&*state.db)
+        .await?;
+    Ok(Json(serde_json::json!({ "success": true, "has_tunnel_token": token.is_some() })))
 }
 
 /// Connect a new hosting service
@@ -3791,21 +3829,33 @@ pub async fn deploy_to_hosting(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // Look up the hosting connection
     let conn_row = sqlx::query(
-        "SELECT service_type, base_url, api_token FROM hosting_connections WHERE id = ?"
+        "SELECT service_type, base_url, api_token, tunnel_token FROM hosting_connections WHERE id = ?"
     )
     .bind(req.connection_id.to_string())
     .fetch_optional(&*state.db)
     .await?;
 
-    let (service_type, base_url, api_token) = match conn_row {
+    let (service_type, base_url, api_token, stored_tunnel_token) = match conn_row {
         Some(r) => {
             let st: String = r.get(0);
             let bu: String = r.get(1);
             let at: String = r.get(2);
-            (st, bu, at)
+            let tt: Option<String> = r.get(3);
+            (st, bu, at, tt)
         }
         None => return Err(ApiError::NotFound("Hosting connection not found".into())),
     };
+
+    // Effective tunnel token: a token pasted in the wizard wins; otherwise the one saved on
+    // this connection (Settings → Hosting → Tunnel tokens). Each platform server runs its own
+    // tunnel, hence per-connection storage.
+    let effective_tunnel_token: Option<String> = req
+        .cloudflare_tunnel_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| stored_tunnel_token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()));
 
     // Look up the project
     let proj_row = sqlx::query("SELECT name FROM projects WHERE id = ?")
@@ -3912,8 +3962,7 @@ pub async fn deploy_to_hosting(
 
             // Tunnel identity for automated routing: a freshly pasted connector token wins,
             // else whatever an earlier deploy recorded in the manifest (token-less redeploys).
-            let tunnel_ref = req
-                .cloudflare_tunnel_token
+            let tunnel_ref = effective_tunnel_token
                 .as_deref()
                 .and_then(crate::cloudflare::parse_tunnel_token)
                 .or_else(|| {
@@ -4293,7 +4342,7 @@ pub async fn deploy_to_hosting(
             let mut tunnel_deployed = false;
             let mut tunnel_error: Option<String> = None;
             if req.include_cloudflare_tunnel {
-                match req.cloudflare_tunnel_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                match effective_tunnel_token.as_deref() {
                     Some(token) => {
                         let compose = format!(
                             "services:\n  cloudflared:\n    image: cloudflare/cloudflared:latest\n    command: tunnel --no-autoupdate run\n    environment:\n      - TUNNEL_TOKEN={token}\n    network_mode: host\n    restart: unless-stopped\n",
@@ -4334,7 +4383,7 @@ pub async fn deploy_to_hosting(
                         }
                     }
                     None => {
-                        tunnel_error = Some("Cloudflare tunnel was requested but no token was provided.".into());
+                        tunnel_error = Some("Cloudflare tunnel was requested but no token was provided — paste one in the wizard or save one under Settings → Hosting → Tunnel tokens.".into());
                     }
                 }
             }
@@ -4402,8 +4451,7 @@ pub async fn deploy_to_hosting(
                     req.app_name.hash(&mut h);
                     20000 + (h.finish() % 10000) as u16
                 });
-            let tunnel_ref = req
-                .cloudflare_tunnel_token
+            let tunnel_ref = effective_tunnel_token
                 .as_deref()
                 .and_then(crate::cloudflare::parse_tunnel_token)
                 .or_else(|| {
@@ -4751,7 +4799,7 @@ pub async fn deploy_to_hosting(
             // networking) after the app. Best-effort: failures don't fail the main deploy.
             let mut tunnel_deployed = false;
             if req.include_cloudflare_tunnel {
-                match req.cloudflare_tunnel_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                match effective_tunnel_token.as_deref() {
                     Some(token) => {
                         let compose_yaml = format!(
                             "services:\n  cloudflared:\n    image: cloudflare/cloudflared:latest\n    command: tunnel --no-autoupdate run\n    environment:\n      - TUNNEL_TOKEN={token}\n    network_mode: host\n    restart: unless-stopped\n",
@@ -4789,7 +4837,7 @@ pub async fn deploy_to_hosting(
                             Err(e) => { if tunnel_error.is_none() { tunnel_error = Some(format!("{:?}", e)); } }
                         }
                     }
-                    None => { tunnel_error = Some("Cloudflare tunnel was requested but no token was provided.".into()); }
+                    None => { tunnel_error = Some("Cloudflare tunnel was requested but no token was provided — paste one in the wizard or save one under Settings → Hosting → Tunnel tokens.".into()); }
                 }
             }
 
