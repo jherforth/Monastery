@@ -120,10 +120,12 @@ export function SourceShipDrawer({ open, onClose, onCommitComplete, onRestoreCom
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+        {/* Fixed column: git status/actions pinned top, Ship pinned bottom — ONLY the
+            snapshot list scrolls, so Ship can never be pushed below the fold. */}
+        <div className="flex-1 flex flex-col min-h-0 p-4 gap-5">
           {/* Branch & changes */}
           {gitStatus ? (
-            <section>
+            <section className="shrink-0">
               <div className="flex items-center gap-2 text-sm text-monastery-text-primary">
                 <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
                 <span className="font-medium">{gitStatus.branch}</span>
@@ -218,9 +220,9 @@ export function SourceShipDrawer({ open, onClose, onCommitComplete, onRestoreCom
             </div>
           )}
 
-          {/* Snapshots */}
-          <section>
-            <h4 className="flex items-center gap-1.5 text-xs font-medium text-monastery-text-secondary uppercase tracking-wider mb-2">
+          {/* Snapshots — the one flexible region; its LIST scrolls internally */}
+          <section className="flex-1 flex flex-col min-h-0">
+            <h4 className="flex items-center gap-1.5 text-xs font-medium text-monastery-text-secondary uppercase tracking-wider mb-2 shrink-0">
               <History size={12} /> Snapshots
             </h4>
             {snapshots.length === 0 ? (
@@ -228,7 +230,7 @@ export function SourceShipDrawer({ open, onClose, onCommitComplete, onRestoreCom
                 No snapshots yet. One is taken automatically before every AI edit, pull, and restore.
               </p>
             ) : (
-              <div className="space-y-1">
+              <div className="space-y-1 overflow-y-auto min-h-0">
                 {snapshots.map((snap: any) => (
                   <div key={snap.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-monastery-dark-surface transition-colors text-sm text-monastery-text-secondary">
                     <div className="flex-1 min-w-0">
@@ -251,9 +253,9 @@ export function SourceShipDrawer({ open, onClose, onCommitComplete, onRestoreCom
             )}
           </section>
 
-          {/* Ship */}
+          {/* Ship — pinned to the drawer bottom, always visible */}
           {onOpenWizard && (
-            <section className="border-t border-monastery-dark-border pt-4">
+            <section className="border-t border-monastery-dark-border pt-4 shrink-0 mt-auto">
               <h4 className="flex items-center gap-1.5 text-xs font-medium text-monastery-text-secondary uppercase tracking-wider mb-2">
                 <Rocket size={12} /> Ship
               </h4>
