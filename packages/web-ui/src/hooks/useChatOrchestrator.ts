@@ -226,6 +226,10 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
   // Holds the latest recoverFailedEdits so applyAssistantOutput (defined earlier) can invoke it
   // without a forward reference in its dependency array.
   const recoverFailedEditsRef = useRef<((failed: Array<{ path: string; hunks: EditHunk[] }>) => void) | null>(null);
+  // Lets edit-recovery resume the interrupted task through the normal send flow (assigned
+  // after handleSendMessage is defined). Without this, a recovered edit left the conversation
+  // dead: the model never learned its edit landed, so multi-step tasks stopped mid-way.
+  const continueTaskRef = useRef<((content: string) => void) | null>(null);
   // Live view of the context map for applyAssistantOutput's before/after diff capture —
   // allFileContents isn't in that callback's deps, so a ref avoids stale closure reads.
   const allFileContentsRef = useRef(allFileContents);
@@ -574,7 +578,13 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
 CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTIRE contents. NEVER put just a section, fragment, or "…rest unchanged…" in one — the omitted parts are permanently deleted. If you are changing only part of a file, you MUST use mode 1. Monastery will reject a whole-file block that is only a slice of the existing file.
 - The path after the colon determines where the code is written; you can edit/create multiple files in one response.
 - For illustrative snippets you do NOT want saved to disk, use a plain code block with NO file path.
-- You have NO native function/tool calling in this chat. NEVER emit tool-call markup of any kind (<|DSML|…>, <tool_call>, <|tool_calls_begin|>, JSON function calls) — it is not executed and breaks the conversation. To read a project file output a plain \`@read path\` line; to search, \`@search term\`.`);
+- You have NO native function/tool calling in this chat. NEVER emit tool-call markup of any kind (<|DSML|…>, <tool_call>, <|tool_calls_begin|>, JSON function calls) — it is not executed and breaks the conversation. To read a project file output a plain \`@read path\` line; to search, \`@search term\`.
+
+RESPONSE DISCIPLINE — this determines whether the user's request actually gets completed:
+1. Think through the ENTIRE request BEFORE writing. Then respond with EVERYTHING needed to complete it — ALL file changes, in this single response. NEVER stop after one file intending to "continue later": nothing runs later unless the user asks again.
+2. Prefer a COMPLETE-file block (mode 2) over SEARCH/REPLACE whenever the file is small (under ~150 lines) or you are changing most of it. Full contents always apply cleanly; SEARCH anchors can fail to match.
+3. NEVER write placeholders like "// rest of the code unchanged" or "…existing code…" inside a path-tagged block — every omitted line is permanently deleted.
+4. Keep prose minimal: at most a 2–4 line plan, then the code blocks. Do not narrate each edit.`);
 
     // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
     // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.
@@ -698,6 +708,20 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         .then(d => { if (typeof d?.content === 'string') { setAllFileContents(prev => ({ ...prev, [path]: d.content })); updateTabContentByPath(path, d.content); } })
         .catch(() => {});
     };
+    // Recovery used to end here in silence: the edit finally applied, but nothing refreshed the
+    // preview and — worse — nothing told the MODEL, so any remaining task steps were abandoned.
+    // Now the loop closes: refresh, then hand the conversation back to the model to finish.
+    const finishRecovery = (paths: string[]) => {
+      window.dispatchEvent(new CustomEvent('monastery:files-written'));
+      if (autoContinue && continueTaskRef.current) {
+        post('▶️ Continuing the task now that the edits are applied…', 'activity');
+        continueTaskRef.current(
+          `The edits to ${paths.map(p => `\`${p}\``).join(', ')} have now been applied successfully — the file contents shown in context are current. Continue the task from where you left off and complete ALL remaining steps in this response. If everything is already done, reply with a one-line confirmation.`
+        );
+      } else {
+        post('Edits applied. Send "continue" to finish any remaining steps of the task.');
+      }
+    };
 
     // --- Stage 1: digging deeper (looser backend match) ---
     post('🔍 Digging deeper — retrying the change with a looser match…', 'activity');
@@ -716,7 +740,11 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         remaining.push({ path, hunks });
       }
     }
-    if (remaining.length === 0) { post('✅ Recovered on a looser match — the change is applied.', 'activity'); return; }
+    if (remaining.length === 0) {
+      post('✅ Recovered on a looser match — the change is applied.', 'activity');
+      finishRecovery(failed.map(f => f.path));
+      return;
+    }
 
     // --- Stage 2: double checking files (LLM redo against fresh content) ---
     post('📂 Double checking files — re-reading them and asking the model to redo the change…', 'activity');
@@ -737,15 +765,20 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
         nextRemaining.push({ path, hunks });
       }
     }
-    if (nextRemaining.length === 0) { post('✅ Recovered after re-checking the files — the change is applied.', 'activity'); return; }
+    if (nextRemaining.length === 0) {
+      post('✅ Recovered after re-checking the files — the change is applied.', 'activity');
+      finishRecovery(failed.map(f => f.path));
+      return;
+    }
 
     // --- Stage 3: need more information ---
     const files = nextRemaining.map(f => `\`${f.path}\``).join(', ');
     post(`❓ I need more information. I couldn't confidently apply the change to ${files} — the section I was trying to edit doesn't line up with what's currently in the file. Could you point me at the exact lines to change (or paste them here)? Nothing was left half-applied, and you can still abandon the earlier changes above.`);
-  }, [currentProject?.id, streamChat, applyCorrectionForFile, updateTabContentByPath, setAllFileContents]);
+  }, [currentProject?.id, streamChat, applyCorrectionForFile, updateTabContentByPath, setAllFileContents, autoContinue]);
 
   // Keep the ref current so applyAssistantOutput (defined earlier) can call the latest version.
   recoverFailedEditsRef.current = recoverFailedEdits;
+  // (continueTaskRef is assigned right after handleSendMessage below.)
 
   const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { preferHermes?: boolean }) => {
     // Auto-create a session if none exists
@@ -1235,6 +1268,10 @@ CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTI
       setIsGenerating(false);
     }
   }, [messages, currentSession, currentProject, createSession, addMessage, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, autoContinue, buildSystemContext, allFileContents, workflow.activeTaskId, workflow.loadTask]);
+
+  // Keep the ref current so edit-recovery (defined earlier) can resume the task through the
+  // normal send flow once its repairs land.
+  continueTaskRef.current = handleSendMessage;
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
