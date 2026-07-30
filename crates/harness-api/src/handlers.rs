@@ -1945,10 +1945,10 @@ pub async fn delete_project(
         None => return Err(ApiError::NotFound("Project not found".into())),
     };
 
-    // Wipe the project directory. Guard against path escape: the resolved dir must live
-    // directly inside data_dir (project names are single path segments).
+    // Path-escape guard up front: the resolved dir must live directly inside data_dir
+    // (project names are single path segments). Checked BEFORE any destructive work.
     let project_path = state.config.data_dir.join(&project_name);
-    if project_path.exists() {
+    let canonical_dir: Option<std::path::PathBuf> = if project_path.exists() {
         let canonical = project_path.canonicalize()
             .map_err(|e| ApiError::Internal(format!("Failed to resolve project dir: {}", e)))?;
         let canonical_base = state.config.data_dir.canonicalize()
@@ -1956,26 +1956,47 @@ pub async fn delete_project(
         if canonical.parent() != Some(canonical_base.as_path()) {
             return Err(ApiError::Config("Refusing to delete: project dir is not directly inside the data dir".into()));
         }
-        tokio::fs::remove_dir_all(&canonical).await
-            .map_err(|e| ApiError::Internal(format!("Failed to delete project directory: {}", e)))?;
-    }
+        Some(canonical)
+    } else {
+        None
+    };
 
-    // Delete DB records explicitly (SQLite FK cascades only fire with foreign_keys pragma on).
+    // Delete DB records first, atomically (SQLite FK cascades only fire with the foreign_keys
+    // pragma on, so children are removed explicitly). The directory wipe comes AFTER: the old
+    // order deleted files first, so any DB failure — like the deployments FK rows this list
+    // once forgot — left a half-deleted project (files gone, still listed).
     let pid = project_id.to_string();
+    let mut tx = state.db.begin().await?;
     sqlx::query("DELETE FROM snapshot_files WHERE snapshot_id IN (SELECT id FROM snapshots WHERE project_id = ?)")
-        .bind(&pid).execute(&*state.db).await?;
+        .bind(&pid).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM snapshot_tags WHERE snapshot_id IN (SELECT id FROM snapshots WHERE project_id = ?)")
-        .bind(&pid).execute(&*state.db).await?;
+        .bind(&pid).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM snapshots WHERE project_id = ?")
-        .bind(&pid).execute(&*state.db).await?;
+        .bind(&pid).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM session_messages WHERE session_id IN (SELECT id FROM sessions WHERE project_id = ?)")
-        .bind(&pid).execute(&*state.db).await?;
+        .bind(&pid).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM sessions WHERE project_id = ?")
-        .bind(&pid).execute(&*state.db).await?;
+        .bind(&pid).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM project_files WHERE project_id = ?")
-        .bind(&pid).execute(&*state.db).await?;
+        .bind(&pid).execute(&mut *tx).await?;
+    // Deployment tracking rows FK-reference projects — the missing delete that made every
+    // previously-deployed project undeletable (SQLITE_CONSTRAINT_FOREIGNKEY, code 787).
+    sqlx::query("DELETE FROM deployments WHERE project_id = ?")
+        .bind(&pid).execute(&mut *tx).await?;
     sqlx::query("DELETE FROM projects WHERE id = ?")
-        .bind(&pid).execute(&*state.db).await?;
+        .bind(&pid).execute(&mut *tx).await?;
+    tx.commit().await?;
+
+    // Now wipe the directory. If this fails the app state is still consistent (project fully
+    // gone from the DB) — surface the orphaned dir instead of pretending nothing happened.
+    if let Some(dir) = canonical_dir {
+        if let Err(e) = tokio::fs::remove_dir_all(&dir).await {
+            return Err(ApiError::Internal(format!(
+                "Project records were deleted, but removing the directory failed: {}. Remove {} manually.",
+                e, dir.display()
+            )));
+        }
+    }
 
     Ok(Json(serde_json::json!({ "success": true, "deleted": project_name })))
 }
