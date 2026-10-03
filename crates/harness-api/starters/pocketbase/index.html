@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Notes — PocketBase</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>Notes</h1>
+      <p class="hint">Stored in PocketBase at <code id="pb-url"></code></p>
+    </header>
+
+    <p id="status" class="status" role="status" hidden></p>
+
+    <form id="new-note" class="new-note" autocomplete="off">
+      <label class="visually-hidden" for="note-title">Title</label>
+      <input id="note-title" name="title" placeholder="Title" required maxlength="200">
+      <label class="visually-hidden" for="note-body">Note</label>
+      <textarea id="note-body" name="body" placeholder="Write something…" rows="3"></textarea>
+      <button type="submit">Save note</button>
+    </form>
+
+    <ul id="notes" class="notes" aria-live="polite"></ul>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

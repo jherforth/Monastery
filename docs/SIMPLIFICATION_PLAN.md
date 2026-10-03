@@ -266,23 +266,29 @@ Goal: one way to do each thing. Hide first, delete in Phase 3 once nothing is mi
   - *Also:* website-oriented empty-state suggestions (the old one suggested Next.js, which the
     preview can't run), and a Ctrl+K "Switch to Discuss/Build mode" command.
 
-### Phase 2 — Make the core loop excellent (≈1–2 weeks)
+### Phase 2 — Make the core loop excellent (≈1–2 weeks) — ✅ done 2026-10-02
 
 This is where most of the user-facing value is.
 
-- [ ] **Pick the runtime strategy** (see decision D2 below). Recommended: **static-first.**
+- [x] **Pick the runtime strategy** (see decision D2 below). Recommended: **static-first.**
   - Target HTML/CSS/vanilla JS with ES modules, plus CDN imports (Tailwind CDN, `esm.sh` /
     `unpkg` for libraries like Alpine, Preact or Chart.js).
   - The preview then works with zero build step, in the existing static server, on any homelab
     box.
   - Say so in the system prompt (bolt.diy's `<system_constraints>` pattern): "no npm, no build
     step; use CDN ES modules".
-- [ ] **Add a preview error bridge.**
+  - *Done:* the static-first runtime rules go into every prompt. Projects that already have a
+    `package.json` get a note to keep their existing stack instead. The note also explains that
+    the preview has no dev server.
+- [x] **Add a preview error bridge.**
   - In `project_preview`, when serving HTML, inject a small `<script>` that forwards
     `window.onerror`, `unhandledrejection` and `console.error` to the parent via `postMessage`.
   - `PreviewPane` listens for these and shows a "⚠️ 1 error — Fix it" chip that posts the error
     and stack to chat, like bolt.diy's `ChatAlert`.
-- [ ] **Add starter templates.** Ship 4–5 small local starters:
+  - *Done:* `PREVIEW_ERROR_BRIDGE` (also reports failed resource loads) is injected after `<head>`.
+    PreviewPane shows "N errors" with a details list, plus **Fix it**, which sends them in Build
+    mode. The errors reset on every reload. Preview reloads are debounced to 250ms.
+- [x] **Add starter templates.** Ship 4–5 small local starters:
   - blank;
   - landing page;
   - multi-page site;
@@ -291,7 +297,12 @@ This is where most of the user-facing value is.
 
   New Project offers them, or a cheap LLM call picks one, as in bolt.diy's
   `selectStarterTemplate.ts`.
-- [ ] **Add design guidance to the Build prompt.** A concise version of bolt.diy's
+  - *Done:* the starters are under `crates/harness-api/starters/` and compiled in by `starters.rs`.
+    `GET /api/starters` lists them, and New Project has a picker; there's no LLM pick, the picker
+    is enough. The PocketBase starter gets the configured PocketBase URL filled in.
+  - *Also:* project names are now validated, since they double as directory names (`../x`
+    escaped the data dir), and duplicate names are refused (they shared one folder).
+- [x] **Add design guidance to the Build prompt.** A concise version of bolt.diy's
       `<design_instructions>`: responsive, accessible contrast, a real palette and type scale,
       no placeholder lorem ipsum, real image URLs (or none).
 
@@ -398,7 +409,7 @@ Record decisions here as they're made so future sessions don't re-litigate them.
 | # | Decision | Options | Recommendation | Status |
 |---|---|---|---|---|
 | D1 | Agents in the core loop? | Keep Hermes mode + roles / Hide / Remove | **Remove from the loop**; keep the git-bridge pattern as docs | **Decided 2026-10-02**: hidden in Phase 1, delete in Phase 3 |
-| D2 | Runtime for previews | A: static-first (CDN ES modules) · B: per-project Node runner container · C: in-browser bundler | **A now**, B or C later if React apps become a goal | Open |
+| D2 | Runtime for previews | A: static-first (CDN ES modules) · B: per-project Node runner container · C: in-browser bundler | **A now**, B or C later if React apps become a goal | **Decided 2026-10-02**: A (Phase 2) |
 | D3 | Staged workflow (tasks/spec/gates) | Keep / Replace with Discuss mode / Remove | **Replace with Discuss + "Build this plan"** | **Decided 2026-10-02**: replaced in Phase 1, delete in Phase 3 |
 | D4 | Deploy targets | Coolify + Dokploy + CF + Pocketbase / Coolify-first | **Coolify-first**, Dokploy maintenance-only | Open |
 | D5 | Output format | Keep fences / Tags | **Tags** (`<file>`, `<edit>`, `<read>`) | Open |

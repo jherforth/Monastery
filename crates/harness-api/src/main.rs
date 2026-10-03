@@ -6,6 +6,7 @@ mod middleware;
 mod snapshot_service;
 mod cloudflare;
 mod deploy_manifest;
+mod starters;
 
 use axum::{Router, routing::get, routing::post, routing::patch, routing::delete};
 use tower_http::{cors::{CorsLayer, Any}, trace::TraceLayer};
@@ -80,6 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/endpoints", post(handlers::add_endpoint))
         .route("/api/endpoints/:id", delete(handlers::delete_endpoint))
         .route("/api/endpoints/:id/test", post(handlers::test_endpoint))
+        .route("/api/starters", get(handlers::list_starters))
         .route("/api/projects", get(handlers::list_projects))
         .route("/api/projects", post(handlers::create_project))
         .route("/api/projects/:id", get(handlers::get_project).delete(handlers::delete_project))

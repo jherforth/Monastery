@@ -498,6 +498,30 @@ pub async fn list_projects(
 pub struct CreateProjectRequest {
     pub name: String,
     pub description: Option<String>,
+    /// Starter template id (see `starters.rs`); absent or "blank" = empty project.
+    #[serde(default)]
+    pub starter: Option<String>,
+}
+
+/// The project name doubles as its directory under data_dir, so it must be a single, plain
+/// path segment — `../x` would otherwise escape the data directory.
+fn validate_project_name(name: &str) -> Result<(), ApiError> {
+    let ok_chars = name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '));
+    if name.trim().is_empty() || name.len() > 100 || !ok_chars || name.starts_with('.') || name.trim() != name {
+        return Err(ApiError::Config(
+            "Project names may use letters, numbers, spaces, '-', '_' and '.', must not start with '.', and must be at most 100 characters.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// GET /api/starters — the templates New Project can start from.
+pub async fn list_starters() -> Json<serde_json::Value> {
+    Json(serde_json::json!(crate::starters::STARTERS.iter().map(|s| serde_json::json!({
+        "id": s.id,
+        "name": s.name,
+        "description": s.description,
+    })).collect::<Vec<_>>()))
 }
 
 /// Create a new project
@@ -505,6 +529,20 @@ pub async fn create_project(
     State(state): State<AppState>,
     Json(req): Json<CreateProjectRequest>,
 ) -> Result<Json<ProjectInfo>, ApiError> {
+    validate_project_name(&req.name)?;
+    let starter = match req.starter.as_deref() {
+        None | Some("") | Some("blank") => None,
+        Some(id) => Some(crate::starters::find(id).ok_or_else(|| ApiError::Config(format!("Unknown starter: {}", id)))?),
+    };
+    // Two projects with one name would share a directory.
+    let taken = sqlx::query("SELECT 1 FROM projects WHERE name = ?")
+        .bind(&req.name)
+        .fetch_optional(&*state.db)
+        .await?;
+    if taken.is_some() {
+        return Err(ApiError::Config(format!("A project named \"{}\" already exists.", req.name)));
+    }
+
     let project_id = Uuid::new_v4();
     let now = chrono::Utc::now();
     let now_str = now.to_rfc3339();
@@ -524,6 +562,28 @@ pub async fn create_project(
     let project_dir = state.config.data_dir.join(&req.name);
     tokio::fs::create_dir_all(&project_dir).await
         .map_err(|e| ApiError::Internal(format!("Failed to create project directory: {}", e)))?;
+
+    if let Some(starter) = starter {
+        // The PocketBase starter points at the configured shared PocketBase, when there is one.
+        let pocketbase_url = sqlx::query("SELECT base_url FROM hosting_connections WHERE service_type = 'pocketbase' ORDER BY created_at DESC LIMIT 1")
+            .fetch_optional(&*state.db).await.ok().flatten()
+            .map(|r| r.get::<String, _>(0).trim_end_matches('/').to_string())
+            .unwrap_or_else(|| crate::starters::DEFAULT_POCKETBASE_URL.to_string());
+        for (rel, contents) in starter.files {
+            let path = project_dir.join(rel);
+            // Never clobber files already in a directory that pre-dated the project row.
+            if path.exists() {
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await
+                    .map_err(|e| ApiError::Internal(format!("Failed to create {}: {}", rel, e)))?;
+            }
+            let body = contents.replace(crate::starters::POCKETBASE_URL_PLACEHOLDER, &pocketbase_url);
+            tokio::fs::write(&path, body).await
+                .map_err(|e| ApiError::Internal(format!("Failed to write {}: {}", rel, e)))?;
+        }
+    }
 
     Ok(Json(ProjectInfo {
         id: project_id,
@@ -2341,6 +2401,62 @@ pub async fn edit_project_file(
     })))
 }
 
+/// Injected into every HTML page the preview serves. Forwards runtime errors — uncaught
+/// exceptions, unhandled promise rejections, `console.error`, and failed resource loads — to
+/// the Monastery UI with postMessage, so the chat can offer "Fix it" instead of the user having
+/// to notice and describe the error (bolt.diy's preview-error alerts, minus the WebContainer).
+const PREVIEW_ERROR_BRIDGE: &str = r#"<script data-monastery-preview>(function(){
+  if (window.parent === window) return;
+  function send(kind, message, stack) {
+    try {
+      window.parent.postMessage({ source: 'monastery-preview', kind: kind,
+        message: String(message || '').slice(0, 2000), stack: stack ? String(stack).slice(0, 4000) : '',
+        page: location.pathname.split('/preview/').pop() }, '*');
+    } catch (_) {}
+  }
+  window.addEventListener('error', function (e) {
+    var t = e.target;
+    if (t && t !== window && (t.src || t.href)) { send('resource', 'Failed to load ' + (t.src || t.href)); return; }
+    send('error', e.message, e.error && e.error.stack);
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    send('rejection', r && r.message ? r.message : r, r && r.stack);
+  });
+  var original = console.error;
+  console.error = function () {
+    try {
+      send('console', Array.prototype.map.call(arguments, function (a) {
+        if (a instanceof Error) return a.message;
+        if (typeof a === 'object') { try { return JSON.stringify(a); } catch (_) { return String(a); } }
+        return String(a);
+      }).join(' '));
+    } catch (_) {}
+    return original.apply(console, arguments);
+  };
+})();</script>"#;
+
+/// Insert the error bridge as early as possible so it sees errors from the page's own scripts:
+/// right after `<head …>`, else after the doctype (never before it — that flips quirks mode),
+/// else at the very start.
+fn inject_preview_error_bridge(html: &[u8]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(html);
+    // ASCII lowercasing keeps byte offsets identical, so indexes map back onto `text`.
+    let lower = text.to_ascii_lowercase();
+    // End of the first `<tag …>` — the tag name must end there, so `<head` doesn't match `<header`.
+    let after_tag = |tag: &str| {
+        lower.match_indices(tag)
+            .find(|(i, _)| matches!(lower.as_bytes().get(i + tag.len()), Some(b'>' | b' ' | b'\t' | b'\n' | b'\r')))
+            .and_then(|(i, _)| lower[i..].find('>').map(|j| i + j + 1))
+    };
+    let at = after_tag("<head").or_else(|| after_tag("<!doctype")).unwrap_or(0);
+    let mut out = String::with_capacity(text.len() + PREVIEW_ERROR_BRIDGE.len());
+    out.push_str(&text[..at]);
+    out.push_str(PREVIEW_ERROR_BRIDGE);
+    out.push_str(&text[at..]);
+    out.into_bytes()
+}
+
 /// Serve a project file for preview (static file serving)
 pub async fn project_preview(
     Path((project_id, path)): Path<(uuid::Uuid, String)>,
@@ -2415,6 +2531,9 @@ pub async fn project_preview(
                                 content = decoded;
                             }
                         }
+                    }
+                    if mime == "text/html" {
+                        content = inject_preview_error_bridge(&content);
                     }
                     Ok((
                         [(axum::http::header::CONTENT_TYPE, mime)],
@@ -5859,5 +5978,43 @@ mod tests {
         assert!(ok.ends_with(std::path::Path::new("src").join("new").join("index.html")));
 
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    fn inject(html: &str) -> String {
+        String::from_utf8(inject_preview_error_bridge(html.as_bytes())).unwrap()
+    }
+
+    #[test]
+    fn bridge_goes_right_after_head() {
+        let out = inject("<!doctype html><html><head><title>x</title></head><body><header>h</header></body></html>");
+        assert!(out.starts_with("<!doctype html><html><head><script data-monastery-preview>"));
+        assert_eq!(out.matches("data-monastery-preview").count(), 1);
+    }
+
+    #[test]
+    fn header_is_not_mistaken_for_head() {
+        let out = inject("<!DOCTYPE html><body><header>h</header></body>");
+        assert!(out.starts_with("<!DOCTYPE html><script data-monastery-preview>"));
+    }
+
+    #[test]
+    fn bare_fragment_gets_bridge_first() {
+        assert!(inject("<p>hi</p>").starts_with("<script data-monastery-preview>"));
+    }
+
+    #[test]
+    fn project_names_are_single_safe_segments() {
+        let too_long = "x".repeat(101);
+        for bad in ["", " ", "../etc", "a/b", r"a\b", ".hidden", too_long.as_str(), " padded"] {
+            assert!(validate_project_name(bad).is_err(), "should reject {bad:?}");
+        }
+        for good in ["my-app", "Bakery Site", "site_v2.1"] {
+            assert!(validate_project_name(good).is_ok(), "should accept {good:?}");
+        }
     }
 }

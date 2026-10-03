@@ -64,6 +64,9 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
   const [newProjectDesc, setNewProjectDesc] = useState('');
+  // Starter templates (static sites that preview immediately); fetched when the modal opens.
+  const [starters, setStarters] = useState<Array<{ id: string; name: string; description: string }>>([]);
+  const [newProjectStarter, setNewProjectStarter] = useState('blank');
   const [creatingProject, setCreatingProject] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [llmDropdownOpen, setLlmDropdownOpen] = useState(false);
@@ -100,6 +103,11 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
     }
   };
 
+  useEffect(() => {
+    if (!newProjectOpen || starters.length > 0) return;
+    fetch('/api/starters').then(r => r.ok ? r.json() : []).then(setStarters).catch(() => {});
+  }, [newProjectOpen, starters.length]);
+
   const handleCreateProject = async () => {
     const name = newProjectName.trim();
     if (!name) { setCreateError('Project name is required.'); return; }
@@ -108,7 +116,7 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
       const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, description: newProjectDesc.trim() || undefined }),
+        body: JSON.stringify({ name, description: newProjectDesc.trim() || undefined, starter: newProjectStarter }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'Failed to create project' }));
@@ -120,6 +128,7 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
       setNewProjectOpen(false);
       setNewProjectName('');
       setNewProjectDesc('');
+      setNewProjectStarter('blank');
       setProjectDropdownOpen(false);
     } catch (e: any) {
       setCreateError(e.message || 'Failed to create project');
@@ -462,7 +471,7 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
           onClick={() => { if (!creatingProject) setNewProjectOpen(false); }}
         >
           <div
-            className="bg-monastery-dark-surface rounded-lg w-full max-w-sm p-5 shadow-xl border border-monastery-dark-border"
+            className="bg-monastery-dark-surface rounded-lg w-full max-w-md p-5 shadow-xl border border-monastery-dark-border"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -485,6 +494,31 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
               placeholder="What is this project?"
               className="w-full mb-3 px-3 py-2 bg-monastery-dark-bg border border-monastery-dark-border rounded-lg text-sm text-monastery-text-primary placeholder-monastery-text-muted focus:border-monastery-pine focus:outline-none"
             />
+            {starters.length > 0 && (
+              <>
+                <label className="block text-xs text-monastery-text-secondary mb-1">Start from</label>
+                <div className="grid grid-cols-2 gap-2 mb-3" role="radiogroup" aria-label="Starter template">
+                  {starters.map(s => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={newProjectStarter === s.id}
+                      onClick={() => setNewProjectStarter(s.id)}
+                      title={s.description}
+                      className={`text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+                        newProjectStarter === s.id
+                          ? 'border-monastery-pine bg-monastery-pine/15 text-monastery-text-primary'
+                          : 'border-monastery-dark-border text-monastery-text-secondary hover:border-monastery-pine'
+                      }`}
+                    >
+                      <span className="block font-medium text-monastery-text-primary">{s.name}</span>
+                      <span className="block text-[11px] text-monastery-text-muted leading-snug mt-0.5">{s.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
             {createError && <p className="text-xs text-red-400 mb-2">{createError}</p>}
             <div className="flex justify-end gap-2">
               <button

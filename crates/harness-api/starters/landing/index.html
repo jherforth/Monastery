@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lantern & Loaf — Neighborhood Bakery</title>
+  <meta name="description" content="A one-page site starter: hero, features, testimonial, call to action.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top">Lantern &amp; Loaf</a>
+    <nav aria-label="Main">
+      <a href="#features">What we bake</a>
+      <a href="#visit">Visit</a>
+      <a class="button button--small" href="#visit">Order ahead</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <p class="eyebrow">Baked before sunrise</p>
+      <h1>Bread worth getting up for.</h1>
+      <p class="lede">Slow-fermented sourdough, flaky pastries, and good coffee — made in small batches on the corner of Elm &amp; 3rd.</p>
+      <div class="hero__actions">
+        <a class="button" href="#visit">Plan a visit</a>
+        <a class="button button--ghost" href="#features">See the menu</a>
+      </div>
+    </section>
+
+    <section id="features" class="features" aria-labelledby="features-title">
+      <h2 id="features-title">What we bake</h2>
+      <div class="grid">
+        <article class="card reveal">
+          <span class="card__icon" aria-hidden="true">🥖</span>
+          <h3>Country sourdough</h3>
+          <p>A 36-hour ferment, a crackling crust, and a crumb that holds up to anything.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card__icon" aria-hidden="true">🥐</span>
+          <h3>Morning pastries</h3>
+          <p>Laminated by hand each night: croissants, kouign-amann, and a rotating danish.</p>
+        </article>
+        <article class="card reveal">
+          <span class="card__icon" aria-hidden="true">☕</span>
+          <h3>Coffee &amp; tea</h3>
+          <p>Locally roasted espresso and loose-leaf teas to go with whatever you pick.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="quote reveal">
+      <blockquote>
+        <p>“The only bakery I've ever set an alarm for.”</p>
+        <footer>— A very sleepy regular</footer>
+      </blockquote>
+    </section>
+
+    <section id="visit" class="cta" aria-labelledby="visit-title">
+      <h2 id="visit-title">Come say hello</h2>
+      <p>Open Tuesday–Sunday, 7am until we sell out. 214 Elm Street.</p>
+      <a class="button" href="mailto:hello@example.com">Email an order</a>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>&copy; <span id="year"></span> Lantern &amp; Loaf</p>
+  </footer>
+
+  <script type="module" src="script.js"></script>
+</body>
+</html>

@@ -6,7 +6,7 @@ import { ChatPane, type ComposerToggle } from './components/ChatPane';
 import { SKILLS } from './lib/skills';
 import { EditorPane } from './components/EditorPane';
 import { useEditorTabs, isImagePath } from './hooks/useEditorTabs';
-import { PreviewPane } from './components/PreviewPane';
+import { PreviewPane, previewErrorsPrompt } from './components/PreviewPane';
 import { SelfHostWizard } from './components/SelfHostWizard';
 import { useAppStore } from './store/useAppStore';
 import { useSessions } from './hooks/useSessions';
@@ -607,7 +607,10 @@ export default function App() {
                 onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
               >
                 <div className="h-full animate-slideInRight rounded-xl overflow-hidden bg-monastery-dark-surface">
-                  <PreviewPane projectId={currentProject?.id} />
+                  <PreviewPane
+                    projectId={currentProject?.id}
+                    onFixErrors={(errors) => handleSendMessage(previewErrorsPrompt(errors), undefined, { mode: 'build' })}
+                  />
                 </div>
               </Panel>
             </>

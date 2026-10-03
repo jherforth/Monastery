@@ -58,6 +58,25 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
 3. NEVER write placeholders like "// rest of the code unchanged" or "…existing code…" inside a path-tagged block — every omitted line is permanently deleted.
 4. Keep prose minimal: at most a 2–4 line plan, then the code blocks. Do not narrate each edit.`;
 
+// Runtime constraints (decision D2: static-first). The preview serves files as-is, so a build
+// step would mean a blank preview. Projects that already have a package.json keep their stack.
+const STATIC_RUNTIME_RULES = `PROJECT RUNTIME — static site, no build step:
+- The live preview serves the project's files exactly as they are on disk, starting from index.html at the project root. There is no dev server, no bundler, and no npm install.
+- Write plain HTML, CSS and JavaScript. Use <script type="module"> with ES-module imports, and load libraries from a CDN by URL (e.g. https://esm.sh/<package> or https://cdn.jsdelivr.net/npm/<package>/+esm). For Tailwind, use <script src="https://cdn.tailwindcss.com"></script>.
+- NEVER create package.json, build configs (vite/webpack/tsconfig), JSX/TSX, or anything else that needs compiling — it will not run in the preview or the static deploy.
+- Use relative paths between files (styles.css, app.js, about.html) so the site works both in the preview and once deployed.
+- Persist data in localStorage unless a backend skill (e.g. Pocketbase) is active.`;
+
+const BUILD_STEP_RUNTIME_NOTE = `PROJECT RUNTIME — this project has a package.json, so it uses a build step. Keep using its existing stack and tooling. Note that the live preview only serves files as they are on disk (no dev server), so changes to compiled sources won't appear there; the deploy pipeline builds the project.`;
+
+// Design bar for anything visual (a concise take on bolt.diy's design instructions).
+const DESIGN_RULES = `DESIGN QUALITY — for anything visual:
+- Make it look finished: a deliberate palette (3–5 colors plus neutrals) as CSS custom properties, a clear type scale (system fonts or one Google Fonts pairing), consistent spacing, and generous whitespace.
+- Responsive by default (mobile first, flex/grid, nothing that overflows small screens), semantic HTML, visible focus states, at least 4.5:1 text contrast, and alt text on images.
+- Real, specific content that fits the request — never lorem ipsum, "Feature 1", or buttons that do nothing.
+- Images: only stable public URLs you are certain exist, or none — prefer CSS gradients, shapes, emoji, or inline SVG. Never invent image URLs.
+- Small, purposeful motion (hover/focus transitions, gentle reveals) that respects prefers-reduced-motion.`;
+
 // Discuss mode (modeled on bolt.diy's discuss prompt): answer and plan, never implement.
 const DISCUSS_RULES = `DISCUSS MODE — you are helping the user understand this project and plan changes to it. You do NOT implement anything in this mode.
 
@@ -528,6 +547,8 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
         : `You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
     }
     contextParts.push(mode === 'discuss' ? DISCUSS_RULES : BUILD_RULES);
+    contextParts.push('package.json' in allFileContents ? BUILD_STEP_RUNTIME_NOTE : STATIC_RUNTIME_RULES);
+    if (mode === 'build') contextParts.push(DESIGN_RULES);
 
     // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
     buildSkillInstructions(
