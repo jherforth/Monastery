@@ -30,19 +30,27 @@ nginx :3000 ──► serves the built UI, proxies /api ──► harness (Rust/
 | Part | Where | What it does |
 |---|---|---|
 | Web UI | `packages/web-ui/` | React + TypeScript + Vite + Tailwind, Monaco editor. Chat, live preview, code editor (toggle), file tree, History & Ship drawer, Settings |
-| Chat engine | `packages/web-ui/src/hooks/useChatOrchestrator.ts` | Builds the system context, streams the reply, applies path-tagged code blocks to disk (snapshot first), auto-continues capped, runs `@read`/`@search` rounds, recovers failed edits |
-| API server | `crates/harness-api/` | Axum routes (`src/main.rs`), handlers (`src/handlers.rs`), SQLite (`src/db.rs`), snapshots, deploy manifest, Cloudflare routing |
+| Chat turn | `crates/harness-api/src/chat/` | One request per message: builds the prompt from disk (`prompt.rs`), streams the reply, parses `<file>`/`<edit>`/`<read>` tags as they arrive (`parser.rs`), applies changes after one snapshot, continues past the output limit, serves reads, retries a failed edit (`mod.rs`) |
+| Chat UI | `packages/web-ui/src/hooks/useChatOrchestrator.ts`, `components/ChatPane.tsx` | Sends the turn and renders its events: text, file rows and diff cards, status lines, errors |
+| API server | `crates/harness-api/` | Axum routes (`src/main.rs`), handlers (`src/handlers.rs`), SQLite (`src/db.rs`), snapshots, starters, deploy manifest, Cloudflare routing |
 | Core library | `crates/harness-core/` | OpenAI-compatible LLM client, config, mDNS discovery, snapshot model, git CLI wrapper |
 | Container | `docker/` | Multi-stage build → `nginx` runtime with the Rust binary (`entrypoint.sh` starts both) |
 
 ## Request flow (one chat turn)
-1. The UI builds a system message: Build or Discuss rules, active skills, the file tree, and file
-   contents (the whole project if small, otherwise the active file plus a working set).
-2. `POST /api/models/:id/chat` streams the completion back as SSE (`content`, `reasoning`,
-   `usage`, `finish_reason` events).
-3. In Build mode, path-tagged code blocks are applied after a safety snapshot: whole-file writes
-   via `/files/write`, SEARCH/REPLACE hunks via `/files/edit`. Discuss replies are never applied.
-4. The preview iframe (`/api/projects/:id/preview/index.html`) reloads when files change.
+1. The UI sends `POST /api/projects/:id/chat`. The body carries the message, the mode (Build or
+   Discuss), the history, active skill instructions, the open file's live buffer, and the working
+   set.
+2. The server reads the project from disk and builds the system prompt: mode rules, static-first
+   runtime rules, design guidance, skills, the file tree, and file contents (everything for a
+   small project; otherwise the open file plus the working set).
+3. The reply streams back as typed SSE events (`text`, `file`, `status`, `snapshot`,
+   `edit_failed`, …). Each `<file>`/`<edit>` is applied as soon as its tag closes, after one
+   safety snapshot for the turn. `<read>` requests add files and continue. Replies cut off at the
+   output limit are continued and stitched. A failed edit gets one retry. Nothing from a Discuss
+   reply is ever applied.
+4. The preview iframe (`/api/projects/:id/preview/index.html`) reloads as files land. The page
+   reports its runtime errors back through an injected script, and **Fix it** sends them to the
+   chat.
 5. Shell blocks are never run automatically — the user can click **Run**, which calls
    `/api/projects/:id/shell` (no shell, allowlisted programs, project-relative arguments only).
 

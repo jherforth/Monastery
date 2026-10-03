@@ -6,8 +6,8 @@ agent such as Hermes, Claude Code or Aider to work on a project, it joins as **a
 contributor to the project's git repo**. Monastery doesn't need to know the agent exists.
 
 > Hermes used to be wired into the chat as an "Agent mode" with role chips. That was hidden in
-> simplification Phase 1. It duplicated the chat's job, and the files Hermes wrote with its own
-> tools landed in Hermes's workspace instead of the project. See
+> simplification Phase 1 and removed in Phase 3. It duplicated the chat's job, and the files Hermes
+> wrote with its own tools landed in Hermes's workspace instead of the project. See
 > [SIMPLIFICATION_PLAN.md](SIMPLIFICATION_PLAN.md), decision D1.
 
 ---

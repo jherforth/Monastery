@@ -306,11 +306,11 @@ This is where most of the user-facing value is.
       `<design_instructions>`: responsive, accessible contrast, a real palette and type scale,
       no placeholder lorem ipsum, real image URLs (or none).
 
-### Phase 3 — Move orchestration server-side (≈1–2 weeks, the big refactor)
+### Phase 3 — Move orchestration server-side (≈1–2 weeks, the big refactor) — ✅ done 2026-10-02
 
 Do this after Phase 1, because cutting Hermes, roles and tasks first shrinks what has to move.
 
-- [ ] **Adopt one strict output format.** Recommended: tags, which survive markdown fences inside
+- [x] **Adopt one strict output format.** Recommended: tags, which survive markdown fences inside
       files and are easy to parse while streaming:
       ```
       <file path="index.html">…complete contents…</file>
@@ -319,7 +319,11 @@ Do this after Phase 1, because cutting Hermes, roles and tasks first shrinks wha
       ```
       Drop fallback patterns 2, 4 and 5, `stitchContinuation`'s fence repair, and the
       tool-markup path extraction (keep the stripper for history hygiene).
-- [ ] **Add a new endpoint, `POST /api/projects/:id/chat`.** The server:
+  - *Done:* `crates/harness-api/src/chat/parser.rs`, with 13 tests covering chunk splits at every
+    size, fences inside files, unterminated tags, look-alike tags and the seam repair. `<edit>`
+    also accepts the old `<<<<<<< SEARCH` markers. A Build reply that uses the old fenced format
+    applies nothing, and the user gets a notice.
+- [x] **Add a new endpoint, `POST /api/projects/:id/chat`.** The server:
   - reads files from disk (with the ignore list) and builds the system prompt;
   - streams from the LLM, parsing the tags as they stream;
   - takes **one** snapshot per turn and applies each file as its tag closes, so the preview
@@ -327,20 +331,34 @@ Do this after Phase 1, because cutting Hermes, roles and tasks first shrinks wha
   - handles token-cap continuation (cap 2);
   - emits typed SSE events: `text`, `reasoning`, `file_written`, `file_edit_failed`, `usage`,
     `done`.
-- [ ] **Shrink `useChatOrchestrator.ts` to a renderer** (send, render events, stop). Target: under
+  - *Done:* `chat/mod.rs`, with the events documented at the top of the file. It also emits
+    `snapshot`, `read`, `segment`, `status`, `notice`, `truncated` and `error`. Every payload is
+    JSON. The open file's live buffer and the skill instructions come from the UI. Checked
+    end-to-end against a scripted mock LLM: continuation with a re-opened tag, a read round, an
+    edit retry, Discuss mode and fenced output.
+- [x] **Shrink `useChatOrchestrator.ts` to a renderer** (send, render events, stop). Target: under
       300 lines. `allFileContents` stops being prompt state; the editor reads files on demand.
-- [ ] **Simplify editing.** Prompt for whole-file `<file>` blocks when the file is under about
+  - *Done:* 1,459 → 297 lines. `allFileContents` and `/files/read-all` are gone. The chat renders
+    tags as compact "Wrote / Editing …" rows. User-run commands moved to `lib/commands.ts`.
+- [x] **Simplify editing.** Prompt for whole-file `<file>` blocks when the file is under about
       150–200 lines (most website files), and `<edit>` only above that.
   - On a failed edit: re-read the file and retry once with the exact current contents, then
     ask the user.
   - Drop the "loose" matcher tier, and maybe tier 5 (fuzzy), once whole-file is the default.
     Keep `guard_partial_overwrite`, which is cheap and catches the worst failure.
-- [ ] **Pick one context-growth mechanism for large projects.** Either keep `<read>`
+  - *Done:* the loose tier was dropped and tier 5 kept (strict). The guard is now
+    `is_partial_overwrite`. `/files/edit` was removed, since edits only come from the chat turn.
+- [x] **Pick one context-growth mechanism for large projects.** Either keep `<read>`
       (model-driven, single round, server-side) **or** do bolt.diy's pre-pass (a cheap call that
       picks ≤5 files). Don't do both. Drop `@search` and filename-mention scanning unless data
       shows they're needed after the ignore list lands.
-- [ ] Delete the hidden Phase 1 features for real (task store routes, `useWorkflow`,
+  - *Done:* `<read>`, served server-side for up to 3 rounds per turn. `@search`, mention scanning and
+    the `/search` endpoint were removed.
+- [x] Delete the hidden Phase 1 features for real (task store routes, `useWorkflow`,
       `TaskDrawer`, `taskTemplates`, Hermes routes/table/hook, `useAgents`).
+  - *Done:* together with `/api/models/:id/chat` (superseded by the turn endpoint), `sse_safe`,
+    `docs/AGENTS.md` and `docs/WORKFLOW.md`. The `hermes_connections` table is dropped on startup;
+    existing `.monastery/tasks/` folders are left alone.
 
 ### Phase 4 — Backend hygiene (ongoing, alongside 2–3)
 
@@ -412,9 +430,9 @@ Record decisions here as they're made so future sessions don't re-litigate them.
 | D2 | Runtime for previews | A: static-first (CDN ES modules) · B: per-project Node runner container · C: in-browser bundler | **A now**, B or C later if React apps become a goal | **Decided 2026-10-02**: A (Phase 2) |
 | D3 | Staged workflow (tasks/spec/gates) | Keep / Replace with Discuss mode / Remove | **Replace with Discuss + "Build this plan"** | **Decided 2026-10-02**: replaced in Phase 1, delete in Phase 3 |
 | D4 | Deploy targets | Coolify + Dokploy + CF + Pocketbase / Coolify-first | **Coolify-first**, Dokploy maintenance-only | Open |
-| D5 | Output format | Keep fences / Tags | **Tags** (`<file>`, `<edit>`, `<read>`) | Open |
-| D6 | Where orchestration runs | Browser hook / Rust server | **Rust server** | Open |
-| D7 | Edit strategy | SEARCH/REPLACE-first / Whole-file-first | **Whole-file for small files**, SEARCH/REPLACE above ~150–200 lines | Open |
+| D5 | Output format | Keep fences / Tags | **Tags** (`<file>`, `<edit>`, `<read>`) | **Decided 2026-10-02**: tags (Phase 3) |
+| D6 | Where orchestration runs | Browser hook / Rust server | **Rust server** | **Decided 2026-10-02**: Rust server (Phase 3) |
+| D7 | Edit strategy | SEARCH/REPLACE-first / Whole-file-first | **Whole-file for small files**, SEARCH/REPLACE above ~150–200 lines | **Decided 2026-10-02**: whole-file under ~200 lines (Phase 3) |
 
 ---
 

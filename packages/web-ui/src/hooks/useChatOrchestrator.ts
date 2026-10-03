@@ -2,190 +2,12 @@ import { useState, useCallback, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { buildSkillInstructions } from '../lib/skills';
 import { parseSSEStream } from '../lib/sse';
+import { runCommandBlock } from '../lib/commands';
 import { Message, Project, FileChange } from '../types';
 import type { EditorTab } from './useEditorTabs';
 
 /** Build writes files; Discuss answers questions and plans, and never touches the project. */
 export type ChatMode = 'build' | 'discuss';
-
-// Below this total corpus size the whole project is sent as context; above it, only the
-// active file + working set (scoped mode).
-const SMALL_PROJECT_LIMIT = 96_000; // ~24K tokens
-
-// Auto-continue a response that hits the model's output-token cap (finish_reason="length"),
-// up to MAX_AUTO_CONTINUE times, then fall back to the manual Continue button. Capped on
-// purpose: unbounded auto-continue can burn cloud (e.g. DeepSeek) tokens on verbose models.
-const MAX_AUTO_CONTINUE = 5;
-// Same idea, separate cap: rounds where the model asked for context via `@read`/`@search`
-// and got results auto-fed back in. Kept small and distinct from MAX_AUTO_CONTINUE since
-// each round is a full extra request (not just an appended chunk). 4 allows the full
-// discovery chain in a complex project: search → read → (read more) → edit.
-const MAX_AUTO_READ_ROUNDS = 4;
-
-const NO_TOOL_CALLS_RULE =
-  '- You have NO native function/tool calling in this chat. NEVER emit tool-call markup of any kind (<|DSML|…>, <tool_call>, <|tool_calls_begin|>, JSON function calls) — it is not executed and breaks the conversation. To read a project file output a plain `@read path` line; to search, `@search term`.';
-
-// Build mode: how to change files, and how to finish the job in one response.
-const BUILD_RULES = `FILE EDITING RULES — read carefully, choose the right mode:
-
-1. EDITING part of an EXISTING file → use one or more SEARCH/REPLACE blocks inside a path-tagged code block. The SEARCH text must be copied EXACTLY from the file's current contents (enough surrounding lines to be unique); it is found and replaced in place, leaving the rest of the file untouched. This is the ONLY safe way to change a section — do NOT paste just the changed section as a whole-file block.
-
-   \`\`\`html:index.html
-   <<<<<<< SEARCH
-     <h1>Old title</h1>
-   =======
-     <h1>New title</h1>
-   >>>>>>> REPLACE
-   \`\`\`
-
-   Use several SEARCH/REPLACE blocks in the same code block for multiple edits to one file.
-
-2. CREATING a new file, or intentionally REWRITING a whole file → a path-tagged code block with the file's COMPLETE contents (no SEARCH/REPLACE markers):
-
-   \`\`\`tsx:src/NewThing.tsx
-   <full file contents>
-   \`\`\`
-
-CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTIRE contents. NEVER put just a section, fragment, or "…rest unchanged…" in one — the omitted parts are permanently deleted. If you are changing only part of a file, you MUST use mode 1. Monastery will reject a whole-file block that is only a slice of the existing file.
-- The path after the colon determines where the code is written; you can edit/create multiple files in one response.
-- For illustrative snippets you do NOT want saved to disk, use a plain code block with NO file path.
-- Shell commands (\`\`\`bash blocks) are NOT run automatically — the user decides whether to run them. Only suggest one when it is genuinely needed, and never rely on it having run.
-${NO_TOOL_CALLS_RULE}
-
-RESPONSE DISCIPLINE — this determines whether the user's request actually gets completed:
-1. Think through the ENTIRE request BEFORE writing. Then respond with EVERYTHING needed to complete it — ALL file changes, in this single response. NEVER stop after one file intending to "continue later": nothing runs later unless the user asks again.
-2. Prefer a COMPLETE-file block (mode 2) over SEARCH/REPLACE whenever the file is small (under ~150 lines) or you are changing most of it. Full contents always apply cleanly; SEARCH anchors can fail to match.
-3. NEVER write placeholders like "// rest of the code unchanged" or "…existing code…" inside a path-tagged block — every omitted line is permanently deleted.
-4. Keep prose minimal: at most a 2–4 line plan, then the code blocks. Do not narrate each edit.`;
-
-// Runtime constraints (decision D2: static-first). The preview serves files as-is, so a build
-// step would mean a blank preview. Projects that already have a package.json keep their stack.
-const STATIC_RUNTIME_RULES = `PROJECT RUNTIME — static site, no build step:
-- The live preview serves the project's files exactly as they are on disk, starting from index.html at the project root. There is no dev server, no bundler, and no npm install.
-- Write plain HTML, CSS and JavaScript. Use <script type="module"> with ES-module imports, and load libraries from a CDN by URL (e.g. https://esm.sh/<package> or https://cdn.jsdelivr.net/npm/<package>/+esm). For Tailwind, use <script src="https://cdn.tailwindcss.com"></script>.
-- NEVER create package.json, build configs (vite/webpack/tsconfig), JSX/TSX, or anything else that needs compiling — it will not run in the preview or the static deploy.
-- Use relative paths between files (styles.css, app.js, about.html) so the site works both in the preview and once deployed.
-- Persist data in localStorage unless a backend skill (e.g. Pocketbase) is active.`;
-
-const BUILD_STEP_RUNTIME_NOTE = `PROJECT RUNTIME — this project has a package.json, so it uses a build step. Keep using its existing stack and tooling. Note that the live preview only serves files as they are on disk (no dev server), so changes to compiled sources won't appear there; the deploy pipeline builds the project.`;
-
-// Design bar for anything visual (a concise take on bolt.diy's design instructions).
-const DESIGN_RULES = `DESIGN QUALITY — for anything visual:
-- Make it look finished: a deliberate palette (3–5 colors plus neutrals) as CSS custom properties, a clear type scale (system fonts or one Google Fonts pairing), consistent spacing, and generous whitespace.
-- Responsive by default (mobile first, flex/grid, nothing that overflows small screens), semantic HTML, visible focus states, at least 4.5:1 text contrast, and alt text on images.
-- Real, specific content that fits the request — never lorem ipsum, "Feature 1", or buttons that do nothing.
-- Images: only stable public URLs you are certain exist, or none — prefer CSS gradients, shapes, emoji, or inline SVG. Never invent image URLs.
-- Small, purposeful motion (hover/focus transitions, gentle reveals) that respects prefers-reduced-motion.`;
-
-// Discuss mode (modeled on bolt.diy's discuss prompt): answer and plan, never implement.
-const DISCUSS_RULES = `DISCUSS MODE — you are helping the user understand this project and plan changes to it. You do NOT implement anything in this mode.
-
-1. Answer questions directly and concisely. Only write a plan when the user asks for a change, a new feature, or help debugging.
-2. When planning, write exactly ONE plan under a "## The Plan" heading: numbered steps, each naming the real file(s) involved (from the project tree) and describing in plain English what changes and why.
-3. NEVER write code, code blocks, or file contents — nothing you write in this mode is applied to the project. Describe changes in words (e.g. "in styles.css, turn the nav into a centered flex row").
-4. Mention any new dependencies, assets, or services the plan needs. If the request is ambiguous, ask one clarifying question instead of guessing.
-5. Keep it short. When the plan is ready, the user can click "Build this plan" to have it implemented.
-${NO_TOOL_CALLS_RULE}`;
-
-// Format one file for the PROJECT FILE CONTENTS context block.
-const fmtFile = (path: string, content: string) => {
-  const ext = path.split('.').pop() || '';
-  return `### ${path}\n\`\`\`${ext}\n${content}\n\`\`\``;
-};
-
-type EditHunk = { search: string; replace: string };
-
-// Parse SEARCH/REPLACE edit blocks out of a code-block body. Their presence means the model
-// wants a targeted in-place edit (modify a section) rather than a full-file replace — which is
-// what prevents a section from clobbering the whole file.
-const parseEditBlocks = (code: string): EditHunk[] => {
-  const re = /<<<<<<<+[ \t]*SEARCH[ \t]*\r?\n([\s\S]*?)\r?\n=======[ \t]*\r?\n([\s\S]*?)\r?\n>>>>>>>+[ \t]*REPLACE/g;
-  const out: EditHunk[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(code)) !== null) out.push({ search: m[1], replace: m[2] });
-  return out;
-};
-
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-// Extract the code-block body for a specific file path from an assistant response (the first
-// ```lang:path\n…\n``` block whose path matches). Used by the edit-recovery retry.
-const extractFileBlock = (response: string, path: string): string | null => {
-  const re = new RegExp('```[\\w.]*\\s*:\\s*' + escapeRegExp(path) + '\\s*\\n([\\s\\S]*?)\\n```');
-  const m = response.match(re);
-  return m ? m[1] : null;
-};
-
-// Provider-native tool-call markup that models sometimes leak as plain text when they
-// decide to "call a tool" in a chat that has none — e.g. DeepSeek's <｜DSML｜…> blocks,
-// <|tool▁calls▁begin|>, Qwen/Hermes-style <tool_call>. Matches both ASCII | and the
-// fullwidth ｜ (U+FF5C) these templates use.
-const TOOL_MARKUP_RE = /<\/?[｜|]?\s*DSML\s*[｜|][^>\n]*>|<\|tool[▁_]?calls?[▁_]?(?:begin|end)?\|>|<\/?tool_call>|<\/?function_call>/gi;
-
-const hasToolMarkup = (text: string) => { TOOL_MARKUP_RE.lastIndex = 0; return TOOL_MARKUP_RE.test(text); };
-
-// Pull file-path-looking arguments out of leaked tool-call markup so the read intent can
-// be rescued through the @read loop (the model asked to read a file; serve it).
-const extractToolMarkupPaths = (text: string): string[] => {
-  const paths = new Set<string>();
-  // Only look inside/near markup lines to avoid grabbing paths from ordinary prose.
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    if (!hasToolMarkup(lines[i])) continue;
-    const region = lines.slice(i, i + 3).join('\n');
-    for (const m of region.matchAll(/[\w][\w./-]*\.\w{1,8}/g)) {
-      const p = m[0].replace(/^\.\//, '');
-      if (p.includes('.') && !p.startsWith('http')) paths.add(p);
-    }
-  }
-  return [...paths].slice(0, 5);
-};
-
-// Strip leaked tool markup from assistant history so the format doesn't self-perpetuate
-// (once one response contains it, models keep imitating it on every following turn).
-const stripToolMarkup = (text: string): string =>
-  hasToolMarkup(text)
-    ? text.replace(TOOL_MARKUP_RE, '').replace(/\n{3,}/g, '\n\n')
-    : text;
-
-// Replace fenced code blocks in OLDER assistant messages with short placeholders before
-// sending history to the LLM. Without this, history accumulates multiple stale versions of
-// each file that compete with the current PROJECT FILE CONTENTS in the system message —
-// models routinely copy from their own outdated output and "overwrite" newer work.
-// (The in-flight response being continued is never stripped — the model needs its own text.)
-const stripHistoryCodeBlocks = (text: string): string =>
-  stripToolMarkup(text.replace(/```([^\n]*)\n[\s\S]*?```/g, (_m, info) => {
-    const path = String(info).includes(':') ? String(info).split(':').slice(1).join(':').trim() : '';
-    return path
-      ? `[previous version of \`${path}\` omitted — the CURRENT contents are in PROJECT FILE CONTENTS]`
-      : '[code block omitted]';
-  }));
-
-// Repair the seam where a continuation resumes a response that was cut off INSIDE a code
-// block. Despite the "continue exactly where you left off" instruction, models often restart
-// with a duplicate fence opener (```css:styles.css) and/or repeat their last lines — which
-// unbalances the fences and permanently breaks both the chat's code-block rendering and the
-// file-apply parser. Called with the accumulated continuation on every chunk, so the live
-// render stays balanced too. A bare ``` at the start is a legitimate CLOSER and is kept —
-// only openers (fence + info string) are stripped.
-const stitchContinuation = (base: string, cont: string): string => {
-  let out = cont;
-  const insideBlock = ((base.match(/```/g) || []).length) % 2 === 1;
-  if (insideBlock) {
-    const opener = out.match(/^\s*```[^\s`][^\n]*\n/);
-    if (opener) out = out.slice(opener[0].length);
-  }
-  // Drop text the model repeated from the end of the base (longest suffix of base, ≥16
-  // chars, that the continuation starts with).
-  const tail = base.slice(-240);
-  for (let len = tail.length; len >= 16; len--) {
-    if (out.startsWith(tail.slice(tail.length - len))) {
-      out = out.slice(len);
-      break;
-    }
-  }
-  return out;
-};
 
 interface ChatOrchestratorDeps {
   currentProject: Project | null;
@@ -195,46 +17,36 @@ interface ChatOrchestratorDeps {
   availableModels: Array<{ id: string }>;
   /** Configured Pocketbase connection (or undefined) — its URL feeds the pocketbase skill. */
   pocketbaseBaseUrl?: string;
-  projectFiles: any[];
   setProjectFiles: (files: any[]) => void;
-  allFileContents: Record<string, string>;
-  setAllFileContents: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   currentFile: string;
   activeTab: EditorTab | undefined;
   isImagePath: (p: string) => boolean;
   updateTabContentByPath: (path: string, content: string) => void;
 }
 
+const NO_MODEL_MSG =
+  '⚠️ No model is available from the active endpoint. Open the LLM menu in the top bar to pick a model, ' +
+  'or validate the endpoint in Settings → Models (its /v1/models list may be empty or unreachable).';
+
+const newId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
 /**
- * Everything about talking to the model lives here: building system context, streaming,
- * auto-continue, the @read/@search context-pull loop, applying returned code blocks to disk,
- * and the escalating recovery for edit hunks that don't match. The UI (App) consumes the
- * returned messages/handlers and stays presentational.
+ * The chat, as a renderer. Each turn is one `POST /api/projects/:id/chat`: the server builds the
+ * context from disk, streams the reply, applies `<file>`/`<edit>` tags as they close (after one
+ * safety snapshot), continues past the output limit, serves `<read>` requests and retries a failed
+ * edit — and reports all of it as SSE events (see crates/harness-api/src/chat/mod.rs). This hook
+ * turns those events into chat messages and keeps the editor tabs and preview in step.
  */
 export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
   const {
-    currentProject,
-    currentSession,
-    createSession,
-    addMessage,
-    availableModels,
-    pocketbaseBaseUrl,
-    projectFiles,
-    setProjectFiles,
-    allFileContents,
-    setAllFileContents,
-    currentFile,
-    activeTab,
-    isImagePath,
-    updateTabContentByPath,
+    currentProject, currentSession, createSession, addMessage, availableModels, pocketbaseBaseUrl,
+    setProjectFiles, currentFile, activeTab, isImagePath, updateTabContentByPath,
   } = deps;
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [chatMode, setChatMode] = useState<ChatMode>('build');
-  // Toggle-triggered skills the user has switched on (see lib/skills.ts) — e.g. 'pocketbase'
-  // injects backend + deployment instructions into the LLM context. Registry-driven: the
-  // composer renders whatever skills exist, so new domains need no UI changes.
+  // Toggle-triggered skills the user has switched on (see lib/skills.ts).
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
   const toggleSkill = useCallback((id: string, on?: boolean) => {
     setActiveSkillIds(ids => {
@@ -244,983 +56,204 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
       return want ? [...ids, id] : ids.filter(x => x !== id);
     });
   }, []);
-  // Context discipline: in large projects we don't dump the whole repo into every message. The
-  // "working set" is the subset of files (beyond the active file) currently included in context —
-  // grown when the user names a file or the model emits `@read <path>`.
-  const [workingSetPaths, setWorkingSetPaths] = useState<string[]>([]);
+  // Files the model `<read>` this session; sent back so large projects keep them in context.
+  const workingSetRef = useRef<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
-  // Holds the latest recoverFailedEdits so applyAssistantOutput (defined earlier) can invoke it
-  // without a forward reference in its dependency array.
-  const recoverFailedEditsRef = useRef<((failed: Array<{ path: string; hunks: EditHunk[] }>) => void) | null>(null);
-  // Lets edit-recovery resume the interrupted task through the normal send flow (assigned
-  // after handleSendMessage is defined). Without this, a recovered edit left the conversation
-  // dead: the model never learned its edit landed, so multi-step tasks stopped mid-way.
-  const continueTaskRef = useRef<((content: string) => void) | null>(null);
-  // Live view of the context map for applyAssistantOutput's before/after diff capture —
-  // allFileContents isn't in that callback's deps, so a ref avoids stale closure reads.
-  const allFileContentsRef = useRef(allFileContents);
-  allFileContentsRef.current = allFileContents;
 
-  // Resolve which model to send: the user's persisted pick when the active endpoint still
-  // serves it, else the endpoint's first model, else null. Never a hardcoded guess —
-  // silently defaulting to a provider-specific name (the old 'deepseek-chat' fallback)
-  // produced baffling 400s for everyone not on that provider.
+  // The user's persisted model pick when the active endpoint still serves it (or can't list
+  // models at all — "Custom model…" exists for those), else the endpoint's first model.
   const resolveModelId = useCallback((): string | null => {
     const selected = useAppStore.getState().selectedModelId;
-    if (selected && availableModels.some(m => m.id === selected)) return selected;
-    // An empty list doesn't invalidate an explicit pick — some endpoints can't list
-    // models at all, and "Custom model…" exists precisely for them.
-    if (selected && availableModels.length === 0) return selected;
+    if (selected && (availableModels.length === 0 || availableModels.some(m => m.id === selected))) return selected;
     return availableModels[0]?.id ?? null;
   }, [availableModels]);
 
-  const NO_MODEL_MSG =
-    '⚠️ No model is available from the active endpoint. Open the LLM menu in the top bar to pick a model, ' +
-    'or validate the endpoint in Settings → Models (its /v1/models list may be empty or unreachable).';
+  const post = (m: Omit<Message, 'id' | 'timestamp'>) =>
+    setMessages(prev => [...prev, { id: newId(m.role), timestamp: Date.now(), ...m }]);
+  const patch = (id: string, fn: (m: Message) => Partial<Message>) =>
+    setMessages(prev => prev.map(m => (m.id === id ? { ...m, ...fn(m) } : m)));
 
-  // The one request path for every model call (initial send, auto-continue, context rounds,
-  // manual Continue, edit recovery): the active endpoint's OpenAI-compatible chat stream.
-  const postChat = useCallback((modelId: string, chatMessages: Array<{ role: string; content: string }>, signal?: AbortSignal) => {
-    const activeEndpoint = useAppStore.getState().activeEndpoint;
-    const params = new URLSearchParams();
-    if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
-    return fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatMessages }),
-      signal,
-    });
-  }, []);
-
-  // Parse an assistant response for path-tagged code blocks and apply them to the project on
-  // disk. Shared by the initial send and the manual "Continue" action so both paths write files
-  // identically. Shell blocks are deliberately NOT executed here — they get a Run button in the
-  // chat and only run when the user clicks it (runShellCommand).
-  const applyAssistantOutput = useCallback((fullContent: string) => {
+  /**
+   * Run one turn and render its events. `targetId` = an existing (cut-off) assistant message to
+   * append to; otherwise a new bubble is created.
+   */
+  const runTurn = useCallback(async (
+    body: Record<string, unknown>, mode: ChatMode, targetId?: string, sessionId?: string,
+  ) => {
     if (!currentProject?.id) return;
-
-    type WriteResult = { path: string; ok: boolean; error?: string; kind?: 'write' | 'edit'; applied?: number; failedHunks?: number };
-    // Collect everything to apply first — the fetches only fire AFTER the safety
-    // checkpoint below, so a bad response can't destroy un-snapshotted work.
-    const fileWrites: Array<{ path: string; content: string }> = [];
-    const fileEdits: Array<{ path: string; edits: EditHunk[] }> = [];
-    const modifiedFiles: string[] = [];
-
-    // --- Code block parser ---
-    // Pattern 1: language:path/to/file on the opening fence line
-    const pattern1 = /```(\w*)\s*:\s*(\S+)\s*\n([\s\S]*?)\n```/gm;
-    // Pattern 2: file path on line immediately before code block
-    const pattern2 = /(?:^|\n)\s*([\/\w\-\.]+\.\w+):?\s*\n+```(\w*)\n([\s\S]*?)\n```/gm;
-    // (Former pattern 3 — prose like "update index.html" followed by ANY code block — was
-    // removed: it routinely matched explanatory snippets and replaced whole files with them.)
-    // Pattern 4: file comment on first line inside code block
-    const pattern4 = /```(\w*)\n(?:\/\/|#|<!--)\s*(?:file:?|filename:?)\s*([\/\w\-\.]+\.\w+).*?\n([\s\S]*?)\n```/gi;
-    // Pattern 5: ### filename heading or **filename** followed by code block
-    const pattern5 = /(?:^|\n)(?:#{1,3}\s*|(?:\*\*)(.+?)(?:\*\*)\s*\n)(?:File:?\s*)?([\/\w\-\.]+\.\w+)\s*\n+```(\w*)\n([\s\S]*?)\n```/gmi;
-
-    const allPatterns = [pattern1, pattern2, pattern4, pattern5];
-    const seenPaths = new Set<string>();
-
-    for (const pattern of allPatterns) {
-      let match;
-      pattern.lastIndex = 0;
-      while ((match = pattern.exec(fullContent)) !== null) {
-        let filePath: string;
-        let code: string;
-
-        if (pattern === pattern1) {
-          filePath = match[2];
-          code = match[3];
-        } else if (pattern === pattern4) {
-          filePath = match[2];
-          code = match[3];
-        } else if (pattern === pattern5) {
-          filePath = match[2];
-          code = match[4];
-        } else {
-          filePath = match[1];
-          code = match[3];
-        }
-
-        if (!filePath || seenPaths.has(filePath)) continue;
-        seenPaths.add(filePath);
-
-        // Skip writing raw diff output — diffs should be applied, not stored as file content
-        const lang = (pattern === pattern1 || pattern === pattern4) ? match[1]?.toLowerCase()
-          : (pattern === pattern5) ? match[3]?.toLowerCase()
-          : match[2]?.toLowerCase();
-        if (lang === 'diff') continue;
-
-        // SEARCH/REPLACE block(s) → targeted in-place edit; otherwise a full-file write.
-        const edits = parseEditBlocks(code);
-        if (edits.length > 0) {
-          modifiedFiles.push(filePath);
-          fileEdits.push({ path: filePath, edits });
-          continue;
-        }
-
-        const cleanCode = code.trimEnd() + '\n';
-        if (!cleanCode.trim()) continue; // skip empty blocks
-
-        modifiedFiles.push(filePath);
-        fileWrites.push({ path: filePath, content: cleanCode });
-      }
-    }
-
-    if (fileWrites.length === 0 && fileEdits.length === 0) return;
-
-    // Pre-apply contents, for the per-file diff cards on the feedback message.
-    const beforeContents: Record<string, string> = {};
-    for (const p of modifiedFiles) beforeContents[p] = allFileContentsRef.current[p] ?? '';
-
-    (async () => {
-      // Safety checkpoint: snapshot the project's on-disk state BEFORE applying anything,
-      // so even the first AI edit in a session is revertible. The snapshot id is attached to
-      // the write-feedback message below so the chat shows an inline "Abandon" button.
-      // A checkpoint failure logs a warning but doesn't block the apply.
-      let checkpointSnapshotId: string | null = null;
-      try {
-        const cpRes = await fetch(`/api/projects/${currentProject.id}/snapshots/checkpoint`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'Auto: before AI edit' }),
-        });
-        const cp = cpRes.ok ? await cpRes.json().catch(() => null) : null;
-        checkpointSnapshotId = cp?.snapshot_id || null;
-      } catch (e) {
-        console.warn('Safety checkpoint failed:', e);
-      }
-
-      // Whole-file writes carry guard_partial_overwrite so the backend refuses to replace an
-      // existing file with what is really just a section of it (the "section clobbered the whole
-      // file" bug) — the model should use a SEARCH/REPLACE edit block for that instead.
-      const editedContents: Record<string, string> = {};
-      // Hunks that didn't match, per file — fed to the escalating recovery below.
-      const failedHunksByFile: Record<string, EditHunk[]> = {};
-      const writes: Promise<WriteResult>[] = fileWrites.map(({ path: filePath, content: cleanCode }) =>
-        fetch(`/api/projects/${currentProject.id}/files/write`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: filePath, content: cleanCode, guard_partial_overwrite: true }),
-        }).then(async r => {
-          if (!r.ok) {
-            const err = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-            const msg = typeof err === 'object' && err !== null && 'error' in err
-              ? String(err.error) : `HTTP ${r.status}`;
-            console.error(`Failed to write ${filePath}: ${msg}`);
-            return { path: filePath, ok: false, error: msg, kind: 'write' as const };
-          }
-          console.log(`Wrote ${filePath} (${cleanCode.length} bytes)`);
-          editedContents[filePath] = cleanCode;
-          return { path: filePath, ok: true, kind: 'write' as const };
-        }).catch(e => {
-          console.error(`Write error for ${filePath}:`, e);
-          return { path: filePath, ok: false, error: String(e), kind: 'write' as const };
-        })
-      );
-
-      // Targeted SEARCH/REPLACE edits — applied against the on-disk file server-side.
-      for (const { path: filePath, edits } of fileEdits) {
-        writes.push(
-          fetch(`/api/projects/${currentProject.id}/files/edit`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: filePath, edits }),
-          }).then(async r => {
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok) {
-              const msg = data?.error || `HTTP ${r.status}`;
-              console.error(`Failed to edit ${filePath}: ${msg}`);
-              return { path: filePath, ok: false, error: String(msg), kind: 'edit' as const };
-            }
-            const applied = data?.applied || 0;
-            const failedList: EditHunk[] = Array.isArray(data?.failed) ? data.failed : [];
-            if (failedList.length > 0) failedHunksByFile[filePath] = failedList;
-            if (typeof data?.content === 'string') editedContents[filePath] = data.content;
-            return { path: filePath, ok: applied > 0, kind: 'edit' as const, applied, failedHunks: failedList.length,
-              error: applied === 0 ? 'no SEARCH text matched' : undefined };
-          }).catch(e => {
-            console.error(`Edit error for ${filePath}:`, e);
-            return { path: filePath, ok: false, error: String(e), kind: 'edit' as const };
-          })
-        );
-      }
-
-      Promise.all(writes).then((results) => {
-        // Refresh open file if it was modified
-        if (currentFile) {
-          fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(currentFile)}`)
-            .then(r => r.ok ? r.json() : null)
-            .then(data => { if (data?.content) updateTabContentByPath(currentFile, data.content); })
-            .catch(() => {});
-        }
-        // Refresh file tree
-        fetch(`/api/projects/${currentProject.id}/files`)
-          .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
-
-        // Keep the LLM's context fresh: fold successful writes AND edits into allFileContents so
-        // the next turn's PROJECT FILE CONTENTS matches the disk. (This map previously went stale
-        // after the first AI edit, making the model regenerate from outdated file state.) Edits
-        // use the server-returned post-edit content; writes use the content we sent.
-        const okResults = results.filter((r): r is WriteResult => !!r && r.ok);
-        if (okResults.length > 0) {
-          setAllFileContents(prev => {
-            const next = { ...prev };
-            for (const r of okResults) if (editedContents[r.path] !== undefined) next[r.path] = editedContents[r.path];
-            return next;
-          });
-        }
-        // Files on disk changed — the live preview listens for this and reloads.
-        if (okResults.length > 0) {
-          window.dispatchEvent(new CustomEvent('monastery:files-written'));
-        }
-
-        // Feedback: separate whole-file writes, targeted edits, and failures.
-        const wroteFiles = okResults.filter(r => r.kind !== 'edit').map(r => r.path);
-        const editedResults = okResults.filter(r => r.kind === 'edit');
-        const failFiles = results.filter((r): r is WriteResult => !!r && !r.ok);
-        if (wroteFiles.length > 0 || editedResults.length > 0 || failFiles.length > 0) {
-          let note = '';
-          if (wroteFiles.length > 0) {
-            note += `✅ Wrote **${wroteFiles.length}** file${wroteFiles.length > 1 ? 's' : ''}: ${wroteFiles.map(f => `\`${f}\``).join(', ')}`;
-          }
-          if (editedResults.length > 0) {
-            const parts = editedResults.map(r => {
-              const hunks = `${r.applied} hunk${(r.applied ?? 0) > 1 ? 's' : ''}`;
-              const miss = r.failedHunks ? `, ${r.failedHunks} unmatched` : '';
-              return `\`${r.path}\` (${hunks}${miss})`;
-            });
-            note += (note ? '\n\n' : '') + `✏️ Edited **${editedResults.length}** file${editedResults.length > 1 ? 's' : ''}: ${parts.join(', ')}`;
-          }
-          if (wroteFiles.length > 0 || editedResults.length > 0) {
-            note += checkpointSnapshotId
-              ? '\n\n🛟 The previous state was snapshotted first — you can abandon these changes below.'
-              : '\n\n⚠️ Safety snapshot could not be created before these changes.';
-          }
-          if (failFiles.length > 0) {
-            note += (note ? '\n\n' : '') + `❌ Failed **${failFiles.length}** file${failFiles.length > 1 ? 's' : ''}: ${failFiles.map(f => `\`${f.path}\` (${f.error})`).join(', ')}`;
-          }
-          const anyChange = wroteFiles.length > 0 || editedResults.length > 0;
-          // Per-file before/after for the diff cards (successful writes/edits only).
-          const fileChanges: FileChange[] = okResults
-            .filter(r => editedContents[r.path] !== undefined)
-            .map(r => ({
-              path: r.path,
-              kind: r.kind === 'edit' ? 'edit' as const : 'write' as const,
-              before: beforeContents[r.path] ?? '',
-              after: editedContents[r.path],
-            }));
-          if (note) {
-            setMessages(prev => [...prev, {
-              id: `write-feedback-${Date.now()}`,
-              role: 'system' as const,
-              content: note,
-              timestamp: Date.now(),
-              fileChanges: fileChanges.length > 0 ? fileChanges : undefined,
-              // Carrying the snapshot id makes ChatPane render its restore button inline,
-              // so abandoning an AI edit is one click on the message itself.
-              model: (anyChange && checkpointSnapshotId) || undefined,
-              revertLabel: anyChange && checkpointSnapshotId ? 'Abandon these changes' : undefined,
-            }]);
-          }
-        }
-
-        // Escalating recovery for edit hunks that didn't match (see recoverFailedEdits).
-        const stillFailed = Object.entries(failedHunksByFile)
-          .filter(([, hunks]) => hunks.length > 0)
-          .map(([path, hunks]) => ({ path, hunks }));
-        if (stillFailed.length > 0) {
-          recoverFailedEditsRef.current?.(stillFailed);
-        }
-      });
-    })();
-  }, [currentProject?.id, currentFile, updateTabContentByPath, setProjectFiles, setAllFileContents]);
-
-  // Build the per-request system context: mode rules, skills, file tree, and file contents.
-  // Shared by handleSendMessage AND the manual Continue path, so every request carries the
-  // same project grounding. Discuss mode swaps the editing rules for planning rules.
-  const buildSystemContext = useCallback((userMessageContent: string, extraPaths: string[] = [], mode: ChatMode = 'build'): string | null => {
-    const contextParts: string[] = [];
-    if (currentProject) {
-      contextParts.push(mode === 'discuss'
-        ? `You are an expert web developer acting as a technical consultant for the project "${currentProject.name}". In this mode nothing you write is applied to the project.`
-        : `You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
-    }
-    contextParts.push(mode === 'discuss' ? DISCUSS_RULES : BUILD_RULES);
-    contextParts.push('package.json' in allFileContents ? BUILD_STEP_RUNTIME_NOTE : STATIC_RUNTIME_RULES);
-    if (mode === 'build') contextParts.push(DESIGN_RULES);
-
-    // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
-    buildSkillInstructions(
-      activeSkillIds,
-      { pocketbaseUrl: pocketbaseBaseUrl, userMessage: userMessageContent },
-    ).forEach(block => contextParts.push(block));
-
-    // The file tree (names only) is always cheap and tells the model what exists so it can
-    // request files by path.
-    if (projectFiles.length > 0) {
-      const fileList = projectFiles.map((f: any) => `  ${f.type === 'directory' ? '📁' : '📄'} ${f.path || f.name}`).join('\n');
-      contextParts.push(`PROJECT FILE TREE:\n${fileList}`);
-    }
-
-    // Context discipline (the token win): small projects still send everything; large projects
-    // send ONLY the active file + the working set (files the user named or the model `@read`),
-    // instead of dumping the whole repo into every turn and exhausting the context window.
-    // In BOTH branches the active file's content is overridden with the live editor buffer,
-    // so the model always sees what the user is looking at (including unsaved edits).
-    const withEditorOverride = (p: string, c: string) =>
-      (p === currentFile && activeTab && !isImagePath(p) ? activeTab.content : c);
-    const fileEntries = Object.entries(allFileContents).filter(([, c]) => c.trim().length > 0);
-    const corpusSize = fileEntries.reduce((n, [, c]) => n + c.length, 0);
-    if (fileEntries.length > 0 && corpusSize <= SMALL_PROJECT_LIMIT) {
-      const all = fileEntries.map(([p, c]) => fmtFile(p, withEditorOverride(p, c))).join('\n\n');
-      contextParts.push(`PROJECT FILE CONTENTS:\n${all}`);
-    } else if (fileEntries.length > 0) {
-      const include = new Set<string>();
-      if (currentFile) include.add(currentFile);
-      workingSetPaths.forEach(p => include.add(p));
-      extraPaths.forEach(p => include.add(p));
-      const picked = fileEntries
-        .filter(([p]) => include.has(p))
-        .map(([p, c]) => [p, withEditorOverride(p, c)] as const);
-      const body = picked.map(([p, c]) => fmtFile(p, c)).join('\n\n');
-      contextParts.push(
-        `PROJECT FILE CONTENTS (scoped — large project, so only the active file and files in the working set are shown):\n${body || '(none yet)'}\n\n` +
-        `If you need a file from the tree that isn't shown above, output a line \`@read path/to/file\` (one per line) — its contents will be provided to you.\n` +
-        `If you don't know WHICH file is relevant (e.g. "fix the login button" in a large project), output \`@search <text, selector, or identifier>\` (one per line) to grep the whole project — you'll get back path:line matches, then @read the files you need.\n` +
-        `NEVER rewrite, edit, or guess the contents of a file that is not shown above — @search/@read first and wait for the results. Writing a file you haven't seen will destroy the user's real file.`,
-      );
-    }
-    return contextParts.length > 0 ? contextParts.join('\n\n') : null;
-  }, [currentProject, activeSkillIds, pocketbaseBaseUrl, projectFiles, allFileContents, currentFile, activeTab, isImagePath, workingSetPaths]);
-
-  // Minimal one-shot LLM call that returns the full text (no UI message). Used by edit recovery.
-  const streamChat = useCallback(async (chatMessages: Array<{ role: string; content: string }>): Promise<string> => {
-    const modelId = resolveModelId();
-    if (!modelId) throw new Error('No model available from the active endpoint');
-    const res = await postChat(modelId, chatMessages);
-    if (!res.ok) throw new Error(`LLM request failed (HTTP ${res.status})`);
-    const reader = res.body?.getReader();
-    if (!reader) throw new Error('No response body');
-    let full = '';
-    for await (const { eventType, data } of parseSSEStream(reader)) {
-      if (eventType !== 'finish_reason' && eventType !== 'usage' && eventType !== 'reasoning') full += data;
-    }
-    return full;
-  }, [resolveModelId, postChat]);
-
-  // Apply one file's correction from an LLM retry response: SEARCH/REPLACE → edit endpoint,
-  // otherwise a full-file block → write endpoint. Returns true if the file was changed.
-  const applyCorrectionForFile = useCallback(async (path: string, response: string): Promise<boolean> => {
-    if (!currentProject?.id) return false;
-    const body = extractFileBlock(response, path);
-    if (!body) return false;
-    const hunks = parseEditBlocks(body);
-    try {
-      if (hunks.length > 0) {
-        const r = await fetch(`/api/projects/${currentProject.id}/files/edit?loose=true`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path, edits: hunks }),
-        });
-        const d = await r.json().catch(() => ({}));
-        if ((d?.applied || 0) > 0) { if (typeof d.content === 'string') setAllFileContents(prev => ({ ...prev, [path]: d.content })); return true; }
-        return false;
-      }
-      // Full-file replacement — no guard here (this is an explicit, user-visible correction).
-      const clean = body.trimEnd() + '\n';
-      const r = await fetch(`/api/projects/${currentProject.id}/files/write`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, content: clean }),
-      });
-      if (r.ok) { setAllFileContents(prev => ({ ...prev, [path]: clean })); return true; }
-      return false;
-    } catch { return false; }
-  }, [currentProject?.id, setAllFileContents]);
-
-  // Escalating recovery when SEARCH/REPLACE hunks fail to match, in three visible stages:
-  //   1. "digging deeper"    — retry the same hunks with the looser backend matcher (no LLM)
-  //   2. "double checking"   — re-read each file fresh, ask the model to redo the edit against it
-  //   3. "need more info"    — give up gracefully and ask the user to clarify
-  const recoverFailedEdits = useCallback(async (failed: Array<{ path: string; hunks: EditHunk[] }>) => {
-    if (!currentProject?.id || failed.length === 0) return;
     const pid = currentProject.id;
-    // Recovery status chatter renders as compact activity rows; only the final
-    // "need more information" ask (which requires the user) gets a full bubble.
-    const post = (content: string, kind?: 'activity') => setMessages(prev => [...prev, {
-      id: `edit-recover-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      role: 'system' as const, kind, content, timestamp: Date.now(),
-    }]);
-    const refreshFile = (path: string) => {
-      fetch(`/api/projects/${pid}/files/read?path=${encodeURIComponent(path)}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(d => { if (typeof d?.content === 'string') { setAllFileContents(prev => ({ ...prev, [path]: d.content })); updateTabContentByPath(path, d.content); } })
-        .catch(() => {});
-    };
-    // Recovery used to end here in silence: the edit finally applied, but nothing refreshed the
-    // preview and — worse — nothing told the MODEL, so any remaining task steps were abandoned.
-    // Now the loop closes: refresh, then hand the conversation back to the model to finish.
-    const finishRecovery = (paths: string[]) => {
-      window.dispatchEvent(new CustomEvent('monastery:files-written'));
-      if (continueTaskRef.current) {
-        post('▶️ Continuing the task now that the edits are applied…', 'activity');
-        continueTaskRef.current(
-          `The edits to ${paths.map(p => `\`${p}\``).join(', ')} have now been applied successfully — the file contents shown in context are current. Continue the task from where you left off and complete ALL remaining steps in this response. If everything is already done, reply with a one-line confirmation.`
-        );
-      }
-    };
-
-    // --- Stage 1: digging deeper (looser backend match) ---
-    post('🔍 Digging deeper — retrying the change with a looser match…', 'activity');
-    let remaining: Array<{ path: string; hunks: EditHunk[] }> = [];
-    for (const { path, hunks } of failed) {
-      try {
-        const r = await fetch(`/api/projects/${pid}/files/edit?loose=true`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path, edits: hunks }),
-        });
-        const d = await r.json().catch(() => ({}));
-        const stillFailed: EditHunk[] = Array.isArray(d?.failed) ? d.failed : hunks;
-        if ((d?.applied || 0) > 0 && typeof d.content === 'string') { setAllFileContents(prev => ({ ...prev, [path]: d.content })); updateTabContentByPath(path, d.content); }
-        if (stillFailed.length > 0) remaining.push({ path, hunks: stillFailed });
-      } catch {
-        remaining.push({ path, hunks });
-      }
-    }
-    if (remaining.length === 0) {
-      post('✅ Recovered on a looser match — the change is applied.', 'activity');
-      finishRecovery(failed.map(f => f.path));
-      return;
-    }
-
-    // --- Stage 2: double checking files (LLM redo against fresh content) ---
-    post('📂 Double checking files — re-reading them and asking the model to redo the change…', 'activity');
-    const nextRemaining: Array<{ path: string; hunks: EditHunk[] }> = [];
-    for (const { path, hunks } of remaining) {
-      try {
-        const fr = await fetch(`/api/projects/${pid}/files/read?path=${encodeURIComponent(path)}`);
-        const fd = fr.ok ? await fr.json().catch(() => null) : null;
-        const current = typeof fd?.content === 'string' ? fd.content : null;
-        if (current == null) { nextRemaining.push({ path, hunks }); continue; }
-        const intended = hunks.map((h, i) => `Intended change ${i + 1} — new text:\n${h.replace}`).join('\n\n');
-        const sys = `You are editing files in the project "${currentProject.name}". To change part of a file, output a SEARCH/REPLACE block inside a path-tagged code block:\n\`\`\`:${path}\n<<<<<<< SEARCH\n<lines copied EXACTLY from the current file>\n=======\n<new lines>\n>>>>>>> REPLACE\n\`\`\`\nThe SEARCH text must match the current file character-for-character. If that's impractical, output the COMPLETE corrected file in a \`\`\`:${path}\` block instead. Output ONLY the code block.`;
-        const user = `A previous SEARCH/REPLACE edit to \`${path}\` did not match and was not applied. Here is the EXACT current content of \`${path}\`:\n\n\`\`\`\n${current}\n\`\`\`\n\n${intended}\n\nRe-emit the change so it applies cleanly.`;
-        const response = await streamChat([{ role: 'system', content: sys }, { role: 'user', content: user }]);
-        const ok = await applyCorrectionForFile(path, response);
-        if (ok) refreshFile(path); else nextRemaining.push({ path, hunks });
-      } catch {
-        nextRemaining.push({ path, hunks });
-      }
-    }
-    if (nextRemaining.length === 0) {
-      post('✅ Recovered after re-checking the files — the change is applied.', 'activity');
-      finishRecovery(failed.map(f => f.path));
-      return;
-    }
-
-    // --- Stage 3: need more information ---
-    const files = nextRemaining.map(f => `\`${f.path}\``).join(', ');
-    post(`❓ I need more information. I couldn't confidently apply the change to ${files} — the section I was trying to edit doesn't line up with what's currently in the file. Could you point me at the exact lines to change (or paste them here)? Nothing was left half-applied, and you can still abandon the earlier changes above.`);
-  }, [currentProject?.id, streamChat, applyCorrectionForFile, updateTabContentByPath, setAllFileContents]);
-
-  // Keep the ref current so applyAssistantOutput (defined earlier) can call the latest version.
-  recoverFailedEditsRef.current = recoverFailedEdits;
-  // (continueTaskRef is assigned right after handleSendMessage below.)
-
-  // `options.mode` overrides the composer's mode for this one send (e.g. "Build this plan" and
-  // edit-recovery always build, even if the composer is on Discuss).
-  const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { mode?: ChatMode }) => {
-    const mode: ChatMode = options?.mode ?? chatMode;
-    // Auto-create a session if none exists
-    let sessionId = currentSession?.id;
-    if (!sessionId && currentProject?.id) {
-      const session = await createSession({ title: content.slice(0, 50) });
-      if (session) {
-        sessionId = session.id;
-      } else {
-        // Fallback: still show messages locally even if session creation fails
-        sessionId = undefined;
-      }
-    }
-
-    const userMessage: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-      attachments,
-      mode: mode === 'discuss' ? 'discuss' : undefined,
-    };
-
-    setMessages((prev) => [...prev, userMessage]);
-
-    setIsGenerating(true);
-
-    // Create abort controller for this request
-    abortRef.current?.abort(); // abort any previous
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    // Save user message to backend if we have a session
-    if (sessionId) {
-      addMessage({ role: 'user', content }).catch(console.error);
-    }
-
-    try {
-      // Any project file the user names in their message gets pulled into this request's
-      // context and persisted to the working set — so "fix the nav in styles.css" works in
-      // large (scoped-context) projects without the model having to @read first.
-      const mentioned = Object.keys(allFileContents).filter(p => {
-        const base = p.split('/').pop() || p;
-        return content.includes(p) || (base.length > 3 && content.toLowerCase().includes(base.toLowerCase()));
-      }).slice(0, 8);
-      if (mentioned.length > 0) {
-        setWorkingSetPaths(prev => Array.from(new Set([...prev, ...mentioned])));
-      }
-
-      // Build system context from the current project (shared with the manual Continue path).
-      const systemContent = buildSystemContext(content, mentioned, mode);
-      const systemMessage = systemContent ? { role: 'system' as const, content: systemContent } : null;
-
-      // History goes out with older assistant code blocks collapsed to placeholders — the
-      // system context above is the single source of truth for current file contents.
-      const chatMessages = [
-        ...(systemMessage ? [systemMessage] : []),
-        ...messages.map(m => ({
-          role: m.role,
-          content: m.role === 'assistant' ? stripHistoryCodeBlocks(m.content) : m.content,
-        })),
-        { role: userMessage.role, content: userMessage.content },
-      ];
-
-      const modelId = resolveModelId();
-      if (!modelId) {
-        setMessages(prev => [...prev, {
-          id: `no-model-${Date.now()}`,
-          role: 'system' as const,
-          content: NO_MODEL_MSG,
-          timestamp: Date.now(),
-        }]);
-        setIsGenerating(false);
-        return;
-      }
-
-      // Discuss-mode replies are tagged so they never write files (and get "Build this plan").
-      const msgMode = mode === 'discuss' ? 'discuss' as const : undefined;
-
-      // Create placeholder immediately so the user sees streaming output in real-time
-      const aiMsgId = (Date.now() + 1).toString();
-      setMessages(prev => [...prev, {
-        id: aiMsgId,
-        role: 'assistant' as const,
-        content: '',
-        timestamp: Date.now(),
-        mode: msgMode,
-      }]);
-
-      let fullContent = '';
-      let reasoningContent = '';
-
-      const res = await postChat(modelId, chatMessages, controller.signal);
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => 'Unknown error');
-        console.error('Chat API returned', res.status, errText);
-        // Try to extract a JSON { error } message; otherwise include the raw body snippet.
-        let detail = errText;
-        try { detail = JSON.parse(errText).error || errText; } catch { /* keep raw */ }
-        throw new Error(`LLM request failed (HTTP ${res.status}): ${String(detail).slice(0, 300)}`);
-      }
-
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      let finishReason = '';
-      let usage: Message['usage'] | undefined;
-      // Accumulate token usage across the initial response + any auto-continuations.
-      const mergeUsage = (raw: string) => {
-        try {
-          const u = JSON.parse(raw);
-          usage = {
-            prompt_tokens: (usage?.prompt_tokens || 0) + (u.prompt_tokens || 0),
-            completion_tokens: (usage?.completion_tokens || 0) + (u.completion_tokens || 0),
-            total_tokens: (usage?.total_tokens || 0) + (u.total_tokens || 0),
-          };
-        } catch { /* ignore malformed usage payloads */ }
-      };
-      for await (const { eventType, data } of parseSSEStream(reader)) {
-        if (eventType === 'finish_reason') finishReason = data;
-        else if (eventType === 'usage') mergeUsage(data);
-        else if (eventType === 'reasoning') reasoningContent += data;
-        else fullContent += data;
-        setMessages(prev => prev.map(m =>
-          m.id === aiMsgId
-            ? { ...m, content: fullContent, reasoning: reasoningContent || undefined, usage }
-            : m
-        ));
-      }
-
-      // Auto-continue when the model stopped at its output-token cap (finish_reason="length"),
-      // appending onto the SAME message bubble. Capped at MAX_AUTO_CONTINUE and abort-aware (the
-      // Stop button halts it), so a verbose model can't run away with the user's cloud tokens.
-      // When the cap is reached we leave `truncated` true so the manual Continue button takes over.
-      let autoCount = 0;
-      while (
-        finishReason === 'length' &&
-        autoCount < MAX_AUTO_CONTINUE &&
-        !controller.signal.aborted
-      ) {
-        autoCount++;
-        setMessages(prev => prev.map(m =>
-          m.id === aiMsgId ? { ...m, truncated: false, continuing: true, autoContinueCount: autoCount } : m
-        ));
-        finishReason = '';
-        const contMessages = [
-          ...chatMessages,
-          { role: 'assistant' as const, content: fullContent },
-          { role: 'user' as const, content: 'Continue exactly where you left off. Do not repeat any text you already wrote.' },
-        ];
-        let contRes: Response;
-        try {
-          contRes = await postChat(modelId, contMessages, controller.signal);
-        } catch (e: any) {
-          if (e?.name === 'AbortError') break;
-          throw e;
-        }
-        if (!contRes.ok) break;
-        const contReader = contRes.body?.getReader();
-        if (!contReader) break;
-        // Accumulate the continuation separately and re-stitch on every chunk, so duplicate
-        // fence openers / repeated lines at the seam are stripped even while streaming.
-        const contBase = fullContent;
-        let contBuf = '';
-        for await (const { eventType, data } of parseSSEStream(contReader)) {
-          if (eventType === 'finish_reason') finishReason = data;
-          else if (eventType === 'usage') mergeUsage(data);
-          else if (eventType === 'reasoning') { /* ignore reasoning on continuation */ }
-          else {
-            contBuf += data;
-            fullContent = contBase + stitchContinuation(contBase, contBuf);
-          }
-          setMessages(prev => prev.map(m =>
-            m.id === aiMsgId ? { ...m, content: fullContent, usage } : m
-          ));
-        }
-      }
-
-      // Final flags: still "truncated" only if it ended on "length" (cap reached, or auto-continue
-      // off) so the manual Continue button appears; clear the in-progress "continuing" status.
-      setMessages(prev => prev.map(m =>
-        m.id === aiMsgId
-          ? { ...m, content: fullContent, truncated: finishReason === 'length', continuing: false, autoContinueCount: autoCount, usage }
-          : m
-      ));
-
-      if (fullContent || reasoningContent) {
-        if (sessionId) {
-          addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
-        }
-        if (mode === 'build') applyAssistantOutput(fullContent);
-      }
-
-      // Context discipline: honor any `@read path` requests the model made (it asks for files it
-      // wasn't given in scoped mode). Add them to the working set, feed their contents straight
-      // back in, and let the model pick up where it left off — up to MAX_AUTO_READ_ROUNDS times —
-      // instead of leaving the user to type "continue" themselves. Read-only, so Discuss mode uses
-      // it too. Mirrors the token-cap auto-continue above: same "never loop forever" guarantee.
-      let pendingContent = fullContent;
-      let pendingChatMessages = chatMessages;
-      let readRounds = 0;
-      while (!controller.signal.aborted && currentProject?.id) {
-        const requestedRaw = [...pendingContent.matchAll(/^\s*@read\s+(.+?)\s*$/gm)]
-          .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
-          .filter(Boolean);
-        // `@search term` lets the model FIND the right file when neither it nor the user
-        // knows the filename (complex projects) — results come from the project grep
-        // endpoint, after which the model typically @reads the files it located.
-        const searchQueries = [...pendingContent.matchAll(/^\s*@search\s+(.+?)\s*$/gm)]
-          .map(m => m[1].trim().replace(/^['"`]|['"`]$/g, ''))
-          .filter(Boolean)
-          .slice(0, 3);
-        // Rescue leaked native tool calls (e.g. DeepSeek's <｜DSML｜invoke name="read">):
-        // treat file paths inside the markup as @read requests so the turn continues,
-        // instead of the model stalling on a tool result that will never arrive.
-        const leakedToolCall = requestedRaw.length === 0 && searchQueries.length === 0 && hasToolMarkup(pendingContent);
-        if (leakedToolCall) requestedRaw.push(...extractToolMarkupPaths(pendingContent));
-        if (requestedRaw.length === 0 && searchQueries.length === 0) break;
-
-        // Resolve @read from DISK, not the in-memory map: the map can lag behind writes made
-        // earlier in this same conversation, which used to silently drop those requests.
-        const resolvedFiles: Array<[string, string]> = [];
-        const missing: string[] = [];
-        for (const p of requestedRaw) {
-          try {
-            const r = await fetch(`/api/projects/${currentProject.id}/files/read?path=${encodeURIComponent(p)}`);
-            const d = r.ok ? await r.json().catch(() => null) : null;
-            if (typeof d?.content === 'string') resolvedFiles.push([p, d.content]);
-            else missing.push(p);
-          } catch {
-            missing.push(p);
-          }
-        }
-        if (missing.length > 0) {
-          setMessages(prev => [...prev, {
-            id: `ctx-miss-${Date.now()}`,
-            role: 'system' as const,
-            kind: 'activity' as const,
-            content: `⚠️ Requested file(s) not found: ${missing.join(', ')}`,
-            timestamp: Date.now(),
-          }]);
-        }
-
-        // Run @search queries against the project grep endpoint (ripgrep server-side).
-        const searchBlocks: string[] = [];
-        for (const q of searchQueries) {
-          try {
-            const r = await fetch(`/api/projects/${currentProject.id}/search?q=${encodeURIComponent(q)}&max=25`);
-            const d = r.ok ? await r.json().catch(() => null) : null;
-            const hits: Array<{ path: string; line: number; text: string }> = d?.matches || [];
-            searchBlocks.push(
-              hits.length > 0
-                ? `Results for "${q}" (path:line: text):\n${hits.map(h => `- ${h.path}:${h.line}: ${h.text}`).join('\n')}`
-                : `Results for "${q}": no matches.`
-            );
-          } catch {
-            searchBlocks.push(`Results for "${q}": search failed.`);
-          }
-        }
-
-        if (resolvedFiles.length === 0 && searchBlocks.length === 0) break;
-        const requested = resolvedFiles.map(([p]) => p);
-        if (requested.length > 0) {
-          setWorkingSetPaths(prev => Array.from(new Set([...prev, ...requested])));
-        }
-
-        // Human-readable summary of what this round pulled in.
-        const pulled = [
-          requested.length > 0 ? `📎 Added to context: ${requested.join(', ')}` : '',
-          searchQueries.length > 0 ? `🔎 Searched: ${searchQueries.map(q => `"${q}"`).join(', ')}` : '',
-        ].filter(Boolean).join(' · ');
-
-        if (readRounds >= MAX_AUTO_READ_ROUNDS) {
-          setMessages(prev => [...prev, {
-            id: `ctx-${Date.now()}`,
-            role: 'system' as const,
-            kind: 'activity' as const,
-            content: `${pulled} — send your next message (or "continue") and the results will be included.`,
-            timestamp: Date.now(),
-          }]);
-          break;
-        }
-
-        readRounds++;
-        setMessages(prev => [...prev, {
-          id: `ctx-${Date.now()}`,
-          role: 'system' as const,
-          kind: 'activity' as const,
-          content: `${pulled} — continuing automatically…`,
-          timestamp: Date.now(),
-        }]);
-
-        const feedbackParts: string[] = [];
-        if (resolvedFiles.length > 0) {
-          feedbackParts.push(`Here are the file(s) you requested:\n\n${resolvedFiles.map(([p, c]) => fmtFile(p, c)).join('\n\n')}`);
-        }
-        if (searchBlocks.length > 0) {
-          feedbackParts.push(`Search results:\n\n${searchBlocks.join('\n\n')}`);
-        }
-        // When the round was rescued from leaked tool markup, tell the model plainly why —
-        // otherwise it keeps emitting the same markup on the next turn.
-        const toolCallNote = leakedToolCall
-          ? 'IMPORTANT: native tool/function calling does NOT work in this chat — your tool-call markup was ignored. The file(s) it referenced are provided below. From now on use plain `@read <path>` / `@search <term>` lines or path-tagged code blocks only.\n\n'
-          : '';
-        pendingChatMessages = [
-          ...pendingChatMessages,
-          { role: 'assistant' as const, content: pendingContent },
-          { role: 'user' as const, content: `${toolCallNote}${feedbackParts.join('\n\n')}\n\nContinue the task using this context. You may issue further \`@read\` or \`@search\` lines if you still need more.` },
-        ];
-
-        const roundMsgId = `${aiMsgId}-read${readRounds}`;
-        setMessages(prev => [...prev, { id: roundMsgId, role: 'assistant' as const, content: '', timestamp: Date.now(), mode: msgMode }]);
-
-        let roundContent = '';
-        let roundFinishReason = '';
-        let roundUsage: Message['usage'] | undefined;
-        try {
-          const roundRes = await postChat(modelId, pendingChatMessages, controller.signal);
-          if (!roundRes.ok) break;
-          const roundReader = roundRes.body?.getReader();
-          if (!roundReader) break;
-          for await (const { eventType, data } of parseSSEStream(roundReader)) {
-            if (eventType === 'finish_reason') roundFinishReason = data;
-            else if (eventType === 'usage') {
-              try {
-                const u = JSON.parse(data);
-                roundUsage = {
-                  prompt_tokens: (roundUsage?.prompt_tokens || 0) + (u.prompt_tokens || 0),
-                  completion_tokens: (roundUsage?.completion_tokens || 0) + (u.completion_tokens || 0),
-                  total_tokens: (roundUsage?.total_tokens || 0) + (u.total_tokens || 0),
-                };
-              } catch { /* ignore malformed usage payloads */ }
-            }
-            else if (eventType === 'reasoning') { /* ignore reasoning on auto-read rounds */ }
-            else roundContent += data;
-            setMessages(prev => prev.map(m => m.id === roundMsgId ? { ...m, content: roundContent, usage: roundUsage } : m));
-          }
-        } catch (e: any) {
-          if (e?.name === 'AbortError') break;
-          throw e;
-        }
-
-        setMessages(prev => prev.map(m =>
-          m.id === roundMsgId ? { ...m, content: roundContent, truncated: roundFinishReason === 'length', usage: roundUsage } : m
-        ));
-        if (roundContent) {
-          if (sessionId) addMessage({ role: 'assistant', content: roundContent }).catch(console.error);
-          if (mode === 'build') applyAssistantOutput(roundContent);
-        }
-        pendingContent = roundContent;
-      }
-
-      setIsGenerating(false);
-    } catch (err: any) {
-      // A failed/aborted request can leave behind the empty streaming placeholder bubble —
-      // drop it so the chat doesn't show a blank assistant message.
-      const dropEmptyPlaceholder = (msgs: Message[]) =>
-        msgs.filter(m => !(m.role === 'assistant' && m.content === '' && !m.reasoning));
-      // Don't show an error if the user intentionally stopped generation. Clear any in-progress
-      // auto-continuation status and leave the message resumable via the manual Continue button.
-      if (err?.name === 'AbortError') {
-        setMessages(prev => dropEmptyPlaceholder(prev).map(m => m.continuing ? { ...m, continuing: false, truncated: true } : m));
-        setIsGenerating(false);
-        return;
-      }
-      console.error('Chat request failed:', err);
-      // Surface the real error so the user can debug (e.g. an endpoint failure) instead of a
-      // misleading "simulated response".
-      setMessages((prev) => [...dropEmptyPlaceholder(prev), {
-        id: (Date.now() + 1).toString(),
-        role: 'system' as const,
-        content: `⚠️ Request failed: ${err?.message || 'Unknown error'}`,
-        timestamp: Date.now(),
-      }]);
-      setIsGenerating(false);
-    }
-  }, [chatMode, messages, currentSession, currentProject, createSession, addMessage, resolveModelId, postChat, applyAssistantOutput, buildSystemContext, allFileContents]);
-
-  // Keep the ref current so edit-recovery (defined earlier) can resume the task through the
-  // normal send flow once its repairs land — always in Build mode, since it's finishing edits.
-  continueTaskRef.current = (content: string) => handleSendMessage(content, undefined, { mode: 'build' });
-
-  // Manually continue a response that was cut off by the model's output-token limit.
-  // Triggered by the user clicking "Continue" on a truncated message — never automatic,
-  // so the user explicitly authorizes the additional token spend. Appends the new text
-  // onto the existing (truncated) assistant message rather than creating a new bubble.
-  const handleContinueGeneration = useCallback(async (truncatedMsgId: string) => {
-    const targetIndex = messages.findIndex(m => m.id === truncatedMsgId);
-    if (targetIndex === -1) return;
-    const targetMsg = messages[targetIndex];
-
-    setIsGenerating(true);
-    setMessages(prev => prev.map(m => m.id === truncatedMsgId ? { ...m, truncated: false } : m));
+    const modelId = resolveModelId();
+    if (!modelId) { post({ role: 'system', content: NO_MODEL_MSG }); return; }
 
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    setIsGenerating(true);
 
-    // A Discuss-mode reply continues as Discuss: same rules, and still never written to files.
-    const mode: ChatMode = targetMsg.mode === 'discuss' ? 'discuss' : 'build';
+    const msgMode = mode === 'discuss' ? 'discuss' as const : undefined;
+    const startBubble = () => {
+      const id = newId('assistant');
+      setMessages(prev => [...prev, { id, role: 'assistant', content: '', timestamp: Date.now(), mode: msgMode }]);
+      return id;
+    };
+    let bubble = targetId ?? startBubble();
+    const written: Record<string, string> = {}; // bubble id → text received this turn
+    const changes = new Map<string, FileChange>();
+    let snapshotId: string | null = null;
 
+    const openFile = currentFile && activeTab && !isImagePath(currentFile)
+      ? { path: currentFile, content: activeTab.content } : undefined;
     try {
-      const modelId = resolveModelId();
-      if (!modelId) {
-        // Restore the truncated flag (cleared above) so the Continue button stays available.
-        setMessages(prev => [
-          ...prev.map(m => m.id === truncatedMsgId ? { ...m, truncated: true } : m),
-          { id: `no-model-${Date.now()}`, role: 'system' as const, content: NO_MODEL_MSG, timestamp: Date.now() },
-        ]);
-        setIsGenerating(false);
-        return;
+      const res = await fetch(`/api/projects/${pid}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          mode,
+          model: modelId,
+          endpoint_id: useAppStore.getState().activeEndpoint?.id,
+          instructions: buildSkillInstructions(activeSkillIds, { pocketbaseUrl: pocketbaseBaseUrl }),
+          open_file: openFile,
+          working_set: [...workingSetRef.current],
+          ...body,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => '');
+        let detail = text;
+        try { detail = JSON.parse(text).error || text; } catch { /* raw */ }
+        throw new Error(`Chat request failed (HTTP ${res.status}): ${String(detail).slice(0, 300)}`);
       }
 
-      // Send the full system context (previously this path sent NONE — continuations had no
-      // project files or editing rules), then the conversation up to and including the
-      // truncated message. Older assistant code blocks are stripped like in handleSendMessage;
-      // the truncated message itself stays intact — the model continues from its own text.
-      const systemContent = buildSystemContext(targetMsg.content.slice(-2000), [], mode);
-      const priorMessages = messages.slice(0, targetIndex + 1).map((m, i) => ({
-        role: m.role,
-        content: m.role === 'assistant' && i < targetIndex ? stripHistoryCodeBlocks(m.content) : m.content,
-      }));
-      const chatMessages = [
-        ...(systemContent ? [{ role: 'system' as const, content: systemContent }] : []),
-        ...priorMessages,
-        { role: 'user' as const, content: 'Continue exactly where you left off. Do not repeat any text you already wrote.' },
-      ];
-
-      const res = await postChat(modelId, chatMessages, controller.signal);
-      if (!res.ok) throw new Error(`Backend returned ${res.status}`);
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const contBase = targetMsg.content;
-      let contBuf = '';
-      let fullContent = contBase;
-      let finishReason = '';
-      let usage = targetMsg.usage;
-      const mergeUsage = (raw: string) => {
-        try {
-          const u = JSON.parse(raw);
-          usage = {
-            prompt_tokens: (usage?.prompt_tokens || 0) + (u.prompt_tokens || 0),
-            completion_tokens: (usage?.completion_tokens || 0) + (u.completion_tokens || 0),
-            total_tokens: (usage?.total_tokens || 0) + (u.total_tokens || 0),
-          };
-        } catch { /* ignore malformed usage payloads */ }
-      };
-      for await (const { eventType, data } of parseSSEStream(reader)) {
-        if (eventType === 'finish_reason') finishReason = data;
-        else if (eventType === 'usage') mergeUsage(data);
-        else if (eventType === 'reasoning') { /* ignore reasoning on continuation */ }
-        else {
-          // Re-stitch on every chunk — strips duplicate fence openers / repeated lines at
-          // the seam so the code-block rendering stays balanced (see stitchContinuation).
-          contBuf += data;
-          fullContent = contBase + stitchContinuation(contBase, contBuf);
+      for await (const { eventType, data } of parseSSEStream(res.body.getReader())) {
+        let d: any;
+        try { d = JSON.parse(data); } catch { continue; }
+        switch (eventType) {
+          case 'text':
+            written[bubble] = (written[bubble] ?? '') + d.text;
+            patch(bubble, m => ({ content: m.content + d.text }));
+            break;
+          case 'reasoning':
+            patch(bubble, m => ({ reasoning: (m.reasoning ?? '') + d.text }));
+            break;
+          case 'segment':
+            bubble = startBubble();
+            break;
+          case 'status':
+            post({ role: 'system', kind: 'activity', content: d.text });
+            break;
+          case 'notice':
+            post({ role: 'system', content: d.text });
+            break;
+          case 'snapshot':
+            snapshotId = d.id;
+            break;
+          case 'file': {
+            // Several changes to one file in a turn collapse to one card: first before, last after.
+            const prev = changes.get(d.path);
+            changes.set(d.path, {
+              path: d.path,
+              kind: prev?.kind === 'write' ? 'write' : d.kind,
+              before: prev ? prev.before : d.before,
+              after: d.after,
+            });
+            updateTabContentByPath(d.path, d.after);
+            window.dispatchEvent(new CustomEvent('monastery:files-written'));
+            break;
+          }
+          case 'edit_failed':
+            post({ role: 'system', content: `❌ ${d.message}` });
+            break;
+          case 'read':
+            (d.paths as string[]).forEach(p => workingSetRef.current.add(p));
+            break;
+          case 'truncated':
+            patch(bubble, () => ({ truncated: true }));
+            break;
+          case 'usage':
+            if (d.total_tokens) patch(bubble, () => ({ usage: d }));
+            break;
+          case 'error':
+            post({ role: 'system', content: `⚠️ ${d.message}` });
+            break;
         }
-        setMessages(prev => prev.map(m =>
-          m.id === truncatedMsgId ? { ...m, content: fullContent, usage } : m
-        ));
       }
-
-      setMessages(prev => prev.map(m =>
-        m.id === truncatedMsgId ? { ...m, content: fullContent, truncated: finishReason === 'length', usage } : m
-      ));
-      if (currentSession?.id) {
-        addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
-      }
-      if (mode === 'build') applyAssistantOutput(fullContent);
     } catch (err: any) {
-      if (err?.name !== 'AbortError') console.error('Continue failed:', err);
+      if (err?.name === 'AbortError') {
+        // Stopped: keep what arrived and let the manual Continue button resume it.
+        patch(bubble, m => ({ truncated: !!m.content }));
+      } else {
+        post({ role: 'system', content: `⚠️ ${err?.message || 'Request failed'}` });
+      }
     } finally {
+      // Drop an assistant bubble that never received anything.
+      setMessages(prev => prev.filter(m => !(m.role === 'assistant' && !m.content && !m.reasoning)));
+      if (sessionId) {
+        Object.values(written).filter(t => t.trim())
+          .forEach(content => addMessage({ role: 'assistant', content }).catch(console.error));
+      }
+      if (changes.size > 0) {
+        const all = [...changes.values()];
+        const list = (kind: 'write' | 'edit') => all.filter(c => c.kind === kind).map(c => `\`${c.path}\``);
+        const notes = [
+          list('write').length ? `✅ Wrote ${list('write').join(', ')}` : '',
+          list('edit').length ? `✏️ Edited ${list('edit').join(', ')}` : '',
+          snapshotId ? '🛟 The previous state was snapshotted first — you can abandon these changes below.' : '',
+        ].filter(Boolean);
+        post({
+          role: 'system', content: notes.join('\n\n'), fileChanges: all,
+          // A snapshot id in `model` gives the message its one-click restore button.
+          model: snapshotId ?? undefined, revertLabel: snapshotId ? 'Abandon these changes' : undefined,
+        });
+        fetch(`/api/projects/${pid}/files`).then(r => r.json()).then(setProjectFiles).catch(() => {});
+      }
       setIsGenerating(false);
     }
-  }, [messages, resolveModelId, postChat, currentSession?.id, addMessage, applyAssistantOutput, buildSystemContext]);
+  }, [currentProject?.id, resolveModelId, activeSkillIds, pocketbaseBaseUrl, currentFile, activeTab, isImagePath, updateTabContentByPath, setProjectFiles, addMessage]);
 
-  // Hand a failed deployment's build log to the connected LLM to fix (from the Self-Host Wizard).
-  // Posts the log into chat as a fix request; the LLM's returned code blocks are applied to files,
-  // after which the user can redeploy. Always Build mode — the point is to change files.
+  // The history the server needs: the conversation, minus activity rows.
+  const historyOf = (msgs: Message[]) =>
+    msgs.filter(m => m.kind !== 'activity' && m.content.trim()).map(m => ({ role: m.role, content: m.content }));
+
+  // `options.mode` overrides the composer's mode for this one send ("Build this plan", "Fix it"
+  // and build-error fixes always build).
+  const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { mode?: ChatMode }) => {
+    if (!currentProject?.id) {
+      post({ role: 'system', content: 'Select or create a project first.' });
+      return;
+    }
+    const mode = options?.mode ?? chatMode;
+    const sessionId = currentSession?.id ?? (await createSession({ title: content.slice(0, 50) }))?.id;
+    const history = historyOf(messages);
+    post({ role: 'user', content, attachments, mode: mode === 'discuss' ? 'discuss' : undefined });
+    if (sessionId) addMessage({ role: 'user', content }).catch(console.error);
+    await runTurn({ message: content, history }, mode, undefined, sessionId);
+  }, [currentProject?.id, chatMode, currentSession?.id, createSession, messages, addMessage, runTurn]);
+
+  // Manually continue a reply that is still cut off after the server's automatic continuations
+  // (or was stopped). Appends onto the same bubble; a Discuss reply continues as Discuss.
+  const handleContinueGeneration = useCallback(async (msgId: string) => {
+    const index = messages.findIndex(m => m.id === msgId);
+    if (index === -1) return;
+    patch(msgId, () => ({ truncated: false }));
+    await runTurn(
+      { continue_last: true, history: historyOf(messages.slice(0, index + 1)) },
+      messages[index].mode === 'discuss' ? 'discuss' : 'build', msgId, currentSession?.id,
+    );
+  }, [messages, currentSession?.id, runTurn]);
+
+  // Hand a failed deployment's build log to the model to fix (from the Self-Host Wizard).
   const handleFixBuildError = useCallback((logs: string, appName: string, opts?: { fallback?: boolean; status?: string }) => {
     const prompt = (opts?.fallback || !logs.trim())
-      // Fallback: the platform couldn't return the build log (e.g. Dokploy's readLogs is broken for
-      // remote-server deployments — it stores no serverId on the deployment row). The LLM still has
-      // the full project (Dockerfile + files) in context, so ask it to review proactively.
-      ? `The deployment of "${appName}" failed (status: ${opts?.status || 'error'}), but the build log could not be retrieved from the hosting platform (a known limitation reading logs from remote deploy servers). Without the log, carefully review THIS project's Dockerfile and build configuration for the most likely causes of a failed Docker build, and fix them. Check especially: files referenced by COPY/ADD that may not exist (e.g. package-lock.json, the build output/dist directory), the base image and the build/start commands, EXPOSE vs the port the server actually listens on, and the dependency-install steps. Apply concrete fixes as code blocks and briefly explain what you changed and why.`
-      : `The deployment of "${appName}" failed during the build. Here is the build log:\n\n\`\`\`\n${logs}\n\`\`\`\n\nDiagnose the root cause and fix it directly in the project files (Dockerfile, package.json, build config, or source as appropriate). Apply the fixes as code blocks. Keep changes minimal and focused on making the build succeed.`;
+      // The platform couldn't return the build log (e.g. Dokploy's readLogs is broken for remote
+      // deploy servers); the model still sees the project, so ask it to review.
+      ? `The deployment of "${appName}" failed (status: ${opts?.status || 'error'}), but the build log could not be retrieved from the hosting platform. Review this project's Dockerfile and build configuration for the most likely causes of a failed Docker build and fix them — check files referenced by COPY/ADD that may not exist, the base image, the build/start commands, EXPOSE vs the port the server listens on, and the dependency-install steps. Briefly explain what you changed.`
+      : `The deployment of "${appName}" failed during the build. Here is the build log:\n\n\`\`\`\n${logs}\n\`\`\`\n\nDiagnose the root cause and fix it in the project files (Dockerfile, package.json, build config, or source). Keep changes minimal and focused on making the build succeed.`;
     handleSendMessage(prompt, undefined, { mode: 'build' });
   }, [handleSendMessage]);
 
-  // "Build this plan": hand a Discuss-mode plan to Build mode for implementation, and leave the
-  // composer in Build so follow-up tweaks keep building.
+  // "Build this plan": hand a Discuss-mode plan to Build mode, and leave the composer in Build so
+  // follow-up tweaks keep building.
   const buildPlan = useCallback((plan: string) => {
     setChatMode('build');
     const start = plan.search(/^#{1,3}\s+The Plan\b/mi);
@@ -1228,56 +261,18 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
     handleSendMessage(`Implement this plan now, completing every step in this response:\n\n${body}`, undefined, { mode: 'build' });
   }, [handleSendMessage]);
 
-  // Run a command block the user clicked "Run" on. Model output is never executed automatically —
-  // shell blocks stay inert until the user chooses to run them. Multi-line blocks run line by line
-  // (comments and blank lines skipped), stopping at the first failure. Each result is posted to
-  // the chat, so the model sees the output on the next turn.
+  // A command block the user clicked "Run" on. Each result is posted to the chat, so the model
+  // sees the output on the next turn.
   const runShellCommand = useCallback(async (block: string) => {
     if (!currentProject?.id) return;
     const pid = currentProject.id;
-    const commands = block
-      .split('\n')
-      .map(l => l.trim().replace(/^\$\s+/, ''))
-      .filter(l => l && !l.startsWith('#'));
-    let anyRan = false;
-    for (const cmd of commands) {
-      let note: string;
-      let ok = false;
-      try {
-        const r = await fetch(`/api/projects/${pid}/shell`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd }),
-        });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok || d.error) {
-          note = `❌ \`${cmd}\` — ${d.error || `HTTP ${r.status}`}`;
-        } else {
-          anyRan = true;
-          ok = !!d.success;
-          const out = [d.output, d.stderr].filter(Boolean).join('\n').trim();
-          const tail = out.length > 4000 ? `…${out.slice(-4000)}` : out;
-          note = `${ok ? '✅' : '❌'} \`${cmd}\` exited with code ${d.exit_code}` + (tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : '');
-        }
-      } catch (e) {
-        note = `❌ \`${cmd}\` — ${String(e)}`;
-      }
-      setMessages(prev => [...prev, {
-        id: `shell-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        role: 'system' as const,
-        content: note,
-        timestamp: Date.now(),
-      }]);
-      if (!ok) break;
-    }
-    // A command can touch any file — re-read the tree and the context map, then let the
-    // preview reload.
+    const { notes, anyRan } = await runCommandBlock(pid, block);
+    notes.forEach(content => post({ role: 'system', content }));
     if (anyRan) {
-      fetch(`/api/projects/${pid}/files`).then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
-      fetch(`/api/projects/${pid}/files/read-all`).then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
+      fetch(`/api/projects/${pid}/files`).then(r => r.json()).then(setProjectFiles).catch(() => {});
       window.dispatchEvent(new CustomEvent('monastery:files-written'));
     }
-  }, [currentProject?.id, setProjectFiles, setAllFileContents]);
+  }, [currentProject?.id, setProjectFiles]);
 
   const handleStopGeneration = useCallback(() => {
     abortRef.current?.abort();

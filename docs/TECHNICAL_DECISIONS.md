@@ -15,45 +15,53 @@
 - Auto-discovery support (mDNS/Avahi for common services like Ollama on the LAN).
 
 ## LLM Context Pipeline (hard-won invariants)
-Each of these exists because its absence caused a real "the model overwrote working code with
-out-of-context content" incident:
-- **Single source of truth**: the per-request system context (built in `buildSystemContext`,
-  `packages/web-ui/src/hooks/useChatOrchestrator.ts`) carries current file contents; chat history
-  has older assistant code blocks collapsed to placeholders so stale versions can't compete with it.
-- **Freshness on every write path**: the in-memory file map is updated after AI writes and manual
-  saves, and fully re-read after a user-run command. Any new file-write path MUST keep this invariant.
+A chat turn runs on the server: `POST /api/projects/:id/chat` (`crates/harness-api/src/chat/`).
+The browser only renders the events it streams back. Each rule below exists because its absence
+once caused a real "the model overwrote working code with out-of-context content" incident:
+- **The disk is the single source of truth.** The system prompt is rebuilt from the files on disk
+  for every model request in a turn (`chat/prompt.rs`), so it can never carry a stale copy. The only
+  exception is the open file, which uses the editor's live buffer so unsaved edits are seen. The old
+  browser engine kept an in-memory copy of the project and had to sync it on every write path,
+  which was the root of the freshness bugs. Older assistant replies in the history have their
+  `<file>`/`<edit>` bodies and code blocks collapsed to markers (`sanitize_assistant_history`).
 - **Junk stays out of context**: `read_files_recursive` skips lockfiles, build output (`dist/`,
   `build/`, `.next/`…), caches, `.monastery/`, logs, source maps and minified files
-  (`CONTEXT_SKIP_*` in `handlers.rs`, mirroring bolt.diy's ignore list). A lockfile alone used to be
-  enough to push a small site into scoped mode.
-- **Scoped context for large projects** (>~96KB source, `SMALL_PROJECT_LIMIT`): file tree + active
-  file + working set only. The model grows the working set itself via `@read <path>` and
-  `@search <query>` (server-side ripgrep) — both auto-fed back in capped rounds. User filename
-  mentions are auto-included.
-- **Build vs Discuss**: Discuss mode swaps the editing rules for planning rules, and its replies are
-  never applied to files (they're tagged `mode: 'discuss'`); "Build this plan" hands a plan to Build.
-- **Two edit modes (the fix for "a section clobbered the whole file")**: a path-tagged code block
-  containing `<<<<<<< SEARCH / ======= / >>>>>>> REPLACE` hunks is applied as a targeted in-place
-  edit (`POST .../files/edit`, matched exactly then whitespace-tolerantly against the on-disk file);
-  a path-tagged block WITHOUT those markers is a whole-file create/rewrite. Whole-file writes from
-  the AI send `guard_partial_overwrite`, so the backend refuses to replace a non-trivial existing
-  file whose new content is merely a contiguous slice of the old (the classic partial-edit mistake).
-  The apply parser also has NO prose-triggered pattern (removed after it wrote explanatory fragments
-  over whole files).
-- **Safety checkpoint before every AI edit**: writes only fire after a server-side snapshot of the
-  on-disk state (`POST .../snapshots/checkpoint`); the chat message offers one-click abandon.
-- **Continuation stitching**: token-cap continuations are re-joined with duplicate fence openers
-  and repeated lines stripped (`stitchContinuation`) so code-block rendering and the apply parser
-  survive mid-block truncation.
+  (`CONTEXT_SKIP_*` in `handlers.rs`, mirroring bolt.diy's ignore list).
+- **Scoped context for large projects** (>~96KB of text, `SMALL_PROJECT_LIMIT`): the file tree plus
+  the open file plus the working set. The model asks for more with `<read path="…"/>`. The server
+  adds the file to the working set and continues, for at most `MAX_READ_ROUNDS` rounds; the
+  browser sends the working set back on later turns. `<read>` is the only context-growth
+  mechanism: `@search` and filename-mention scanning were dropped in Phase 3.
+- **One strict output format — tags, not fences**: `<file path>` holds complete contents,
+  `<edit path>` holds `<search>`/`<replace>` pairs, and `<read path/>` requests a file
+  (`chat/parser.rs`). Fences broke on any file that itself contained a fence. Tags are parsed
+  while streaming, so each file is applied, and the preview reloads, as soon as its tag closes.
+  A Build reply that uses the old fenced format is applied as nothing, and the user is told so.
+- **Whole files for small files, edits for large ones**: the prompt asks for a complete `<file>`
+  for anything under ~200 lines and `<edit>` only for larger files. A whole-file AI write whose
+  content is a contiguous slice of a non-trivial existing file is refused (`is_partial_overwrite`),
+  which was the classic "a section clobbered the whole file" mistake. Search text is matched in
+  five tiers: exact, then whitespace-tolerant, then a strict fuzzy match (`find_match_range`).
+- **One retry for a failed edit**: hunks that match nowhere get a single focused retry. The model
+  receives the file's exact current contents and the intended change, and its reply is applied.
+  If that also fails, the user is asked to point at the lines. The old three-stage escalation with
+  a looser matcher is gone.
+- **One safety checkpoint per turn**: the first change of a turn is preceded by a snapshot of the
+  on-disk project. The chat's summary message offers one-click abandon.
+- **Build vs Discuss**: Discuss mode swaps the editing rules for planning rules, and the server
+  never applies anything from a Discuss reply. "Build this plan" hands a plan to Build.
+- **Continuation stitching**: when a reply hits the output-token limit, the server continues it,
+  at most `MAX_CONTINUATIONS` times. Each continuation is held back until there's enough of it to
+  repair the seam: a re-opened tag or repeated lines are dropped (`stitch_continuation`) before
+  anything is shown or applied.
 
 ## Streaming Robustness
-- SSE data fields are sanitized (`sse_safe` in `harness-api/src/handlers.rs`): axum's SSE encoder
-  panics on `\r`, and model output can echo CRLF from Windows-authored context files. All
-  model-text emissions pass through it; text uploads are normalized to LF at the source.
-- Truncated responses (`finish_reason: "length"`) auto-continue, but always **capped** (both the
-  token-cap resends and the `@read`/`@search` rounds), abort-aware, and backed by a manual Continue
-  button — unbounded automatic resends once burned real API credit and are deliberately impossible.
-  (The on/off toggle was removed in simplification Phase 1; the caps are the safety.)
+- Every event the chat endpoint streams carries a JSON payload, so there are never raw newlines or
+  `\r` in an SSE data field (axum's encoder panics on `\r`, and model output can echo CRLF from
+  Windows-authored files). Text uploads are normalized to LF at the source.
+- Automatic continuation and `<read>` rounds are always **capped** and stop when the user hits
+  Stop: dropping the request drops the turn. A manual Continue button covers the rest. Unbounded
+  automatic resends once burned real API credit and are deliberately impossible.
 
 ## Model & Resource Awareness
 - Hardware detection (CPU cores, RAM, GPU availability) to inform LLM prompts and quantization recommendations.

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Loader2, Coins, MessageSquare, Plus, Trash2, SlidersHorizontal, Hammer, Lightbulb, Play } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Loader2, Coins, MessageSquare, Plus, Trash2, SlidersHorizontal, Hammer, Lightbulb, Play, FileCode, FilePen, FileSearch } from 'lucide-react';
 import { Message, Attachment, SessionInfo } from '../types';
 import { DiffCard } from './DiffCard';
 import { useAppStore } from '../store/useAppStore';
@@ -12,12 +12,34 @@ import { Spinner } from './Spinner';
 const COMMAND_LANGS = ['bash', 'sh', 'shell', 'zsh', 'console', 'terminal'];
 
 // A Discuss-mode plan, or (for messages reloaded from a saved session, which don't keep their
-// mode) a "## The Plan" reply with no path-tagged file blocks in it.
+// mode) a "## The Plan" reply that didn't write any files.
 const isPlanMessage = (m: Message) =>
   m.role === 'assistant' && !!m.content.trim() && (
     m.mode === 'discuss' ||
-    (/^#{1,3}\s+The Plan\b/mi.test(m.content) && !/```[\w.]*\s*:\s*\S/.test(m.content))
+    (/^#{1,3}\s+The Plan\b/mi.test(m.content) && !/<(file|edit)\s+path=/.test(m.content) && !/```[\w.]*\s*:\s*\S/.test(m.content))
   );
+
+// The action tags the model writes (see crates/harness-api/src/chat/parser.rs). In the chat they
+// render as compact rows — the file contents themselves show up in the diff cards and editor.
+const ACTION_TAG_RE = /(<file\s+path=["'][^"']*["']\s*>[\s\S]*?(?:<\/file>|$)|<edit\s+path=["'][^"']*["']\s*>[\s\S]*?(?:<\/edit>|$)|<read\s+path=["'][^"']*["']\s*\/?>(?:<\/read>)?)/g;
+
+type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'file' | 'edit' | 'read'; path: string; closed: boolean; lines: number; hunks: number };
+
+const splitActions = (content: string): ContentPart[] =>
+  content.split(ACTION_TAG_RE).filter(Boolean).map((part): ContentPart => {
+    const tag = part.match(/^<(file|edit|read)\s+path=["']([^"']*)["']/);
+    if (!tag) return { type: 'text', text: part };
+    const kind = tag[1] as 'file' | 'edit' | 'read';
+    const closed = kind === 'read' || part.trimEnd().endsWith(`</${kind}>`);
+    const body = part.slice(part.indexOf('>') + 1);
+    return {
+      type: kind, path: tag[2], closed,
+      lines: body.split('\n').filter(l => l.trim() && !/^<\/?(file|search|replace|edit)>/.test(l.trim())).length,
+      hunks: (body.match(/<search>/g) || []).length,
+    };
+  });
 
 // Reasoning window — collapsible, scrollable, max ~12 rows
 function ReasoningWindow({ reasoning }: { reasoning: string }) {
@@ -250,9 +272,35 @@ export function ChatPane({
     });
   };
 
-  // Render message content with markdown and code blocks. `runnable` (assistant messages only)
-  // gives command blocks a Run button.
-  const renderContent = (content: string, msgId: string, runnable = false) => {
+  // One action tag as a compact row. `discuss` = the reply came from Discuss mode, where the
+  // server never applies changes.
+  const renderAction = (part: Exclude<ContentPart, { type: 'text' }>, key: string, discuss: boolean) => {
+    const row = 'my-1 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-monastery-dark-tertiary/60 text-xs';
+    if (part.type === 'read') {
+      return <div key={key} className={row}><FileSearch size={13} className="text-monastery-text-muted shrink-0" /><span className="text-monastery-text-secondary">Read <code className="font-mono">{part.path}</code></span></div>;
+    }
+    const Icon = part.type === 'file' ? FileCode : FilePen;
+    const verb = !part.closed ? (part.type === 'file' ? 'Writing' : 'Editing') : (part.type === 'file' ? 'Wrote' : 'Edited');
+    const detail = part.type === 'edit' ? `${part.hunks} change${part.hunks === 1 ? '' : 's'}` : `${part.lines} line${part.lines === 1 ? '' : 's'}`;
+    return (
+      <div key={key} className={row}>
+        {part.closed ? <Icon size={13} className="text-monastery-lantern shrink-0" /> : <Loader2 size={13} className="animate-spin text-monastery-lantern shrink-0" />}
+        <span className="text-monastery-text-secondary truncate">{verb} <code className="font-mono text-monastery-text-primary">{part.path}</code></span>
+        <span className="ml-auto text-monastery-text-muted shrink-0">{discuss ? 'not applied (Discuss)' : detail}</span>
+      </div>
+    );
+  };
+
+  // Message content: action tags as rows, everything else as markdown + code blocks.
+  const renderContent = (content: string, msgId: string, runnable = false, discuss = false) =>
+    splitActions(content).map((part, i) =>
+      part.type === 'text'
+        ? <div key={i}>{renderMarkdown(part.text, `${msgId}-${i}`, runnable)}</div>
+        : renderAction(part, `${msgId}-a${i}`, discuss));
+
+  // Markdown and code blocks. `runnable` (assistant messages only) gives command blocks a Run
+  // button.
+  const renderMarkdown = (content: string, msgId: string, runnable = false) => {
     // Split on complete code blocks (opening + closing fence).
     // Also match unclosed blocks (streaming in progress or truncated).
     const parts = content.split(/(```[\s\S]*?```|```[^\n]*\n[\s\S]*$)/g);
@@ -552,7 +600,7 @@ export function ChatPane({
                   <ReasoningWindow reasoning={message.reasoning} />
                 )}
                 <div className={`text-sm ${message.role === 'system' ? 'text-monastery-text-secondary' : ''}`}>
-                  {renderContent(message.content, message.id, message.role === 'assistant')}
+                  {renderContent(message.content, message.id, message.role === 'assistant', message.mode === 'discuss')}
                 </div>
                 {/* Discuss → Build hand-off: implement the plan this reply laid out */}
                 {onBuildPlan && !isGenerating && isPlanMessage(message) && (
@@ -570,27 +618,15 @@ export function ChatPane({
                 {message.fileChanges && message.fileChanges.map(change => (
                   <DiffCard key={change.path} change={change} />
                 ))}
-                {/* Auto-continuation status + token usage (when the endpoint reports usage). */}
-                {message.role === 'assistant' && (message.continuing || (message.autoContinueCount ?? 0) > 0 || message.usage?.total_tokens) && (
-                  <div className="mt-1.5 flex items-center flex-wrap gap-x-3 gap-y-1 text-[11px] text-monastery-text-muted">
-                    {message.continuing ? (
-                      <span className="flex items-center gap-1 text-monastery-lantern">
-                        <Loader2 size={11} className="animate-spin" /> Continuing… (auto-continuation {message.autoContinueCount})
-                      </span>
-                    ) : (message.autoContinueCount ?? 0) > 0 ? (
-                      <span className="flex items-center gap-1">
-                        <RotateCcw size={11} /> Auto-continued {message.autoContinueCount}×
-                      </span>
-                    ) : null}
-                    {message.usage?.total_tokens ? (
-                      <span className="flex items-center gap-1" title={`prompt ${message.usage.prompt_tokens ?? '?'} · completion ${message.usage.completion_tokens ?? '?'}`}>
-                        <Coins size={11} /> {message.usage.total_tokens.toLocaleString()} tokens
-                      </span>
-                    ) : null}
+                {/* Token usage for the turn (when the endpoint reports it). */}
+                {message.role === 'assistant' && message.usage?.total_tokens ? (
+                  <div className="mt-1.5 flex items-center gap-1 text-[11px] text-monastery-text-muted"
+                    title={`prompt ${message.usage.prompt_tokens ?? '?'} · completion ${message.usage.completion_tokens ?? '?'}`}>
+                    <Coins size={11} /> {message.usage.total_tokens.toLocaleString()} tokens
                   </div>
-                )}
-                {/* Manual Continue button — appears when the response still hit the output-token
-                    cap after the auto-continue limit was reached (or the user hit Stop). */}
+                ) : null}
+                {/* Manual Continue button — the reply is still cut off after the server's automatic
+                    continuations (or the user hit Stop). */}
                 {message.role === 'assistant' && message.truncated && !isGenerating && onContinue && (
                   <div className="mt-2 flex items-center gap-2">
                     <button
@@ -600,9 +636,7 @@ export function ChatPane({
                       ⏵ Continue generating
                     </button>
                     <span className="text-xs text-monastery-text-muted">
-                      {(message.autoContinueCount ?? 0) > 0
-                        ? 'Reached the auto-continue limit — continue manually if needed'
-                        : "Response hit the model's output-token limit"}
+                      The reply was cut off before it finished
                     </span>
                   </div>
                 )}

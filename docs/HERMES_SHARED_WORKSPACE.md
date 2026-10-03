@@ -1,7 +1,7 @@
 # Hermes Shared Workspace — Seeing Hermes's Files in Monastery
 
-> **Context (2026-10):** Hermes is no longer part of Monastery's chat (Agent mode was hidden in
-> simplification Phase 1). This page is still the setup guide for letting Hermes write directly
+> **Context (2026-10):** Hermes is no longer part of Monastery's chat (Agent mode was removed in
+> the simplification). This page is still the setup guide for letting Hermes write directly
 > into a Monastery project on the **same machine**. For an agent on another machine, use the git
 > bridge in [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md).
 

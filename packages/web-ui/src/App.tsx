@@ -47,7 +47,6 @@ export default function App() {
 
   const [projectFiles, setProjectFiles] = useState<any[]>([]);
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
-  const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; name?: string }>>([]);
   const activeEndpoint = useAppStore(s => s.activeEndpoint);
@@ -105,10 +104,7 @@ export default function App() {
     addMessage,
     availableModels,
     pocketbaseBaseUrl: pocketbaseConn?.base_url,
-    projectFiles,
     setProjectFiles,
-    allFileContents,
-    setAllFileContents,
     currentFile,
     activeTab,
     isImagePath,
@@ -175,17 +171,12 @@ export default function App() {
 
     if (!currentProject?.id) {
       setProjectFiles([]);
-      setAllFileContents({});
       return;
     }
     fetch(`/api/projects/${currentProject.id}/files`)
       .then(r => r.json())
       .then(files => setProjectFiles(files))
       .catch(() => setProjectFiles([]));
-    fetch(`/api/projects/${currentProject.id}/files/read-all`)
-      .then(r => r.json())
-      .then(data => setAllFileContents(data.files || {}))
-      .catch(() => setAllFileContents({}));
   }, [currentProject?.id]);
 
   // Fetch sessions when project changes
@@ -233,21 +224,16 @@ export default function App() {
       .then(r => r.json())
       .then(files => setProjectFiles(files))
       .catch(() => {});
-    fetch(`/api/projects/${currentProject.id}/files/read-all`)
-      .then(r => r.json())
-      .then(data => setAllFileContents(data.files || {}))
-      .catch(() => {});
   }, [currentProject?.id]);
 
-  // Reload files + tabs + LLM context after events that rewrite the working tree
-  // (snapshot restore, git pull, in-chat revert).
+  // Reload files + tabs after events that rewrite the working tree (snapshot restore, git pull,
+  // in-chat revert). The chat needs nothing here — every turn reads the project from disk.
   const reloadProjectState = useCallback(() => {
     resetTabs();
     if (!currentProject?.id) return;
     fetch(`/api/projects/${currentProject.id}/files`)
       .then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
-    fetch(`/api/projects/${currentProject.id}/files/read-all`)
-      .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
+    window.dispatchEvent(new CustomEvent('monastery:files-written'));
   }, [currentProject?.id, resetTabs]);
 
   // When the window regains focus, do a lightweight re-read of the file tree so files written
@@ -442,8 +428,6 @@ export default function App() {
         body: JSON.stringify({ path: currentFile, content: editorContent }),
       });
       markTabSaved();
-      // Keep the LLM context map in sync with the saved file.
-      setAllFileContents(prev => ({ ...prev, [currentFile]: editorContent }));
       // The live preview listens for this and reloads.
       window.dispatchEvent(new CustomEvent('monastery:files-written'));
     } catch (e) {

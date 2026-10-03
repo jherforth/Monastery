@@ -1,6 +1,7 @@
 //! HomeLab AI Harness API Server
 
 mod handlers;
+mod chat;
 mod db;
 mod middleware;
 mod snapshot_service;
@@ -76,7 +77,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/api/health", get(handlers::health_check))
         .route("/api/models", get(handlers::list_models))
-        .route("/api/models/:id/chat", post(handlers::chat_stream))
         .route("/api/endpoints", get(handlers::list_endpoints))
         .route("/api/endpoints", post(handlers::add_endpoint))
         .route("/api/endpoints/:id", delete(handlers::delete_endpoint))
@@ -87,22 +87,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/projects/:id", get(handlers::get_project).delete(handlers::delete_project))
         .route("/api/projects/:id/files", get(handlers::list_project_files))
         .route("/api/projects/:id/files/read", get(handlers::read_project_file))
-        .route("/api/projects/:id/files/read-all", get(handlers::read_all_project_files))
         .route("/api/projects/:id/files/write", post(handlers::write_project_file))
-        .route("/api/projects/:id/files/edit", post(handlers::edit_project_file))
         .route("/api/projects/:id/files", delete(handlers::delete_project_file))
         .route("/api/projects/:id/files/dir", post(handlers::create_project_directory))
         .route("/api/projects/:id/files/dir", delete(handlers::delete_project_directory))
         .route("/api/projects/:id/files/upload", post(handlers::upload_project_file))
         .route("/api/projects/:id/files/move", post(handlers::move_project_file))
         .route("/api/projects/:id/shell", post(handlers::project_shell))
-        .route("/api/projects/:id/search", get(handlers::search_project))
-        // Staged coding workflow — local task store (.monastery/tasks)
-        .route("/api/projects/:id/tasks", get(handlers::list_tasks))
-        .route("/api/projects/:id/tasks", post(handlers::create_task))
-        .route("/api/projects/:id/tasks/:task_id", get(handlers::get_task))
-        .route("/api/projects/:id/tasks/:task_id", patch(handlers::update_task))
-        .route("/api/projects/:id/tasks/:task_id/verify", post(handlers::verify_task))
+        // One chat turn: context built from disk, streamed reply, changes applied as they land
+        .route("/api/projects/:id/chat", post(chat::project_chat))
         .route("/api/projects/:id/preview/*path", get(handlers::project_preview))
         // Session routes
         .route("/api/projects/:project_id/sessions", get(handlers::list_sessions))
@@ -142,13 +135,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/hosting/connections/:id/deployment-log", get(handlers::get_deployment_log))
         .route("/api/hosting/deploy", post(handlers::deploy_to_hosting))
         .route("/api/hosting/preview", post(handlers::preview_deploy))
-        // Hermes agent routes (hidden in the UI since simplification Phase 1; removed in Phase 3)
-        .route("/api/hermes/connections", get(handlers::list_hermes_connections))
-        .route("/api/hermes/connections", post(handlers::create_hermes_connection))
-        .route("/api/hermes/connections/:id", delete(handlers::delete_hermes_connection))
-        .route("/api/hermes/connections/:id/test", post(handlers::test_hermes_connection))
-        .route("/api/hermes/connections/:id/default", post(handlers::set_default_hermes_connection))
-        .route("/api/hermes/run", post(handlers::hermes_agent_run))
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 

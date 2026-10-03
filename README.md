@@ -107,9 +107,10 @@ The full route table lives in [`crates/harness-api/src/main.rs`](crates/harness-
 
 | Area | Routes |
 |---|---|
-| Health & models | `GET /api/health`, `GET /api/models`, `POST /api/models/:id/chat` (SSE stream) |
+| Health & models | `GET /api/health`, `GET /api/models` |
+| Chat | `POST /api/projects/:id/chat` — one turn: streams the reply and applies its file changes (SSE) |
 | LLM endpoints | `GET/POST /api/endpoints`, `DELETE /api/endpoints/:id`, `POST /api/endpoints/:id/test`, `GET /api/discovery` |
-| Projects & files | `/api/projects`, `/api/projects/:id/files` (+ `read`, `read-all`, `write`, `edit`, `dir`, `upload`, `move`), `search`, `shell` (user-run only), `preview/*path` |
+| Projects & files | `/api/projects`, `/api/starters`, `/api/projects/:id/files` (+ `read`, `write`, `dir`, `upload`, `move`), `shell` (user-run only), `preview/*path` |
 | Sessions | `/api/projects/:project_id/sessions` (+ `:session_id`, `messages`) |
 | Snapshots | `/api/projects/:project_id/snapshots` (+ `checkpoint`, `restore`, `diff`) |
 | Git | `/api/git/connections`, `status`, `commit-push`, `pull`, `push`, `clone` |

@@ -15,14 +15,6 @@ use harness_core::{
     CreateSnapshotRequest, RestoreSnapshotRequest, SnapshotTrigger,
 };
 
-/// Make a string safe for an SSE data field. axum's `Event::data` splits `\n` into multiple
-/// `data:` lines, but PANICS on `\r` (assertion in sse.rs) — and model output can contain
-/// CRLF (e.g. DeepSeek echoing a Windows-authored file from context), which killed the
-/// tokio worker mid-stream. Normalize all CR variants to plain `\n`.
-fn sse_safe(s: impl AsRef<str>) -> String {
-    s.as_ref().replace("\r\n", "\n").replace('\r', "\n")
-}
-
 /// Health check endpoint
 pub async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({
@@ -104,181 +96,50 @@ pub async fn list_models(
     Ok(Json(all_models))
 }
 
-/// Stream chat completion
-pub async fn chat_stream(
-    State(state): State<AppState>,
-    Path(model_id): Path<String>,
-    Query(params): Query<ChatQueryParams>,
-    Json(request): Json<ChatRequest>,
-) -> Response {
-    use futures::StreamExt;
-    
-    // Get endpoint from query param or use default
-    let mut endpoint_config = if let Some(endpoint_id) = params.endpoint_id {
-        // Try database first
-        let db_endpoint = sqlx::query(
-            "SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints WHERE id = ?"
-        )
-        .bind(endpoint_id.to_string())
-        .fetch_optional(&*state.db)
-        .await
-        .ok()
-        .flatten()
-        .map(|row| {
-            let id: String = row.get(0);
-            let name: String = row.get(1);
-            let base_url: String = row.get(2);
-            let api_key: Option<String> = row.get(3);
-            let is_favorite: i64 = row.get(4);
-            let is_local: i64 = row.get(5);
-            let max_tokens: Option<i64> = row.get(6);
-            let temperature: Option<f64> = row.get(7);
-            let created_at: String = row.get(8);
-            harness_core::models::EndpointConfig {
-                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-                name,
-                base_url,
-                api_key,
-                is_favorite: is_favorite != 0,
-                is_local: is_local != 0,
-                max_tokens: max_tokens.map(|v| v as u32),
-                temperature: temperature.map(|v| v as f32),
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
-                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
-                    .into(),
-            }
-        });
-        
-        match db_endpoint.or_else(|| {
-            state.config.endpoints.iter()
-                .find(|e| e.id == endpoint_id)
-                .cloned()
-        }) {
-            Some(config) => config,
-            None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": format!("Endpoint {} not found", endpoint_id)}))).into_response(),
-        }
-    } else {
-        // Use first available endpoint
-        let endpoints = sqlx::query("SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints")
-            .fetch_all(&*state.db)
-            .await
-            .unwrap_or_default();
-        
-        if !endpoints.is_empty() {
-            let row = &endpoints[0];
-            let id: String = row.get(0);
-            let name: String = row.get(1);
-            let base_url: String = row.get(2);
-            let api_key: Option<String> = row.get(3);
-            let is_favorite: i64 = row.get(4);
-            let is_local: i64 = row.get(5);
-            let max_tokens: Option<i64> = row.get(6);
-            let temperature: Option<f64> = row.get(7);
-            let created_at: String = row.get(8);
-            
-            harness_core::models::EndpointConfig {
-                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-                name,
-                base_url,
-                api_key,
-                is_favorite: is_favorite != 0,
-                is_local: is_local != 0,
-                max_tokens: max_tokens.map(|v| v as u32),
-                temperature: temperature.map(|v| v as f32),
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
-                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
-                    .into(),
-            }
-        } else {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No LLM endpoint configured. Please add an endpoint in Settings."}))).into_response();
+/// Resolve the endpoint a chat turn should use: the given id (database first, then endpoints
+/// from the environment config), else the first configured endpoint.
+pub(crate) async fn resolve_endpoint(
+    state: &AppState,
+    endpoint_id: Option<Uuid>,
+) -> Result<harness_core::models::EndpointConfig, ApiError> {
+    const COLUMNS: &str = "SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints";
+    let to_config = |row: &sqlx::sqlite::SqliteRow| {
+        let id: String = row.get(0);
+        let max_tokens: Option<i64> = row.get(6);
+        let temperature: Option<f64> = row.get(7);
+        let created_at: String = row.get(8);
+        harness_core::models::EndpointConfig {
+            id: Uuid::parse_str(&id).unwrap_or_else(|_| Uuid::new_v4()),
+            name: row.get(1),
+            base_url: row.get(2),
+            api_key: row.get(3),
+            is_favorite: row.get::<i64, _>(4) != 0,
+            is_local: row.get::<i64, _>(5) != 0,
+            max_tokens: max_tokens.map(|v| v as u32),
+            temperature: temperature.map(|v| v as f32),
+            created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
+                .into(),
         }
     };
-
-    // Apply per-request overrides from query params (takes priority over endpoint defaults)
-    if let Some(mt) = params.max_tokens {
-        endpoint_config.max_tokens = Some(mt);
-    }
-    if let Some(temp) = params.temperature {
-        endpoint_config.temperature = Some(temp);
-    }
-    
-    let base_url = endpoint_config.base_url.clone();
-    let client = harness_core::LLMClient::new(endpoint_config);
-    
-    // Convert messages to OpenAI format
-    let messages: Vec<async_openai::types::ChatCompletionRequestMessage> = request.messages
-        .into_iter()
-        .map(|msg| {
-            match msg.role.as_str() {
-                "user" => async_openai::types::ChatCompletionRequestUserMessage {
-                    content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(msg.content),
-                    name: None,
-                }.into(),
-                "assistant" => async_openai::types::ChatCompletionRequestAssistantMessage {
-                    content: Some(async_openai::types::ChatCompletionRequestAssistantMessageContent::Text(msg.content)),
-                    ..Default::default()
-                }.into(),
-                "system" => async_openai::types::ChatCompletionRequestSystemMessage {
-                    content: async_openai::types::ChatCompletionRequestSystemMessageContent::Text(msg.content),
-                    name: None,
-                }.into(),
-                _ => async_openai::types::ChatCompletionRequestUserMessage {
-                    content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(msg.content),
-                    name: None,
-                }.into(),
-            }
-        })
-        .collect();
-    
-    let model_for_log = model_id.clone();
-    let stream = match client.chat_stream(messages, model_id).await {
-        Ok(s) => {
-            tracing::info!("Chat stream created for model {} at {}", model_for_log, base_url);
-            s
-        },
-        Err(e) => {
-            tracing::error!("Failed to create chat stream: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
+    match endpoint_id {
+        Some(id) => {
+            let row = sqlx::query(&format!("{} WHERE id = ?", COLUMNS))
+                .bind(id.to_string())
+                .fetch_optional(&*state.db)
+                .await?;
+            row.as_ref()
+                .map(to_config)
+                .or_else(|| state.config.endpoints.iter().find(|e| e.id == id).cloned())
+                .ok_or_else(|| ApiError::NotFound(format!("Endpoint {} not found", id)))
         }
-    };
-    
-    // Create SSE stream with keepalive and proper termination
-    use axum::response::Sse;
-    use std::time::Duration;
-    
-    let event_stream = stream.map(|result| {
-        match result {
-            Ok(chunk) => {
-                let event = axum::response::sse::Event::default().data(sse_safe(chunk.content));
-                match chunk.chunk_type {
-                    harness_core::ChunkType::Reasoning => {
-                        Ok(event.event("reasoning"))
-                    }
-                    harness_core::ChunkType::Content => {
-                        Ok(event)
-                    }
-                    harness_core::ChunkType::FinishReason => {
-                        Ok(event.event("finish_reason"))
-                    }
-                    harness_core::ChunkType::Usage => {
-                        Ok(event.event("usage"))
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Stream error: {}", e);
-                Err(axum::Error::new(e))
-            }
-        }
-    });
-
-    Sse::new(event_stream)
-        .keep_alive(
-            axum::response::sse::KeepAlive::new()
-                .interval(Duration::from_secs(15))
-                .text("keep-alive"),
-        )
-        .into_response()
+        None => sqlx::query(&format!("{} LIMIT 1", COLUMNS))
+            .fetch_optional(&*state.db)
+            .await?
+            .as_ref()
+            .map(to_config)
+            .ok_or_else(|| ApiError::Config("No LLM endpoint configured. Please add an endpoint in Settings.".into())),
+    }
 }
 
 /// List configured endpoints (from database)
@@ -1177,28 +1038,6 @@ pub struct ProjectInfo {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ChatRequest {
-    pub messages: Vec<ChatMessage>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ChatQueryParams {
-    pub endpoint_id: Option<uuid::Uuid>,
-    /// Per-request override for max output tokens.
-    /// Overrides the endpoint's auto-detected default.
-    pub max_tokens: Option<u32>,
-    /// Per-request override for sampling temperature.
-    /// Overrides the endpoint's auto-detected default.
-    pub temperature: Option<f32>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ChatMessage {
-    pub role: String,
-    pub content: String,
-}
-
 /// Database error types
 #[derive(Debug)]
 pub enum DbError {
@@ -1758,7 +1597,7 @@ pub async fn git_pull(
 }
 
 /// Helper: recursively read files for snapshot creation
-fn read_files_for_snapshot(
+pub(crate) fn read_files_for_snapshot(
     base: &std::path::Path,
     current: &std::path::Path,
     files: &mut Vec<harness_core::snapshot::SnapshotFileInput>,
@@ -2131,11 +1970,6 @@ pub struct WriteFileRequest {
     /// decoded to raw bytes before writing. Absent/other = plain text.
     #[serde(default)]
     pub encoding: Option<String>,
-    /// When true (AI-generated writes), refuse to replace an existing non-trivial file whose
-    /// new content is merely a contiguous slice of the old — the "model emitted a section as a
-    /// whole-file block, wiping the rest" failure. Manual saves/uploads leave this false.
-    #[serde(default)]
-    pub guard_partial_overwrite: bool,
 }
 
 /// Resolve a client-supplied relative path inside a project directory, refusing anything that
@@ -2144,7 +1978,7 @@ pub struct WriteFileRequest {
 /// project before being rejected. Lexical check first (no absolute paths, no `..`), then the
 /// deepest existing ancestor is canonicalized so a symlink inside the project (e.g. from a cloned
 /// repo) can't redirect the write elsewhere.
-fn safe_project_path(project_dir: &std::path::Path, rel: &str) -> Result<std::path::PathBuf, ApiError> {
+pub(crate) fn safe_project_path(project_dir: &std::path::Path, rel: &str) -> Result<std::path::PathBuf, ApiError> {
     use std::path::Component;
     let mut clean = std::path::PathBuf::new();
     for part in std::path::Path::new(rel).components() {
@@ -2193,26 +2027,6 @@ pub async fn write_project_file(
         std::fs::write(&full_path, bytes)
             .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
     } else {
-        // Guardrail against the "section clobbered the whole file" bug: if the model sends a
-        // whole-file write whose content is literally a contiguous slice of the existing file,
-        // it's almost certainly a partial edit mis-formatted as a full file. Refuse it and tell
-        // the model to use a SEARCH/REPLACE edit block. (Low false-positive: a genuine rewrite
-        // essentially never reproduces itself as an exact substring of the original.)
-        if req.guard_partial_overwrite && full_path.exists() {
-            if let Ok(existing) = std::fs::read_to_string(&full_path) {
-                let new_trim = req.content.trim();
-                let old_trim = existing.trim();
-                if old_trim.len() > 400
-                    && new_trim.len() < old_trim.len()
-                    && old_trim.contains(new_trim)
-                {
-                    return Err(ApiError::Config(format!(
-                        "Refusing to overwrite {}: the new content is just a section of the existing file (the rest would be lost). Re-send this change as a SEARCH/REPLACE edit block instead of a whole-file block.",
-                        req.path
-                    )));
-                }
-            }
-        }
         std::fs::write(&full_path, &req.content)
             .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
     }
@@ -2220,19 +2034,37 @@ pub async fn write_project_file(
     Ok(Json(serde_json::json!({ "success": true, "path": req.path })))
 }
 
-/// Apply targeted SEARCH/REPLACE edits to an existing file — a real modify-in-place, so the
-/// model can change one section without re-emitting (and risking truncating) the whole file.
-/// Each edit's `search` text is located in the current on-disk file and swapped for `replace`.
-#[derive(Debug, Deserialize)]
-pub struct EditFileRequest {
-    pub path: String,
-    pub edits: Vec<SearchReplace>,
+/// Guardrail against the "section clobbered the whole file" bug: an AI whole-file write whose
+/// content is literally a contiguous slice of a non-trivial existing file is almost certainly a
+/// partial edit mis-formatted as a full file, and writing it would delete the rest. (Low
+/// false-positive: a genuine rewrite essentially never reproduces itself as an exact substring.)
+pub(crate) fn is_partial_overwrite(existing: &str, new: &str) -> bool {
+    let (old, new) = (existing.trim(), new.trim());
+    old.len() > 400 && new.len() < old.len() && old.contains(new)
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SearchReplace {
-    pub search: String,
-    pub replace: String,
+/// Result of applying search/replace hunks to a file's contents.
+pub(crate) struct EditOutcome {
+    pub applied: usize,
+    /// Hunks whose search text matched nowhere, as (search, replace).
+    pub failed: Vec<(String, String)>,
+    pub content: String,
+}
+
+/// Apply targeted search/replace hunks in order — a real modify-in-place, so the model can
+/// change one section of a large file without re-emitting (and risking truncating) all of it.
+pub(crate) fn apply_hunks(content: &str, hunks: &[(String, String)]) -> EditOutcome {
+    let mut out = EditOutcome { applied: 0, failed: Vec::new(), content: content.to_string() };
+    for (search, replace) in hunks {
+        match find_match_range(&out.content, search) {
+            Some((s, e)) => {
+                out.content.replace_range(s..e, replace);
+                out.applied += 1;
+            }
+            None => out.failed.push((search.clone(), replace.clone())),
+        }
+    }
+    out
 }
 
 /// Find `needle` in `hay` and return the (start, end) byte range of the first match. Tiers, from
@@ -2242,7 +2074,8 @@ pub struct SearchReplace {
 ///   3. line-by-line, ignoring LEADING+TRAILING whitespace (indentation drift — the common case
 ///      where the model reflows/re-indents the SEARCH block relative to the real file)
 ///   4. as (3) but ignoring blank lines on both sides (stray blank line in the SEARCH block)
-fn find_match_range(hay: &str, needle: &str, loose: bool) -> Option<(usize, usize)> {
+///   5. fuzzy: >=4 lines, >=80% of lines matching, and the single best window (see below)
+fn find_match_range(hay: &str, needle: &str) -> Option<(usize, usize)> {
     if needle.trim().is_empty() {
         return None;
     }
@@ -2317,13 +2150,13 @@ fn find_match_range(hay: &str, needle: &str, loose: bool) -> Option<(usize, usiz
     }
 
     // Tier 5: fuzzy — the model got most of the block right but misquoted a line or two. Slide a
-    // window and score by positional line similarity (fully trimmed). `loose` (an escalated retry)
-    // lowers the bar: strict = >=4 lines, >=80% match, SOLE best window; loose = >=3 lines, >=60%
-    // match, first-best on a tie. The pre-edit snapshot backstops the residual wrong-region risk.
+    // window and score by positional line similarity (fully trimmed). Requires >=4 lines, >=80%
+    // of them matching, and a SOLE best window. (The looser "escalated retry" variant was dropped
+    // in simplification Phase 3: a failed edit is now retried against fresh file contents
+    // instead.) The pre-turn snapshot backstops the residual wrong-region risk.
     let needle_t: Vec<&str> = needle.lines().map(|l| l.trim()).collect();
     let n = needle_t.len();
-    let (min_lines, ratio_num, ratio_den, require_unique) =
-        if loose { (3usize, 3usize, 5usize, false) } else { (4usize, 4usize, 5usize, true) };
+    let (min_lines, ratio_num, ratio_den) = (4usize, 4usize, 5usize);
     if n >= min_lines && hay_lines.len() >= n {
         let hay_t: Vec<&str> = hay_lines.iter().map(|l| l.trim()).collect();
         let score = |start: usize| -> usize {
@@ -2336,8 +2169,7 @@ fn find_match_range(hay: &str, needle: &str, loose: bool) -> Option<(usize, usiz
             let c = score(start);
             if c > best_count { best_count = c; best_start = start; }
         }
-        let unique = !require_unique
-            || (0..=last_start).filter(|&s| score(s) == best_count).count() == 1;
+        let unique = (0..=last_start).filter(|&s| score(s) == best_count).count() == 1;
         // best_count/n >= ratio_num/ratio_den, integer-safe.
         if best_count * ratio_den >= n * ratio_num && unique {
             return Some(byte_range(best_start, best_start + n - 1));
@@ -2345,60 +2177,6 @@ fn find_match_range(hay: &str, needle: &str, loose: bool) -> Option<(usize, usiz
     }
 
     None
-}
-
-pub async fn edit_project_file(
-    Path(project_id): Path<uuid::Uuid>,
-    State(state): State<AppState>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-    Json(req): Json<EditFileRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    // `loose=true` (an escalated retry, "digging deeper") lowers the fuzzy matcher's bar.
-    let loose = params.get("loose").map(|v| v == "true").unwrap_or(false);
-
-    let project_dir = resolve_project_dir(&state, project_id).await?;
-    let full_path = project_dir.join(&req.path);
-
-    let canonical_base = project_dir.canonicalize()
-        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
-    let resolved = full_path.canonicalize()
-        .map_err(|_| ApiError::NotFound(format!("File not found: {}", req.path)))?;
-    if !resolved.starts_with(&canonical_base) {
-        return Err(ApiError::Config("Path traversal not allowed".into()));
-    }
-
-    let mut content = tokio::fs::read_to_string(&resolved).await
-        .map_err(|e| ApiError::Internal(format!("Failed to read file: {}", e)))?;
-
-    let mut applied = 0usize;
-    // Failed hunks returned in FULL (search+replace) so the frontend's escalating retry can
-    // re-attempt exactly those without re-applying the ones that already landed.
-    let mut failed: Vec<serde_json::Value> = Vec::new();
-    for edit in &req.edits {
-        match find_match_range(&content, &edit.search, loose) {
-            Some((s, e)) => {
-                content.replace_range(s..e, &edit.replace);
-                applied += 1;
-            }
-            None => {
-                failed.push(serde_json::json!({ "search": edit.search, "replace": edit.replace }));
-            }
-        }
-    }
-
-    // Only persist if something actually applied — never write a no-op that could truncate.
-    if applied > 0 {
-        std::fs::write(&resolved, &content)
-            .map_err(|e| ApiError::Internal(format!("Failed to write file: {}", e)))?;
-    }
-
-    Ok(Json(serde_json::json!({
-        "success": applied > 0,
-        "path": req.path,
-        "applied": applied,
-        "failed": failed,
-        "content": content,
-    })))
 }
 
 /// Injected into every HTML page the preview serves. Forwards runtime errors — uncaught
@@ -2575,10 +2353,7 @@ pub async fn project_preview(
 /// Programs the shell endpoint may launch (exact name match). The user runs these explicitly
 /// from a command block's "Run" button — model output is never executed automatically.
 const SHELL_PROGRAMS: &[&str] = &["npm", "npx", "node", "pnpm", "yarn", "git", "ls", "cat", "echo", "mkdir", "touch", "rm", "cp", "mv"];
-/// Build/test tooling the workflow Verify step may launch.
-const VERIFY_PROGRAMS: &[&str] = &["npm", "npx", "node", "pnpm", "yarn", "cargo", "python", "python3", "pytest", "go", "make", "tsc", "jest", "vitest"];
 const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Split one command into words without a shell: whitespace separates, quotes group. Shell
 /// operators are refused outright rather than passed through as literal arguments.
@@ -2723,42 +2498,8 @@ pub async fn project_shell(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Staged coding workflow — local task store under <project>/.monastery/tasks/
-// A task is the SAW-style "system of record": a human-readable spec.md (goal + acceptance criteria
-// + definition of done + affected files) plus task.json (stage + exit-state chain) plus an
-// evidence/ folder. Kept as plain files in the repo so it's transparent and version-controlled.
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct ExitState {
-    pub stage: String,        // plan | implement | verify | review
-    pub status: String,       // complete | failed | in_progress
-    pub exit_state: String,   // human marker, e.g. "Ready for Verify"
-    #[serde(default)]
-    pub evidence: Option<String>,
-    pub at: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct TaskMeta {
-    pub id: String,
-    pub title: String,
-    pub stage: String,        // plan | implement | verify | review | done
-    #[serde(default)]
-    pub affected_files: Vec<String>,
-    #[serde(default)]
-    pub exit_states: Vec<ExitState>,
-    #[serde(default)]
-    pub verify_command: Option<String>,
-    #[serde(default)]
-    pub session_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
 /// Resolve a project's on-disk directory (data_dir/<name>) from its id.
-async fn resolve_project_dir(state: &AppState, project_id: uuid::Uuid) -> Result<std::path::PathBuf, ApiError> {
+pub(crate) async fn resolve_project_dir(state: &AppState, project_id: uuid::Uuid) -> Result<std::path::PathBuf, ApiError> {
     use sqlx::Row;
     let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
         .bind(project_id.to_string())
@@ -2769,284 +2510,10 @@ async fn resolve_project_dir(state: &AppState, project_id: uuid::Uuid) -> Result
     }
 }
 
-fn tasks_dir(project_dir: &std::path::Path) -> std::path::PathBuf {
-    project_dir.join(".monastery").join("tasks")
-}
-
-fn read_task_meta(task_dir: &std::path::Path) -> Option<TaskMeta> {
-    serde_json::from_str(&std::fs::read_to_string(task_dir.join("task.json")).ok()?).ok()
-}
-
-fn write_task_meta(task_dir: &std::path::Path, meta: &TaskMeta) -> Result<(), ApiError> {
-    let s = serde_json::to_string_pretty(meta).map_err(|e| ApiError::Internal(e.to_string()))?;
-    std::fs::write(task_dir.join("task.json"), s)
-        .map_err(|e| ApiError::Internal(format!("write task.json: {}", e)))
-}
-
-/// GET /api/projects/:id/tasks — list task summaries (newest first).
-pub async fn list_tasks(
-    Path(project_id): Path<uuid::Uuid>,
-    State(state): State<AppState>,
-) -> Result<Json<Vec<TaskMeta>>, ApiError> {
-    let dir = tasks_dir(&resolve_project_dir(&state, project_id).await?);
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            if e.path().is_dir() {
-                if let Some(meta) = read_task_meta(&e.path()) {
-                    out.push(meta);
-                }
-            }
-        }
-    }
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    Ok(Json(out))
-}
-
-#[derive(Deserialize)]
-pub struct CreateTaskRequest {
-    pub title: String,
-    #[serde(default)]
-    pub session_id: Option<String>,
-    /// Optional pre-rendered spec.md (from a task template); falls back to a generic skeleton.
-    #[serde(default)]
-    pub spec: Option<String>,
-}
-
-/// POST /api/projects/:id/tasks — create a task (dir + task.json + spec.md template).
-pub async fn create_task(
-    Path(project_id): Path<uuid::Uuid>,
-    State(state): State<AppState>,
-    Json(req): Json<CreateTaskRequest>,
-) -> Result<Json<TaskMeta>, ApiError> {
-    let dir = tasks_dir(&resolve_project_dir(&state, project_id).await?);
-    let id = uuid::Uuid::new_v4().to_string();
-    let task_dir = dir.join(&id);
-    std::fs::create_dir_all(task_dir.join("evidence"))
-        .map_err(|e| ApiError::Internal(format!("create task dir: {}", e)))?;
-    let now = chrono::Utc::now().to_rfc3339();
-    let meta = TaskMeta {
-        id: id.clone(),
-        title: req.title.clone(),
-        stage: "plan".into(),
-        affected_files: vec![],
-        exit_states: vec![],
-        verify_command: None,
-        session_id: req.session_id,
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    write_task_meta(&task_dir, &meta)?;
-    let spec_template = req.spec.unwrap_or_else(|| format!(
-        "# {}\n\n## Goal\n\n_What are we building and why?_\n\n## Acceptance Criteria\n\n- [ ] \n\n## Definition of Done\n\n- [ ] Build/tests pass\n\n## Affected Files\n\n- \n\n## Approach\n\n_Plan the implementation here._\n",
-        req.title
-    ));
-    std::fs::write(task_dir.join("spec.md"), spec_template)
-        .map_err(|e| ApiError::Internal(format!("write spec.md: {}", e)))?;
-    Ok(Json(meta))
-}
-
-/// GET /api/projects/:id/tasks/:taskId — task meta + spec.md content.
-pub async fn get_task(
-    Path((project_id, task_id)): Path<(uuid::Uuid, String)>,
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let task_dir = tasks_dir(&resolve_project_dir(&state, project_id).await?).join(&task_id);
-    let meta = read_task_meta(&task_dir).ok_or_else(|| ApiError::NotFound("Task not found".into()))?;
-    let spec = std::fs::read_to_string(task_dir.join("spec.md")).unwrap_or_default();
-    Ok(Json(serde_json::json!({ "meta": meta, "spec": spec })))
-}
-
-#[derive(Deserialize)]
-pub struct UpdateTaskRequest {
-    #[serde(default)] pub title: Option<String>,
-    #[serde(default)] pub stage: Option<String>,
-    #[serde(default)] pub spec: Option<String>,
-    #[serde(default)] pub affected_files: Option<Vec<String>>,
-    #[serde(default)] pub verify_command: Option<String>,
-    /// Append an exit state to the chain of custody.
-    #[serde(default)] pub exit_state: Option<ExitState>,
-}
-
-/// PATCH /api/projects/:id/tasks/:taskId — update meta fields and/or spec.md.
-pub async fn update_task(
-    Path((project_id, task_id)): Path<(uuid::Uuid, String)>,
-    State(state): State<AppState>,
-    Json(req): Json<UpdateTaskRequest>,
-) -> Result<Json<TaskMeta>, ApiError> {
-    let task_dir = tasks_dir(&resolve_project_dir(&state, project_id).await?).join(&task_id);
-    let mut meta = read_task_meta(&task_dir).ok_or_else(|| ApiError::NotFound("Task not found".into()))?;
-    if let Some(t) = req.title { meta.title = t; }
-    if let Some(s) = req.stage { meta.stage = s; }
-    if let Some(f) = req.affected_files { meta.affected_files = f; }
-    if let Some(v) = req.verify_command { meta.verify_command = Some(v); }
-    if let Some(es) = req.exit_state { meta.exit_states.push(es); }
-    meta.updated_at = chrono::Utc::now().to_rfc3339();
-    write_task_meta(&task_dir, &meta)?;
-    if let Some(spec) = req.spec {
-        std::fs::write(task_dir.join("spec.md"), spec)
-            .map_err(|e| ApiError::Internal(format!("write spec.md: {}", e)))?;
-    }
-    Ok(Json(meta))
-}
-
-#[derive(Deserialize)]
-pub struct VerifyRequest {
-    /// Defaults to the task's verify_command, else "npm run build".
-    #[serde(default)] pub command: Option<String>,
-}
-
-/// POST /api/projects/:id/tasks/:taskId/verify — run the verify command in the project, capture
-/// the output as evidence, and record a verify exit state. This is the "evidence-based handoff".
-pub async fn verify_task(
-    Path((project_id, task_id)): Path<(uuid::Uuid, String)>,
-    State(state): State<AppState>,
-    Json(req): Json<VerifyRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_dir = resolve_project_dir(&state, project_id).await?;
-    let task_dir = tasks_dir(&project_dir).join(&task_id);
-    let mut meta = read_task_meta(&task_dir).ok_or_else(|| ApiError::NotFound("Task not found".into()))?;
-    let command = req.command.or_else(|| meta.verify_command.clone())
-        .unwrap_or_else(|| "npm run build".to_string());
-    // Same no-shell runner as project_shell, with a build/test-tooling allowlist.
-    let steps = parse_command_line(&command, VERIFY_PROGRAMS)
-        .map_err(|e| ApiError::Config(format!("Verify command not allowed: {}", e)))?;
-    let outcome = run_command_steps(&project_dir, &steps, VERIFY_TIMEOUT)
-        .await
-        .map_err(ApiError::Config)?;
-    let (stdout, stderr, code, passed) = (outcome.stdout, outcome.stderr, outcome.exit_code, outcome.success);
-    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
-    let log_name = format!("verify-{}.log", ts);
-    let log_body = format!(
-        "$ {}\nexit code: {}\n\n=== stdout ===\n{}\n=== stderr ===\n{}\n",
-        command, code, stdout, stderr
-    );
-    let _ = std::fs::write(task_dir.join("evidence").join(&log_name), &log_body);
-    meta.exit_states.push(ExitState {
-        stage: "verify".into(),
-        status: if passed { "complete".into() } else { "failed".into() },
-        exit_state: if passed { "Verified".into() } else { "Verify failed — back to Implement".into() },
-        evidence: Some(format!("evidence/{}", log_name)),
-        at: chrono::Utc::now().to_rfc3339(),
-    });
-    meta.updated_at = chrono::Utc::now().to_rfc3339();
-    write_task_meta(&task_dir, &meta)?;
-    Ok(Json(serde_json::json!({
-        "passed": passed,
-        "exit_code": code,
-        "command": command,
-        "evidence": format!("evidence/{}", log_name),
-        "log": tail_chars(&log_body, 8000),
-    })))
-}
-
-#[derive(Deserialize)]
-pub struct ProjectSearchParams {
-    pub q: String,
-    #[serde(default)] pub max: Option<usize>,
-}
-
-/// GET /api/projects/:id/search?q=... — pattern discovery ("Search First, Reuse Always"). Uses
-/// ripgrep when available, else a lightweight recursive walk. Feeds the Implement stage existing
-/// code to reuse instead of regenerating it.
-pub async fn search_project(
-    Path(project_id): Path<uuid::Uuid>,
-    State(state): State<AppState>,
-    Query(params): Query<ProjectSearchParams>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let project_dir = resolve_project_dir(&state, project_id).await?;
-    let q = params.q.trim().to_string();
-    if q.is_empty() {
-        return Err(ApiError::Config("Missing search query 'q'".into()));
-    }
-    let max = params.max.unwrap_or(40);
-    let mut matches: Vec<serde_json::Value> = Vec::new();
-
-    let rg = tokio::process::Command::new("rg")
-        .args(["--line-number", "--no-heading", "--color", "never", "--max-count", "5", "-i", &q])
-        .current_dir(&project_dir)
-        .output()
-        .await;
-    let used_rg = match rg {
-        Ok(out) if !out.stdout.is_empty() => {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines().take(max) {
-                // path:line:content
-                let mut parts = line.splitn(3, ':');
-                if let (Some(path), Some(lineno), Some(content)) = (parts.next(), parts.next(), parts.next()) {
-                    matches.push(serde_json::json!({
-                        "path": path.replace('\\', "/"),
-                        "line": lineno.parse::<u64>().unwrap_or(0),
-                        "text": content.trim(),
-                    }));
-                }
-            }
-            true
-        }
-        _ => false,
-    };
-
-    if !used_rg {
-        fn walk(dir: &std::path::Path, base: &std::path::Path, ql: &str, max: usize, out: &mut Vec<serde_json::Value>) {
-            if out.len() >= max { return; }
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for e in entries.flatten() {
-                    if out.len() >= max { return; }
-                    let p = e.path();
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if p.is_dir() {
-                        if !CONTEXT_SKIP_DIRS.contains(&name.as_str()) { walk(&p, base, ql, max, out); }
-                    } else if is_context_ignored_file(&name) {
-                        continue;
-                    } else if let Ok(content) = std::fs::read_to_string(&p) {
-                        for (i, line) in content.lines().enumerate() {
-                            if line.to_lowercase().contains(ql) {
-                                let rel = p.strip_prefix(base).unwrap_or(p.as_path()).to_string_lossy().replace('\\', "/");
-                                out.push(serde_json::json!({ "path": rel, "line": i as u64 + 1, "text": line.trim() }));
-                                break; // one hit per file in the fallback
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        walk(&project_dir, &project_dir, &q.to_lowercase(), max, &mut matches);
-    }
-
-    Ok(Json(serde_json::json!({ "query": q, "matches": matches })))
-}
-
-/// Read all project files and return their contents
-pub async fn read_all_project_files(
-    Path(project_id): Path<uuid::Uuid>,
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    use sqlx::Row;
-    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
-        .bind(project_id.to_string())
-        .fetch_optional(&*state.db)
-        .await?;
-
-    let project_name = match row {
-        Some(r) => r.get::<String, _>(0),
-        None => return Err(ApiError::NotFound("Project not found".into())),
-    };
-
-    let project_path = state.config.data_dir.join(&project_name);
-    if !project_path.exists() {
-        return Ok(Json(serde_json::json!({ "files": {} })));
-    }
-
-    let mut files = serde_json::Map::new();
-    read_files_recursive(&project_path, &project_path, &mut files, 0);
-    
-    Ok(Json(serde_json::json!({ "files": files })))
-}
-
 /// Directories never read into LLM context or searched: VCS internals, dependencies, build
 /// output, caches, editor settings, and Monastery's own task/deploy state. Mirrors bolt.diy's
 /// IGNORE_PATTERNS.
-const CONTEXT_SKIP_DIRS: &[&str] = &[
+pub(crate) const CONTEXT_SKIP_DIRS: &[&str] = &[
     ".git", "node_modules", "target", "dist", "build", ".next", ".nuxt", ".svelte-kit", ".turbo",
     "coverage", ".cache", ".monastery", ".vscode", ".idea", "__pycache__", ".venv", "venv",
 ];
@@ -3063,7 +2530,7 @@ fn is_context_ignored_file(name: &str) -> bool {
     CONTEXT_SKIP_FILES.contains(&name) || CONTEXT_SKIP_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
-fn read_files_recursive(
+pub(crate) fn read_files_recursive(
     base: &std::path::Path,
     current: &std::path::Path,
     files: &mut serde_json::Map<String, serde_json::Value>,
@@ -5565,365 +5032,6 @@ pub async fn move_project_file(
 
     tracing::info!("Moved {} -> {}", req.source, req.destination);
     Ok(Json(serde_json::json!({ "success": true, "source": req.source, "destination": req.destination })))
-}
-
-// ============================================================
-// Hermes Agent Integration
-// ============================================================
-
-/// Request to create or update a Hermes connection
-#[derive(Debug, Deserialize)]
-pub struct HermesConnectionRequest {
-    pub name: String,
-    pub base_url: String,
-    pub api_key: String,
-}
-
-/// List all Hermes agent connections
-pub async fn list_hermes_connections(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let rows = sqlx::query(
-        "SELECT id, name, base_url, api_key, is_default, created_at, last_used_at FROM hermes_connections ORDER BY created_at DESC"
-    )
-    .fetch_all(&*state.db)
-    .await?;
-
-    let connections: Vec<serde_json::Value> = rows.iter().map(|r| {
-        let is_default: i64 = r.get(4);
-        let last_used: Option<String> = r.get(6);
-        serde_json::json!({
-            "id": r.get::<String, _>(0),
-            "name": r.get::<String, _>(1),
-            "base_url": r.get::<String, _>(2),
-            "api_key": r.get::<String, _>(3),
-            "is_default": is_default != 0,
-            "created_at": r.get::<String, _>(5),
-            "last_used_at": last_used,
-        })
-    }).collect();
-
-    Ok(Json(serde_json::json!({ "connections": connections })))
-}
-
-/// Create a new Hermes agent connection
-pub async fn create_hermes_connection(
-    State(state): State<AppState>,
-    Json(req): Json<HermesConnectionRequest>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let id = Uuid::new_v4().to_string();
-    let now = chrono::Utc::now().to_rfc3339();
-
-    // If this is the first connection, make it default
-    let existing_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM hermes_connections")
-        .fetch_one(&*state.db)
-        .await?;
-    let is_default = if existing_count.0 == 0 { 1 } else { 0 };
-
-    sqlx::query(
-        "INSERT INTO hermes_connections (id, name, base_url, api_key, is_default, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-    )
-    .bind(&id)
-    .bind(&req.name)
-    .bind(&req.base_url)
-    .bind(&req.api_key)
-    .bind(is_default)
-    .bind(&now)
-    .execute(&*state.db)
-    .await?;
-
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "name": req.name,
-        "base_url": req.base_url,
-        "is_default": is_default != 0,
-        "created_at": now,
-    })))
-}
-
-/// Delete a Hermes connection
-pub async fn delete_hermes_connection(
-    Path(connection_id): Path<String>,
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let result = sqlx::query("DELETE FROM hermes_connections WHERE id = ?")
-        .bind(&connection_id)
-        .execute(&*state.db)
-        .await?;
-
-    if result.rows_affected() == 0 {
-        return Err(ApiError::NotFound("Connection not found".into()));
-    }
-
-    Ok(Json(serde_json::json!({ "success": true })))
-}
-
-/// Test a Hermes connection by calling its /v1/health or /v1/models endpoint
-pub async fn test_hermes_connection(
-    Path(connection_id): Path<String>,
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let row = sqlx::query("SELECT base_url, api_key FROM hermes_connections WHERE id = ?")
-        .bind(&connection_id)
-        .fetch_optional(&*state.db)
-        .await?;
-
-    let (base_url, api_key) = match row {
-        Some(r) => (
-            r.get::<String, _>(0),
-            r.get::<String, _>(1),
-        ),
-        None => return Err(ApiError::NotFound("Connection not found".into())),
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| ApiError::Internal(format!("Failed to create HTTP client: {}", e)))?;
-
-    let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .send()
-        .await;
-
-    match resp {
-        Ok(r) if r.status().is_success() => {
-            // Update last_used_at
-            let now = chrono::Utc::now().to_rfc3339();
-            let _ = sqlx::query("UPDATE hermes_connections SET last_used_at = ? WHERE id = ?")
-                .bind(&now)
-                .bind(&connection_id)
-                .execute(&*state.db)
-                .await;
-
-            Ok(Json(serde_json::json!({ "success": true, "status": r.status().as_u16() })))
-        }
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let body = r.text().await.unwrap_or_default();
-            Ok(Json(serde_json::json!({ "success": false, "status": status, "error": body })))
-        }
-        Err(e) => {
-            Ok(Json(serde_json::json!({ "success": false, "status": 0, "error": e.to_string() })))
-        }
-    }
-}
-
-/// Set a Hermes connection as the default
-pub async fn set_default_hermes_connection(
-    Path(connection_id): Path<String>,
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    // Verify connection exists
-    let exists = sqlx::query("SELECT 1 FROM hermes_connections WHERE id = ?")
-        .bind(&connection_id)
-        .fetch_optional(&*state.db)
-        .await?;
-    if exists.is_none() {
-        return Err(ApiError::NotFound("Connection not found".into()));
-    }
-
-    // Clear existing default
-    sqlx::query("UPDATE hermes_connections SET is_default = 0")
-        .execute(&*state.db)
-        .await?;
-
-    // Set new default
-    sqlx::query("UPDATE hermes_connections SET is_default = 1 WHERE id = ?")
-        .bind(&connection_id)
-        .execute(&*state.db)
-        .await?;
-
-    Ok(Json(serde_json::json!({ "success": true })))
-}
-
-/// Request body for Hermes agent run
-#[derive(Debug, Deserialize)]
-pub struct HermesRunRequest {
-    /// Full conversation to forward (preferred). Includes the system context the
-    /// frontend builds (project file tree + contents) plus chat history.
-    #[serde(default)]
-    pub messages: Option<Vec<ChatMessage>>,
-    /// Legacy single-task input. Used only when `messages` is absent.
-    #[serde(default)]
-    pub task: Option<String>,
-    pub project_path: Option<String>,
-    pub model: Option<String>,
-}
-
-/// Proxy a task to Hermes agent via SSE streaming
-/// Uses the default Hermes connection to POST /v1/chat/completions
-pub async fn hermes_agent_run(
-    State(state): State<AppState>,
-    Json(req): Json<HermesRunRequest>,
-) -> Result<Response, ApiError> {
-    use axum::response::sse::{Event, Sse};
-
-    let row = sqlx::query(
-        "SELECT base_url, api_key FROM hermes_connections WHERE is_default = 1 LIMIT 1"
-    )
-    .fetch_optional(&*state.db)
-    .await?;
-
-    let (base_url, api_key) = match row {
-        Some(r) => (r.get::<String, _>(0), r.get::<String, _>(1)),
-        None => {
-            return Err(ApiError::Config(
-                "No default Hermes connection configured. Add one in Settings → Hermes.".into(),
-            ));
-        }
-    };
-
-    // Build the chat completion request for Hermes /v1/chat/completions.
-    // Prefer the full conversation (system context + history) when provided; otherwise
-    // fall back to the legacy single-task shape with a built-in system prompt.
-    let messages: Vec<serde_json::Value> = match req.messages.as_ref() {
-        Some(msgs) if !msgs.is_empty() => msgs
-            .iter()
-            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-            .collect(),
-        _ => vec![
-            serde_json::json!({
-                "role": "system",
-                "content": "You are a coding assistant. Write clean, working code. When creating files, output them as code blocks with the filename as a heading."
-            }),
-            serde_json::json!({
-                "role": "user",
-                "content": req.task.clone().unwrap_or_default(),
-            }),
-        ],
-    };
-
-    let mut body = serde_json::json!({
-        "messages": messages,
-        "stream": true,
-    });
-
-    if let Some(ref model) = req.model {
-        body["model"] = serde_json::json!(model);
-    }
-
-    let client = reqwest::Client::new();
-    let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
-
-    let resp = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", api_key))
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| ApiError::Internal(format!("Hermes API request failed: {}", e)))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(ApiError::Internal(format!("Hermes API error {}: {}", status, text)));
-    }
-
-    // Update last_used_at on the default connection
-    let now = chrono::Utc::now().to_rfc3339();
-    let _ = sqlx::query("UPDATE hermes_connections SET last_used_at = ? WHERE is_default = 1")
-        .bind(&now)
-        .execute(&*state.db)
-        .await;
-
-    // Stream the response back as SSE
-    let stream = resp.bytes_stream();
-    let sse_stream = async_stream::stream! {
-        use futures::StreamExt;
-
-        let mut buffer = Vec::new();
-        tokio::pin!(stream);
-
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(bytes) => {
-                    buffer.extend_from_slice(&bytes);
-                    // Emit complete lines
-                    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
-                        let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
-                        // strip trailing newline
-                        let line = String::from_utf8_lossy(&line_bytes[..line_bytes.len() - 1]);
-                        // Extract the SSE data payload (Hermes speaks OpenAI streaming format).
-                        let payload = if let Some(rest) = line.strip_prefix("data: ") {
-                            rest
-                        } else if let Some(rest) = line.strip_prefix("data:") {
-                            rest
-                        } else {
-                            continue;
-                        };
-                        let payload = payload.trim();
-                        if payload.is_empty() || payload == "[DONE]" {
-                            continue;
-                        }
-                        // Parse the OpenAI-style delta and emit clean events, matching the
-                        // normal /chat path so the frontend handles both streams identically.
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) {
-                            let delta = &json["choices"][0]["delta"];
-                            if let Some(r) = delta["reasoning_content"].as_str().or_else(|| delta["reasoning"].as_str()) {
-                                if !r.is_empty() {
-                                    yield Ok::<_, std::convert::Infallible>(Event::default().event("reasoning").data(sse_safe(r)));
-                                }
-                            }
-                            if let Some(c) = delta["content"].as_str() {
-                                if !c.is_empty() {
-                                    yield Ok(Event::default().data(sse_safe(c)));
-                                }
-                            }
-                            // Hermes is an autonomous agent: it may emit tool calls rather than
-                            // (or alongside) text. We can't drive its tool loop, but we surface the
-                            // tool's name as a visible step so the response degrades gracefully
-                            // instead of looking empty/broken. The name appears on the first delta
-                            // of each tool call; later deltas carry only argument fragments.
-                            if let Some(tool_calls) = delta["tool_calls"].as_array() {
-                                for tc in tool_calls {
-                                    if let Some(name) = tc["function"]["name"].as_str() {
-                                        if !name.is_empty() {
-                                            yield Ok(Event::default().data(format!("\n> 🔧 Hermes is running tool `{}`…\n", name)));
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(reason) = json["choices"][0]["finish_reason"].as_str() {
-                                if !reason.is_empty() {
-                                    yield Ok(Event::default().event("finish_reason").data(reason.to_string()));
-                                }
-                            }
-                            // Forward token usage if Hermes' upstream includes it (final chunk).
-                            if let Some(usage) = json.get("usage") {
-                                if usage.is_object() {
-                                    yield Ok(Event::default().event("usage").data(usage.to_string()));
-                                }
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Surface the interruption inline (as content) so the user keeps whatever
-                    // streamed so far plus a clear note, instead of the whole turn erroring out.
-                    yield Ok(Event::default().data(sse_safe(format!("\n\n⚠️ Hermes stream interrupted: {}", e))));
-                    break;
-                }
-            }
-        }
-        // Signal done
-        yield Ok(Event::default().data("[DONE]"));
-    };
-
-    // Keep-alive is critical on THIS route: Hermes can go silent for minutes while it runs
-    // tools on a slow machine, and an idle connection gets killed by intermediaries (the
-    // Cloudflare tunnel drops idle requests at ~100s → "network error" in the UI). The
-    // other chat SSE routes already ping; this one was missing it.
-    Ok(Sse::new(sse_stream)
-        .keep_alive(
-            axum::response::sse::KeepAlive::new()
-                .interval(std::time::Duration::from_secs(15))
-                .text("keep-alive"),
-        )
-        .into_response())
 }
 
 #[cfg(test)]
