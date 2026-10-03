@@ -15,9 +15,10 @@ A self-hosted sanctuary for AI-assisted coding. Monastery is a fully self-hosted
 - **Decoupled Architecture**: Harness runs independently of LLM servers. Auto-discovery or manual config for local endpoints.
 - **100% Self-Hosted**: Everything containerized, network-aware, and privacy-focused.
 - **Lightweight**: Harness container <1GB RAM idle; works on low-power nodes.
-- **Homelab Native**: Deep integrations with Proxmox, Coolify, PocketBase, MQTT, etc.
+- **Homelab Native**: Deploy to Coolify or Dokploy, route through Cloudflare tunnels, back apps with a shared PocketBase, and keep projects in your own git forge.
 - **OpenAI-Compatible**: Works with Ollama, vLLM, llama.cpp, OpenAI, Groq, and more.
-- **Staged Coding Workflow**: Drive work as Plan → Implement → Verify → Review with a local spec, gates, evidence, and token-frugal scoped context. See [Coding Workflow](docs/WORKFLOW.md).
+- **Build & Discuss**: Build mode writes and edits files; Discuss mode answers questions and drafts a plan without touching anything — then **Build this plan** hands it over.
+- **Live Preview + Undo**: the preview reloads as files land, and every AI edit is snapshotted first so one click abandons it.
 
 <img width="1912" height="992" alt="Screenshot 2026-06-06 144116" src="https://github.com/user-attachments/assets/39267f69-9197-4c09-9033-54003a2c08e4" />
 
@@ -68,9 +69,9 @@ The harness will be available at `http://localhost:3000`.
 ## Architecture
 
 ```
-┌─────────────┐     HTTP      ┌──────────────┐
+┌─────────────┐  HTTP + SSE   ┌──────────────┐
 │   Browser   │ ◄──────────► │   Harness    │
-│   (Web UI)  │   WebSocket   │   (Rust)     │
+│   (Web UI)  │               │   (Rust)     │
 └─────────────┘               └──────┬───────┘
                                      │
                           ┌──────────┼──────────┐
@@ -87,7 +88,6 @@ The harness will be available at `http://localhost:3000`.
 - **Backend**: Rust (Axum) - lightweight, safe, performant
 - **Frontend**: React + TypeScript with Vite - modern, responsive UI with Monaco editor
 - **Database**: SQLite - embedded, easy backup
-- **Sandbox**: Docker-based isolated execution
 - **LLM Client**: OpenAI-compatible protocol
 - **Styling**: Tailwind CSS with custom Monastery theme
 
@@ -103,14 +103,17 @@ The harness will be available at `http://localhost:3000`.
 
 ## API Endpoints
 
-- `GET /api/health` - Health check
-- `GET /api/models` - List available models
-- `POST /api/models/:id/chat` - Stream chat completion
-- `GET /api/endpoints` - List configured endpoints
-- `POST /api/endpoints` - Add new endpoint
-- `DELETE /api/endpoints/:id` - Remove endpoint
-- `POST /api/endpoints/:id/test` - Test connectivity
-- `GET /api/discovery` - Discover local services
+The full route table lives in [`crates/harness-api/src/main.rs`](crates/harness-api/src/main.rs). By area:
+
+| Area | Routes |
+|---|---|
+| Health & models | `GET /api/health`, `GET /api/models`, `POST /api/models/:id/chat` (SSE stream) |
+| LLM endpoints | `GET/POST /api/endpoints`, `DELETE /api/endpoints/:id`, `POST /api/endpoints/:id/test`, `GET /api/discovery` |
+| Projects & files | `/api/projects`, `/api/projects/:id/files` (+ `read`, `read-all`, `write`, `edit`, `dir`, `upload`, `move`), `search`, `shell` (user-run only), `preview/*path` |
+| Sessions | `/api/projects/:project_id/sessions` (+ `:session_id`, `messages`) |
+| Snapshots | `/api/projects/:project_id/snapshots` (+ `checkpoint`, `restore`, `diff`) |
+| Git | `/api/git/connections`, `status`, `commit-push`, `pull`, `push`, `clone` |
+| Hosting | `/api/hosting/connections`, `deploy`, `preview`, `deployment-log` |
 
 ## Development
 
@@ -135,12 +138,12 @@ cargo test
 
 ## Self-Hosting Wizard
 
-The built-in wizard helps you:
+The built-in wizard (History & Ship → **Deploy to your homelab**) helps you:
 
-1. Generate `docker-compose.yml` for your generated apps
-2. Configure network connections between services
-3. Set up reverse proxies (Traefik, Nginx)
-4. Deploy to Coolify, Proxmox, or Kubernetes
+1. Detect the project's framework and generate a Dockerfile if it has none
+2. Deploy it to your Coolify or Dokploy instance, redeploying in place on later runs
+3. Optionally route it through a Cloudflare tunnel and inject a shared PocketBase URL
+4. Hand a failed build's log back to the chat to fix
 
 > Deploying to Coolify? See [Coolify Deployment — Requirements & Setup](docs/COOLIFY_DEPLOYMENT.md)
 > for the HTTPS-hostname/TLS prerequisites, how updates redeploy in place, and troubleshooting.
@@ -148,9 +151,9 @@ The built-in wizard helps you:
 ## Security
 
 - Minimal outbound connectivity by default
-- Sandboxed code execution
-- No unnecessary permissions
-- Encrypted credential storage (optional)
+- Model output never executes on its own: shell blocks only run when you click **Run**, without a shell, from an allowlist, with project-relative arguments only
+- File APIs refuse paths outside the project before touching disk
+- No Docker socket or other host access required
 
 ## License
 

@@ -1,5 +1,10 @@
 # Hermes Shared Workspace — Seeing Hermes's Files in Monastery
 
+> **Context (2026-10):** Hermes is no longer part of Monastery's chat (Agent mode was hidden in
+> simplification Phase 1). This page is still the setup guide for letting Hermes write directly
+> into a Monastery project on the **same machine**. For an agent on another machine, use the git
+> bridge in [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md).
+
 By default, when Hermes does agent work it writes files into **its own** workspace — not your
 Monastery project — so Monastery's file tree can't see them. This guide sets up a **shared
 workspace** so Hermes writes directly into your Monastery project, where you can view, edit, and
@@ -51,7 +56,6 @@ services:
   harness:
     volumes:
       - /apps/monastery/data:/app/data        # was: harness_data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - DATA_DIR=/app/data
 # remove the top-level `volumes: { harness_data: ... }` block once migrated
@@ -101,39 +105,19 @@ with `TERMINAL_CWD` set to that project.
 ## Using it
 
 1. In Monastery, select (or create) the project whose directory you pointed Hermes at.
-2. Work with Hermes (via Monastery's Agent mode, or Hermes's own CLI) — it writes into the shared dir.
-   Monastery's chat also shows Hermes's tool steps (e.g. `🔧 Hermes is running tool write_file…`).
+2. Work with Hermes through its own CLI or API — it writes into the shared dir.
 3. Back in Monastery, click the **Refresh** button in the **Files** sidebar toolbar (or just refocus
    the window) to re-read the project from disk — Hermes's new/changed files appear in the tree and
    open in the editor.
-4. Review, then **Commit & Push** as usual to persist them to your git repo.
+4. Review, then commit & push from **History & Ship → Advanced · Git sync** to persist them to your git repo.
 
 ---
 
 ## Alternative bridge: git (Hermes on a separate machine)
 
-When Hermes runs on a **different machine** than Monastery, a shared directory means a network
-mount — clunky. If the project has a git remote (create one from Source & Ship → "Create repo on
-your forge & push this project"), **the repo is a better bridge**:
-
-1. **On the Hermes machine**, clone the project's repo and point Hermes at the clone:
-   ```yaml
-   # ~/.hermes/config.yaml
-   terminal:
-     cwd: /path/to/clone
-   ```
-   Give that machine push rights (PAT embedded in the remote URL, or an SSH key). For the Docker
-   image, set `TERMINAL_CWD` to the clone and make sure `HERMES_WRITE_SAFE_ROOT` covers it.
-2. **Make sync part of the task.** End your task prompt (or template) with:
-   *"Start by running `git pull`. When complete and verified: `git add -A && git commit -m '<summary>' && git push`."*
-   Hermes has terminal tools — it ships its own work.
-3. **In Monastery**, the git chip shows the behind count as soon as Hermes pushes. Open
-   **Source & Ship → Pull** — Monastery snapshots first, rebases local edits on top, and reloads
-   files, context, and the live preview.
-
-Rhythm to keep: Hermes pulls before starting, pushes when done; you Pull before editing in
-Monastery. Bonus: `.monastery/tasks/` specs travel through the repo too, so Hermes's clone sees
-the task spec Monastery wrote once it pulls.
+When Hermes runs on a **different machine**, a shared directory means a network mount — clunky.
+Use the project's git repo as the bridge instead; that setup now lives in
+[EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md) and works for any agent, not just Hermes.
 
 ---
 
@@ -146,7 +130,7 @@ the task spec Monastery wrote once it pulls.
   terminal:
     cwd: /workspace/<project-name>
   ```
-  (The `project_path` Monastery sends to `/api/hermes/run` is currently informational — Hermes ignores it.)
+  (Monastery no longer calls Hermes directly, so there is no per-request project path.)
 - **Write root must include the workspace.** The image defaults `HERMES_WRITE_SAFE_ROOT=/opt/data`,
   which blocks writes to `/workspace`. Override it (to `/workspace`, or a specific project dir) or
   Hermes will refuse to write your files.

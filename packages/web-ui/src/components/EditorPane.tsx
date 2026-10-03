@@ -12,13 +12,9 @@ interface EditorPaneProps {
   onCloseTab: (index: number) => void;
   onChange: (content: string) => void;
   onSave: () => void;
-  /** Editor-toolbar agent actions on the active file. */
-  onExplain: () => void;
-  onRefactor: () => void;
-  onAddTests: () => void;
 }
 
-/** The code editor pane: tab bar, toolbar (agent actions + save), and Monaco / image viewer. */
+/** The code editor pane: tab bar, toolbar (path + save), and Monaco / image viewer. */
 export function EditorPane({
   projectId,
   tabs,
@@ -29,9 +25,6 @@ export function EditorPane({
   onCloseTab,
   onChange,
   onSave,
-  onExplain,
-  onRefactor,
-  onAddTests,
 }: EditorPaneProps) {
   return (
     <div className="h-full bg-monastery-dark-surface flex flex-col animate-slideInRight rounded-xl overflow-hidden">
@@ -69,27 +62,6 @@ export function EditorPane({
           {currentFile || 'No file selected'}
         </span>
         <div className="flex items-center gap-2">
-          <button
-            onClick={onExplain}
-            disabled={!currentFile}
-            className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
-          >
-            Explain
-          </button>
-          <button
-            onClick={onRefactor}
-            disabled={!currentFile}
-            className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
-          >
-            Refactor
-          </button>
-          <button
-            onClick={onAddTests}
-            disabled={!currentFile}
-            className="px-2 py-0.5 text-xs hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary disabled:opacity-40"
-          >
-            Add Tests
-          </button>
           {currentFile && !isImagePath(currentFile) && (
             <button
               onClick={onSave}

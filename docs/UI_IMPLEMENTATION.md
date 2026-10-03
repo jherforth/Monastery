@@ -1,5 +1,9 @@
 # Monastery UI/UX Implementation Summary
 
+> **Historical (June 2026).** The UI was reworked in July 2026 (drawers, full-screen Settings,
+> command palette) and simplified in October 2026 (Build/Discuss, History & Ship). Kept for
+> reference; see [../ARCHITECTURE.md](../ARCHITECTURE.md) for the current layout.
+
 ## Overview
 
 This document summarizes the UI/UX implementation for **Monastery** based on the requirements in `UI_UX.md`. The implementation follows the brand identity, design philosophy, and technical specifications outlined in the design documents.

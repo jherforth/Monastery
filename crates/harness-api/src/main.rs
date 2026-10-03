@@ -140,9 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/hosting/connections/:id/deployment-log", get(handlers::get_deployment_log))
         .route("/api/hosting/deploy", post(handlers::deploy_to_hosting))
         .route("/api/hosting/preview", post(handlers::preview_deploy))
-        // Agent routes
-        .route("/api/agents/run", post(handlers::run_agent))
-        // Hermes agent routes
+        // Hermes agent routes (hidden in the UI since simplification Phase 1; removed in Phase 3)
         .route("/api/hermes/connections", get(handlers::list_hermes_connections))
         .route("/api/hermes/connections", post(handlers::create_hermes_connection))
         .route("/api/hermes/connections/:id", delete(handlers::delete_hermes_connection))

@@ -193,7 +193,7 @@ interface SidebarProps {
   onDeleteDirectory?: (path: string) => void;
   onUploadFile?: (parentPath: string, file: File) => void;
   onMoveFile?: (sourcePath: string, targetDirPath: string) => void;
-  /** Re-read the project files from disk (surfaces changes made outside Monastery, e.g. by Hermes). */
+  /** Re-read the project files from disk (surfaces changes made outside Monastery, e.g. by another tool).. */
   onRefreshFiles?: () => void;
 }
 
@@ -238,12 +238,12 @@ export function Sidebar({
             <div className="flex items-center gap-1 px-3 py-1.5 mb-1">
               <span className="text-xs text-monastery-text-muted flex-1">Files</span>
 
-              {/* Refresh from disk — surfaces files written outside Monastery (e.g. by Hermes) */}
+              {/* Refresh from disk — surfaces files written outside Monastery (e.g. by another tool) */}
               {onRefreshFiles && (
                 <button
                   onClick={onRefreshFiles}
                   className="p-1 hover:bg-monastery-dark-tertiary rounded transition-colors text-monastery-text-secondary hover:text-monastery-text-primary"
-                  title="Refresh files from disk (e.g. changes written by Hermes)"
+                  title="Refresh files from disk (picks up changes made outside Monastery)"
                 >
                   <RefreshCw size={14} />
                 </button>

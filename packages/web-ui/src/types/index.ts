@@ -19,13 +19,9 @@ export interface Message {
   /** Accumulated token usage across the initial response + any continuations (when the
    *  endpoint reports it via stream_options.include_usage). */
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  /** Which backend produced this assistant message — shown as a small badge in the UI. */
-  via?: 'hermes' | 'llm';
-  /** Agent role label(s) active when a user message was sent (e.g. "🏗️ Architect") — shown as chips. */
-  agentLabels?: string[];
-  /** On system messages: proposed workflow-task title. ChatPane renders a one-click
-   *  "create task & plan it" button for it (the large-project workflow nudge). */
-  suggestTaskTitle?: string;
+  /** 'discuss' on messages sent/answered in Discuss mode: the reply is never applied to files,
+   *  and a plan in it gets a "Build this plan" button. Absent = Build mode. */
+  mode?: 'discuss';
   /** Per-file before/after captured when this system message reports applied AI changes —
    *  rendered as expandable diff cards under the message. */
   fileChanges?: FileChange[];

@@ -11,16 +11,8 @@ import { SelfHostWizard } from './components/SelfHostWizard';
 import { useAppStore } from './store/useAppStore';
 import { useSessions } from './hooks/useSessions';
 import { useEndpoints } from './hooks/useEndpoints';
-import { useAgents } from './hooks/useAgents';
-import { useHermesAgent } from './hooks/useHermesAgent';
 import { useHostingServices } from './hooks/useHostingServices';
-import { useWorkflow, type Stage } from './hooks/useWorkflow';
-import { TaskDrawer, STAGE_LABEL } from './components/TaskDrawer';
-import {
-  useChatOrchestrator,
-  MAX_ACTIVE_ROLES,
-  WORKFLOW_NUDGE_SUPPRESS_KEY,
-} from './hooks/useChatOrchestrator';
+import { useChatOrchestrator } from './hooks/useChatOrchestrator';
 import { useDialogs } from './components/ui/dialogs';
 import { CommandPalette, type CommandItem } from './components/CommandPalette';
 import { Message, FileNode } from './types';
@@ -57,31 +49,15 @@ export default function App() {
   const [availableProjects, setAvailableProjects] = useState<any[]>([]);
   const [allFileContents, setAllFileContents] = useState<Record<string, string>>({});
   const [isWizardOpen, setIsWizardOpen] = useState(false);
-  const [isTaskDrawerOpen, setIsTaskDrawerOpen] = useState(false);
-
-  // Both right-side drawers (tasks here, Source & Ship in TopBar) are mutually exclusive.
-  const openTaskDrawer = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('monastery:close-source-ship'));
-    setIsTaskDrawerOpen(true);
-  }, []);
-  useEffect(() => {
-    const handler = () => setIsTaskDrawerOpen(false);
-    window.addEventListener('monastery:open-source-ship', handler);
-    return () => window.removeEventListener('monastery:open-source-ship', handler);
-  }, []);
   const [availableModels, setAvailableModels] = useState<Array<{ id: string; name?: string }>>([]);
   const activeEndpoint = useAppStore(s => s.activeEndpoint);
 
   // Endpoints for LLM selector in TopBar
   const { endpoints } = useEndpoints();
-  // Hermes agent: a default connection enables the "Agent mode" toggle in the chat.
-  const { defaultConnection: hermesConnection } = useHermesAgent();
   // Pocketbase: a configured connection enables the "Pocketbase backend" toggle + its URL is
   // injected into the LLM context and into deploys.
   const { connections: hostingConns } = useHostingServices();
   const pocketbaseConn = hostingConns.find((c: any) => c.service_type === 'pocketbase');
-  // Staged coding workflow (SAW-inspired): task spec + stages + gates + evidence, stored locally.
-  const workflow = useWorkflow(currentProject?.id);
 
   // Fetch the ACTIVE endpoint's models whenever endpoints or the selection change. Always
   // replace the list (an empty result must clear stale models from a previous endpoint) —
@@ -106,39 +82,29 @@ export default function App() {
     addMessage,
   } = useSessions(currentProject?.id ?? null);
 
-  // Agent system (execution is unified through the orchestrator's handleSendMessage)
-  const { getAgent, editorPrompts } = useAgents();
-
   // Everything about talking to the model — streaming, auto-continue, @read/@search rounds,
-  // applying code blocks to disk, edit recovery — lives in the orchestrator hook.
+  // applying code blocks to disk, edit recovery, Build/Discuss — lives in the orchestrator hook.
   const {
     messages,
     setMessages,
     isGenerating,
-    autoContinue,
-    setAutoContinue,
-    agentMode,
-    setAgentMode,
+    chatMode,
+    setChatMode,
     activeSkillIds,
     toggleSkill,
-    activeAgentIds,
-    toggleActiveAgent,
     handleSendMessage,
     handleContinueGeneration,
     handleStopGeneration,
-    triggerAgent,
     handleFixBuildError,
-    runStage,
+    buildPlan,
+    runShellCommand,
   } = useChatOrchestrator({
     currentProject,
     currentSession,
     createSession,
     addMessage,
     availableModels,
-    hermesConnection,
     pocketbaseBaseUrl: pocketbaseConn?.base_url,
-    workflow,
-    getAgent,
     projectFiles,
     setProjectFiles,
     allFileContents,
@@ -149,27 +115,17 @@ export default function App() {
     updateTabContentByPath,
   });
 
-  // Composer "+ Context" options: fixed behaviors plus every available toggle skill from the
-  // registry — a new skill in lib/skills.ts shows up here with zero UI changes.
-  const contextToggles: ComposerToggle[] = [
-    {
-      id: 'auto-continue',
-      label: 'Auto-continue',
-      description: 'Automatically continue responses cut off by the output-token limit (capped)',
-      active: autoContinue,
-      onToggle: setAutoContinue,
-      showChip: false,
-    },
-    ...SKILLS
-      .filter(s => s.trigger === 'toggle' && (!s.available || s.available({ pocketbaseUrl: pocketbaseConn?.base_url })))
-      .map(s => ({
-        id: s.id,
-        label: s.label,
-        description: s.description,
-        active: activeSkillIds.includes(s.id),
-        onToggle: (on: boolean) => toggleSkill(s.id, on),
-      })),
-  ];
+  // Composer "Context" options: every available toggle skill from the registry — a new skill
+  // in lib/skills.ts shows up here with zero UI changes. (The popover hides when there are none.)
+  const contextToggles: ComposerToggle[] = SKILLS
+    .filter(s => s.trigger === 'toggle' && (!s.available || s.available({ pocketbaseUrl: pocketbaseConn?.base_url })))
+    .map(s => ({
+      id: s.id,
+      label: s.label,
+      description: s.description,
+      active: activeSkillIds.includes(s.id),
+      onToggle: (on: boolean) => toggleSkill(s.id, on),
+    }));
 
   // Sync persisted theme with the HTML data-theme attribute on load
   useEffect(() => {
@@ -295,7 +251,7 @@ export default function App() {
   }, [currentProject?.id, resetTabs]);
 
   // When the window regains focus, do a lightweight re-read of the file tree so files written
-  // outside Monastery (e.g. by Hermes on a shared workspace) show up without a manual refresh.
+  // outside Monastery (e.g. by an external tool on a shared folder) show up without a manual refresh.
   useEffect(() => {
     const pid = currentProject?.id;
     if (!pid) return;
@@ -506,15 +462,14 @@ export default function App() {
       keywords: 'open chat history',
       run: () => handleSelectSession(s.id),
     })),
-    { id: 'open-tasks', section: 'Tasks', label: workflow.activeTask ? `Open task: ${workflow.activeTask.title}` : 'Open tasks', keywords: 'workflow plan implement verify review', run: openTaskDrawer },
-    { id: 'source-ship', section: 'Ship', label: 'Open Source & Ship', keywords: 'git commit push pull snapshot revert', run: () => window.dispatchEvent(new CustomEvent('monastery:open-source-ship')) },
+    { id: 'toggle-chat-mode', section: 'Chat', label: chatMode === 'build' ? 'Switch to Discuss mode' : 'Switch to Build mode', keywords: 'plan question build discuss', run: () => setChatMode(chatMode === 'build' ? 'discuss' : 'build') },
+    { id: 'source-ship', section: 'Ship', label: 'Open History & Ship', keywords: 'deploy git commit push pull snapshot revert undo', run: () => window.dispatchEvent(new CustomEvent('monastery:open-source-ship')) },
     { id: 'deploy', section: 'Ship', label: 'Deploy (Self-Host Wizard)', hint: 'Ctrl+Shift+D', keywords: 'dokploy coolify docker', run: () => setIsWizardOpen(true) },
     { id: 'toggle-sidebar', section: 'Layout', label: `${sidebarCollapsed ? 'Show' : 'Hide'} file tree`, run: toggleSidebar },
     { id: 'toggle-editor', section: 'Layout', label: `${editorCollapsed ? 'Show' : 'Hide'} code editor`, run: toggleEditor },
     { id: 'toggle-preview', section: 'Layout', label: `${previewCollapsed ? 'Show' : 'Hide'} preview pane`, run: togglePreview },
     { id: 'toggle-theme', section: 'Layout', label: `Switch to ${theme === 'monastery-dark' ? 'light' : 'dark'} theme`, run: () => setTheme(theme === 'monastery-dark' ? 'scriptorium-light' : 'monastery-dark') },
     { id: 'settings-llm', section: 'Settings', label: 'Settings: Models', keywords: 'llm endpoint ollama', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'llm' } })) },
-    { id: 'settings-hermes', section: 'Settings', label: 'Settings: Hermes Agent', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'hermes' } })) },
     { id: 'settings-git', section: 'Settings', label: 'Settings: Git Forges', keywords: 'github gitlab forgejo gitea', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'git' } })) },
     { id: 'settings-hosting', section: 'Settings', label: 'Settings: Hosting', keywords: 'dokploy coolify pocketbase', run: () => window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'hosting' } })) },
   ];
@@ -560,18 +515,6 @@ export default function App() {
 
       <SelfHostWizard isOpen={isWizardOpen} onClose={() => setIsWizardOpen(false)} onFixBuildError={handleFixBuildError} />
 
-      <TaskDrawer
-        open={isTaskDrawerOpen}
-        onClose={() => setIsTaskDrawerOpen(false)}
-        projectId={currentProject?.id}
-        workflow={workflow}
-        onRunStage={(s: Stage) => runStage(s, false)}
-        onHandToHermes={(s: Stage) => runStage(s, true)}
-        hermesAvailable={!!hermesConnection}
-        onApplySkills={(ids) => ids.forEach(id => toggleSkill(id, true))}
-        templateCtx={{ pocketbaseConfigured: !!pocketbaseConn }}
-      />
-
       <div className="flex-1 flex overflow-hidden gap-2 px-2 pb-2">
         {/* Left Sidebar — slides in/out with CSS transition */}
         <div
@@ -605,8 +548,6 @@ export default function App() {
            <div className="h-full flex flex-col rounded-xl overflow-hidden">
             <div className="flex-1 min-h-0">
             <ChatPane
-              activeTaskLabel={workflow.activeTask ? `${workflow.activeTask.title} · ${STAGE_LABEL[workflow.activeTask.stage]}` : null}
-              onOpenTasks={currentProject?.id ? openTaskDrawer : undefined}
               messages={messages}
               onSendMessage={handleSendMessage}
               sessions={sessions}
@@ -614,29 +555,8 @@ export default function App() {
               onCreateSession={handleCreateSession}
               onSelectSession={handleSelectSession}
               onDeleteSession={handleDeleteSession}
-              activeAgentIds={activeAgentIds}
-              onToggleAgent={toggleActiveAgent}
-              maxActiveRoles={MAX_ACTIVE_ROLES}
-              hasActiveTask={!!workflow.activeTask}
               onStopGeneration={handleStopGeneration}
               onContinue={handleContinueGeneration}
-              onCreateTask={async (title) => {
-                try {
-                  // Create + activate the task, then immediately run the Architect's Plan
-                  // stage on it (passed explicitly — React state hasn't re-rendered yet).
-                  const task = await workflow.createTask(title, currentSession?.id);
-                  runStage('plan', false, task);
-                } catch (e) {
-                  console.error('Task creation from nudge failed:', e);
-                }
-              }}
-              onSuppressWorkflowNudge={() => {
-                // Persist the opt-out and strip the action buttons from any nudge already shown.
-                localStorage.setItem(WORKFLOW_NUDGE_SUPPRESS_KEY, '1');
-                setMessages(prev => prev.map(m => m.suggestTaskTitle
-                  ? { ...m, suggestTaskTitle: undefined, content: `${m.content}\n\n_(You won't be reminded about this again.)_` }
-                  : m));
-              }}
               onReverted={() => {
                 // Reload everything after an in-chat "Abandon these changes" restore so the
                 // editor tabs and the LLM context map match the restored disk state.
@@ -644,9 +564,10 @@ export default function App() {
               }}
               contextToggles={contextToggles}
               isGenerating={isGenerating}
-              hermesAvailable={!!hermesConnection}
-              agentMode={agentMode}
-              onToggleAgentMode={setAgentMode}
+              chatMode={chatMode}
+              onChangeChatMode={setChatMode}
+              onBuildPlan={buildPlan}
+              onRunCommand={runShellCommand}
             />
             </div>
            </div>
@@ -671,24 +592,6 @@ export default function App() {
                   onCloseTab={closeTab}
                   onChange={updateTabContent}
                   onSave={handleSaveFile}
-                  onExplain={() => {
-                    if (!currentFile) return;
-                    const prompt = editorPrompts.reviewer?.(currentFile, editorContent)
-                      ?? `Explain this code in detail:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
-                    triggerAgent('reviewer', prompt);
-                  }}
-                  onRefactor={() => {
-                    if (!currentFile) return;
-                    const prompt = editorPrompts.coder?.(currentFile, editorContent)
-                      ?? `Refactor this code for better patterns, readability, and performance:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
-                    triggerAgent('coder', prompt);
-                  }}
-                  onAddTests={() => {
-                    if (!currentFile) return;
-                    const prompt = editorPrompts.tester?.(currentFile, editorContent)
-                      ?? `Write comprehensive unit and integration tests for this code:\n\nFile: ${currentFile}\n\`\`\`\n${editorContent}\n\`\`\``;
-                    triggerAgent('tester', prompt);
-                  }}
                 />
               </Panel>
             </>
@@ -699,7 +602,7 @@ export default function App() {
             <>
               <PanelResizeHandle className="w-2 bg-transparent hover:bg-monastery-lantern/50 rounded transition-colors cursor-col-resize" />
               <Panel
-                defaultSize={paneLayout.preview}
+                defaultSize={editorCollapsed ? 100 - paneLayout.chat : paneLayout.preview}
                 minSize={15}
                 onResize={(size) => updatePaneLayout({ ...paneLayout, preview: size })}
               >

@@ -1,12 +1,23 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Bot, Loader2, Coins, MessageSquare, Plus, Trash2, SlidersHorizontal, Settings } from 'lucide-react';
+import { Send, Paperclip, X, StopCircle, Copy, Check, RotateCcw, Brain, ChevronDown, ChevronRight, Loader2, Coins, MessageSquare, Plus, Trash2, SlidersHorizontal, Hammer, Lightbulb, Play } from 'lucide-react';
 import { Message, Attachment, SessionInfo } from '../types';
 import { DiffCard } from './DiffCard';
 import { useAppStore } from '../store/useAppStore';
 import { useSnapshots } from '../hooks/useSnapshots';
-import { useAgents } from '../hooks/useAgents';
-import { WORKFLOW_ROLE_IDS } from '../hooks/useWorkflow';
+import type { ChatMode } from '../hooks/useChatOrchestrator';
 import { Spinner } from './Spinner';
+
+// Fence languages that mean "a command to run" (a path-tagged block like ```bash:setup.sh is a
+// file write instead, so it never matches these exactly).
+const COMMAND_LANGS = ['bash', 'sh', 'shell', 'zsh', 'console', 'terminal'];
+
+// A Discuss-mode plan, or (for messages reloaded from a saved session, which don't keep their
+// mode) a "## The Plan" reply with no path-tagged file blocks in it.
+const isPlanMessage = (m: Message) =>
+  m.role === 'assistant' && !!m.content.trim() && (
+    m.mode === 'discuss' ||
+    (/^#{1,3}\s+The Plan\b/mi.test(m.content) && !/```[\w.]*\s*:\s*\S/.test(m.content))
+  );
 
 // Reasoning window — collapsible, scrollable, max ~12 rows
 function ReasoningWindow({ reasoning }: { reasoning: string }) {
@@ -76,33 +87,18 @@ interface ChatPaneProps {
   onDeleteSession?: (sessionId: string) => void;
   /** Context & behavior options for the composer popover. */
   contextToggles?: ComposerToggle[];
-  /** Active task chip in the header ("🛠 title · stage"); null label shows a plain Tasks chip. */
-  activeTaskLabel?: string | null;
-  onOpenTasks?: () => void;
-  /** Currently active agent role ids (a persistent "lens" over chat messages). */
-  activeAgentIds?: string[];
-  /** Toggle an agent role on/off (caller enforces the max). */
-  onToggleAgent?: (agentId: string) => void;
-  /** Max number of roles that can be active at once (for disabling extras). */
-  maxActiveRoles?: number;
-  /** When a workflow task is active, the stage roles (plan/implement/verify/review) are driven by
-   *  the Workflow panel, so the chat hides those chips and shows only the extras (docs, deploy). */
-  hasActiveTask?: boolean;
   onStopGeneration?: () => void;
   onContinue?: (messageId: string) => void;
   /** Called after an in-chat snapshot restore succeeds so the app can reload files/tabs. */
   onReverted?: () => void;
-  /** Creates a workflow task with the given title and kicks off its Plan stage — used by
-   *  the large-project workflow nudge (messages carrying suggestTaskTitle). */
-  onCreateTask?: (title: string) => void;
-  /** Permanently suppress the large-project workflow nudge (persisted by the app). */
-  onSuppressWorkflowNudge?: () => void;
   isGenerating?: boolean;
-  /** Whether a default Hermes connection exists (enables the Agent mode toggle). */
-  hermesAvailable?: boolean;
-  /** Whether Agent mode (route to Hermes) is currently on. */
-  agentMode?: boolean;
-  onToggleAgentMode?: (on: boolean) => void;
+  /** Build writes files; Discuss answers and plans without touching the project. */
+  chatMode?: ChatMode;
+  onChangeChatMode?: (mode: ChatMode) => void;
+  /** Implement a Discuss-mode plan (switches to Build). */
+  onBuildPlan?: (plan: string) => void;
+  /** Run a command block the user clicked "Run" on — never called automatically. */
+  onRunCommand?: (command: string) => Promise<void>;
 }
 
 export function ChatPane({
@@ -114,29 +110,23 @@ export function ChatPane({
   onSelectSession,
   onDeleteSession,
   contextToggles = [],
-  activeTaskLabel = null,
-  onOpenTasks,
-  activeAgentIds = [],
-  onToggleAgent,
-  maxActiveRoles = 2,
-  hasActiveTask = false,
   onStopGeneration,
   onContinue,
   onReverted,
-  onCreateTask,
-  onSuppressWorkflowNudge,
   isGenerating = false,
-  hermesAvailable = false,
-  agentMode = false,
-  onToggleAgentMode,
+  chatMode = 'build',
+  onChangeChatMode,
+  onBuildPlan,
+  onRunCommand,
 }: ChatPaneProps) {
   const [inputValue, setInputValue] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
-  const [rolesMenuOpen, setRolesMenuOpen] = useState(false);
+  // Which command block is currently running ("<messageId>-<blockIndex>").
+  const [runningBlock, setRunningBlock] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  // Shared compact-pill styling for the inline toolbar (toggles + agent role chips).
+  // Shared compact-pill styling for the inline toolbar (context toggles + chips).
   const pill = (active: boolean) =>
     `flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-md border transition-colors ${
       active
@@ -146,7 +136,6 @@ export function ChatPane({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const { activeEndpoint, theme } = useAppStore();
   const { restoreSnapshot } = useSnapshots();
-  const { quickActions } = useAgents();
   const [revertingId, setRevertingId] = useState<string | null>(null);
 
   const handleRevert = async (snapshotId: string) => {
@@ -218,13 +207,24 @@ export function ChatPane({
     setAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  // Keyed "<messageId>-<blockIndex>" so "Copied" only shows on the block that was copied.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
-  const copyToClipboard = (text: string, index: number) => {
+  const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text).then(() => {
-      setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex(null), 2000);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(null), 2000);
     });
+  };
+
+  const runCommandBlock = async (code: string, key: string) => {
+    if (!onRunCommand) return;
+    setRunningBlock(key);
+    try {
+      await onRunCommand(code);
+    } finally {
+      setRunningBlock(null);
+    }
   };
 
   // Render markdown-style formatting inline
@@ -250,8 +250,9 @@ export function ChatPane({
     });
   };
 
-  // Render message content with markdown and code blocks
-  const renderContent = (content: string) => {
+  // Render message content with markdown and code blocks. `runnable` (assistant messages only)
+  // gives command blocks a Run button.
+  const renderContent = (content: string, msgId: string, runnable = false) => {
     // Split on complete code blocks (opening + closing fence).
     // Also match unclosed blocks (streaming in progress or truncated).
     const parts = content.split(/(```[\s\S]*?```|```[^\n]*\n[\s\S]*$)/g);
@@ -268,7 +269,7 @@ export function ChatPane({
       }
       
       codeBlockIndex++;
-      const ci = codeBlockIndex;
+      const blockKey = `${msgId}-${codeBlockIndex}`;
       const lines = part.split('\n');
       const lang = lines[0].replace('```', '').trim();
       // If the block is unclosed, the last line won't be ```
@@ -279,18 +280,34 @@ export function ChatPane({
       // Color-code diff blocks
       const isDiff = lang === 'diff';
       const diffLines = isDiff ? code.split('\n') : null;
-      
+      // Commands are only ever run by the user clicking Run — never automatically.
+      const canRun = runnable && !!onRunCommand && !isUnclosed && COMMAND_LANGS.includes(lang.toLowerCase()) && !!code.trim();
+      const isRunning = runningBlock === blockKey;
+
       return (
         <div key={i} className="mt-2 mb-2 rounded-lg overflow-hidden border border-monastery-dark-border">
           <div className="flex items-center justify-between px-3 py-1.5 bg-monastery-dark-tertiary">
             <span className="text-xs text-monastery-text-muted">{lang || 'code'}</span>
-            <button
-              onClick={() => copyToClipboard(code, ci)}
-              className="flex items-center gap-1 px-2 py-0.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-bg rounded transition-colors"
-            >
-              {copiedIndex === ci ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-              {copiedIndex === ci ? 'Copied' : 'Copy'}
-            </button>
+            <div className="flex items-center gap-1">
+              {canRun && (
+                <button
+                  onClick={() => runCommandBlock(code, blockKey)}
+                  disabled={runningBlock !== null}
+                  className="flex items-center gap-1 px-2 py-0.5 text-xs text-monastery-lantern hover:bg-monastery-dark-bg rounded transition-colors disabled:opacity-50"
+                  title="Run this command in the project folder (one line at a time, stops on the first failure)"
+                >
+                  {isRunning ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                  {isRunning ? 'Running…' : 'Run'}
+                </button>
+              )}
+              <button
+                onClick={() => copyToClipboard(code, blockKey)}
+                className="flex items-center gap-1 px-2 py-0.5 text-xs text-monastery-text-secondary hover:text-monastery-text-primary hover:bg-monastery-dark-bg rounded transition-colors"
+              >
+                {copiedKey === blockKey ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                {copiedKey === blockKey ? 'Copied' : 'Copy'}
+              </button>
+            </div>
           </div>
           <pre className="p-3 bg-monastery-dark-bg overflow-x-auto overflow-y-auto max-h-80">
             {isDiff ? (
@@ -396,20 +413,6 @@ export function ChatPane({
             </button>
           )}
 
-          {/* Task chip — the staged workflow lives in a drawer, not a stacked panel */}
-          {onOpenTasks && (
-            <button
-              onClick={onOpenTasks}
-              className={`ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors shrink-0 max-w-[45%] ${
-                activeTaskLabel
-                  ? 'bg-monastery-lantern/15 text-monastery-lantern hover:bg-monastery-lantern/25'
-                  : 'text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary'
-              }`}
-              title={activeTaskLabel ? 'Open the active task' : 'Structured tasks: Plan → Implement → Verify → Review'}
-            >
-              <span className="truncate">🛠 {activeTaskLabel || 'Tasks'}</span>
-            </button>
-          )}
         </div>
       )}
 
@@ -432,40 +435,45 @@ export function ChatPane({
                 AI's self-hosted sanctuary for coding.
               </p>
               <p className="text-xs text-monastery-text-muted mb-8 max-w-sm mx-auto leading-relaxed">
-                Connect an LLM to begin — ask it to create, edit, debug, or deploy applications.
+                Describe a website or small web app — it appears in the live preview as it's built.
               </p>
 
               {/* Quick Start Suggestions */}
               <div className="grid grid-cols-2 gap-2 text-left max-w-sm mx-auto">
-                <button 
-                  onClick={() => onSendMessage('Create a Next.js app with authentication')}
+                <button
+                  onClick={() => onSendMessage('Build a landing page for a local bakery: hero section, menu, opening hours, and a contact form')}
+                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
+                >
+                  <div className="font-medium text-monastery-text-primary mb-0.5">Website</div>
+                  A landing page for a local bakery
+                </button>
+                <button
+                  onClick={() => onSendMessage('Build a to-do app that saves tasks in the browser (localStorage), with filters for all / active / done')}
                   className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Web App</div>
-                  Create a Next.js app with authentication
-                </button>
-                <button 
-                  onClick={() => onSendMessage('Explain how this project structure works')}
-                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
-                >
-                  <div className="font-medium text-monastery-text-primary mb-0.5">Understand</div>
-                  Explain this codebase structure
-                </button>
-                <button 
-                  onClick={() => onSendMessage('Add unit tests to the existing module')}
-                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
-                >
-                  <div className="font-medium text-monastery-text-primary mb-0.5">Testing</div>
-                  Add tests to the existing module
+                  A to-do app that saves in the browser
                 </button>
                 <button
-                  // Deploying is a real flow (Source & Ship → wizard), not a chat request —
+                  // Planning belongs in Discuss mode — switch and prefill rather than sending in Build.
+                  onClick={() => {
+                    onChangeChatMode?.('discuss');
+                    setInputValue('Help me plan a personal portfolio site — which pages and sections should it have?');
+                    textareaRef.current?.focus();
+                  }}
+                  className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
+                >
+                  <div className="font-medium text-monastery-text-primary mb-0.5">Plan first</div>
+                  Talk through a site before building it
+                </button>
+                <button
+                  // Deploying is a real flow (History & Ship → wizard), not a chat request —
                   // point first-time users at the actual door.
                   onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
                   className="p-3 bg-monastery-dark-bg rounded-xl text-xs text-monastery-text-secondary hover:bg-monastery-dark-tertiary hover:text-monastery-text-primary transition-all border border-monastery-dark-border hover:border-monastery-pine text-left"
                 >
                   <div className="font-medium text-monastery-text-primary mb-0.5">Deploy 🚀</div>
-                  Ship this to your homelab (Source & Ship)
+                  Ship this to your homelab (History & Ship)
                 </button>
               </div>
 
@@ -518,14 +526,12 @@ export function ChatPane({
                     : 'bg-monastery-dark-bg'
                 }`}
               >
-                {/* Agent role chips on a user message (which role(s) it was sent under) */}
-                {message.role === 'user' && message.agentLabels && message.agentLabels.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mb-1.5">
-                    {message.agentLabels.map((label, i) => (
-                      <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] bg-white/15 font-medium">
-                        {label}
-                      </span>
-                    ))}
+                {/* Discuss-mode marker on user messages — these never change files */}
+                {message.role === 'user' && message.mode === 'discuss' && (
+                  <div className="flex mb-1.5">
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-white/15 font-medium">
+                      <Lightbulb size={10} /> Discuss
+                    </span>
                   </div>
                 )}
                 {message.attachments && message.attachments.length > 0 && (
@@ -541,19 +547,25 @@ export function ChatPane({
                     ))}
                   </div>
                 )}
-                {/* Badge showing which backend answered (Hermes agent vs local LLM) */}
-                {message.role === 'assistant' && message.via === 'hermes' && (
-                  <span className="inline-flex items-center gap-1 mb-1.5 px-1.5 py-0.5 rounded text-[11px] font-medium bg-monastery-lantern/15 text-monastery-lantern">
-                    <Bot size={10} /> via Hermes
-                  </span>
-                )}
                 {/* Reasoning window for assistant messages */}
                 {message.role === 'assistant' && message.reasoning && (
                   <ReasoningWindow reasoning={message.reasoning} />
                 )}
                 <div className={`text-sm ${message.role === 'system' ? 'text-monastery-text-secondary' : ''}`}>
-                  {renderContent(message.content)}
+                  {renderContent(message.content, message.id, message.role === 'assistant')}
                 </div>
+                {/* Discuss → Build hand-off: implement the plan this reply laid out */}
+                {onBuildPlan && !isGenerating && isPlanMessage(message) && (
+                  <div className="mt-2">
+                    <button
+                      onClick={() => onBuildPlan(message.content)}
+                      className="flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg transition-colors font-medium"
+                      title="Switch to Build mode and implement this plan"
+                    >
+                      <Hammer size={12} /> Build this plan
+                    </button>
+                  </div>
+                )}
                 {/* Per-file diff cards on AI-change feedback messages */}
                 {message.fileChanges && message.fileChanges.map(change => (
                   <DiffCard key={change.path} change={change} />
@@ -578,7 +590,7 @@ export function ChatPane({
                   </div>
                 )}
                 {/* Manual Continue button — appears when the response still hit the output-token
-                    cap after auto-continue is off or its limit was reached. */}
+                    cap after the auto-continue limit was reached (or the user hit Stop). */}
                 {message.role === 'assistant' && message.truncated && !isGenerating && onContinue && (
                   <div className="mt-2 flex items-center gap-2">
                     <button
@@ -604,26 +616,6 @@ export function ChatPane({
                     <RotateCcw size={12} />
                     {revertingId === message.model ? 'Reverting...' : (message.revertLabel || 'Revert to this snapshot')}
                   </button>
-                )}
-                {/* Workflow nudge: one click creates the task and starts the Plan stage;
-                    a second link permanently dismisses the reminder. */}
-                {message.role === 'system' && message.suggestTaskTitle && onCreateTask && (
-                  <div className="mt-2 flex items-center justify-center gap-3">
-                    <button
-                      onClick={() => onCreateTask(message.suggestTaskTitle!)}
-                      className="flex items-center gap-1.5 px-3 py-1 text-xs bg-monastery-pine hover:bg-monastery-forest text-white rounded-lg transition-colors"
-                    >
-                      📋 Create a task for this &amp; plan it
-                    </button>
-                    {onSuppressWorkflowNudge && (
-                      <button
-                        onClick={onSuppressWorkflowNudge}
-                        className="text-xs text-monastery-text-muted hover:text-monastery-text-secondary underline transition-colors"
-                      >
-                        Don't show again
-                      </button>
-                    )}
-                  </div>
                 )}
                 {/* Timestamp footer on every message */}
                 {timeLabel && (
@@ -662,9 +654,9 @@ export function ChatPane({
 
       {/* Input — no rule above it; the inset field carries its own edge */}
       <form onSubmit={handleSubmit} className="p-4 pt-2">
-        {/* Composer toolbar: a "+ Context" popover holds the registry-driven options (skills,
-            behaviors) so new ones never widen this row; active ones surface as removable chips.
-            The Chat/Agent mode selector sits at the right, with roles behind it in a popover. */}
+        {/* Composer toolbar: a "Context" popover holds the registry-driven skills so new ones
+            never widen this row; active ones surface as removable chips. The Build/Discuss mode
+            selector sits at the right. */}
         <div className="flex items-center flex-wrap gap-1.5 mb-2">
           {/* Context popover */}
           {contextToggles.length > 0 && (
@@ -720,113 +712,29 @@ export function ChatPane({
             </button>
           ))}
 
-          {/* Active role chips (click to remove) */}
-          {agentMode && onToggleAgent && activeAgentIds.map(id => {
-            const action = quickActions.find(a => a.agentId === id);
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onToggleAgent(id)}
-                className={pill(true)}
-                title="Click to remove this role"
-              >
-                {action?.label ?? id} <X size={10} />
-              </button>
-            );
-          })}
-
-          {/* Mode selector — Chat vs Agent (Hermes). Always visible so the routing decision is
-              legible; without a Hermes connection the Agent side deep-links to Settings. */}
-          {onToggleAgentMode && (
-            <div className="ml-auto flex items-center gap-1.5">
-              {agentMode && onToggleAgent && (
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setRolesMenuOpen(o => !o)}
-                    className={pill(false)}
-                    title="Agent roles — a persistent lens applied to your messages"
-                  >
-                    Roles{activeAgentIds.length > 0 ? ` · ${activeAgentIds.length}` : ''} <ChevronDown size={10} />
-                  </button>
-                  {rolesMenuOpen && (
-                    <>
-                      <div className="fixed inset-0 z-20" onClick={() => setRolesMenuOpen(false)} />
-                      <div className="absolute bottom-full right-0 mb-1 w-72 bg-monastery-dark-surface border border-monastery-dark-border rounded-lg shadow-xl z-30 py-1">
-                        {hasActiveTask && (
-                          <div className="px-3 py-1.5 text-[11px] text-monastery-text-muted border-b border-monastery-dark-border">
-                            Plan / Implement / Verify / Review run from the active task while one is open — only extra lenses are listed here.
-                          </div>
-                        )}
-                        {(hasActiveTask ? quickActions.filter(a => !WORKFLOW_ROLE_IDS.includes(a.agentId)) : quickActions).map(action => {
-                          const active = activeAgentIds.includes(action.agentId);
-                          const atCap = !active && activeAgentIds.length >= maxActiveRoles;
-                          return (
-                            <button
-                              key={action.agentId}
-                              type="button"
-                              onClick={() => onToggleAgent(action.agentId)}
-                              disabled={atCap}
-                              aria-pressed={active}
-                              title={atCap ? `Max ${maxActiveRoles} roles — remove one first` : undefined}
-                              className="w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-monastery-dark-tertiary transition-colors disabled:opacity-40"
-                            >
-                              <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                                active ? 'bg-monastery-pine border-monastery-pine text-white' : 'border-monastery-dark-border'
-                              }`}>
-                                {active && <Check size={11} />}
-                              </span>
-                              <span className="text-sm text-monastery-text-primary">{action.label}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-              <div className="flex rounded-md border border-monastery-dark-border overflow-hidden" role="radiogroup" aria-label="Chat mode">
+          {/* Mode selector — Build changes files; Discuss answers and plans without touching them */}
+          {onChangeChatMode && (
+            <div className="ml-auto flex rounded-md border border-monastery-dark-border overflow-hidden" role="radiogroup" aria-label="Chat mode">
+              {([
+                { mode: 'build' as const, label: 'Build', icon: <Hammer size={11} />, title: 'Build — the assistant writes and edits project files' },
+                { mode: 'discuss' as const, label: 'Discuss', icon: <Lightbulb size={11} />, title: 'Discuss — ask questions and plan; nothing is written to files' },
+              ]).map(opt => (
                 <button
+                  key={opt.mode}
                   type="button"
                   role="radio"
-                  aria-checked={!agentMode}
-                  onClick={() => onToggleAgentMode(false)}
-                  title="Standard LLM chat"
+                  aria-checked={chatMode === opt.mode}
+                  onClick={() => onChangeChatMode(opt.mode)}
+                  title={opt.title}
                   className={`flex items-center gap-1 px-2 py-0.5 text-[11px] transition-colors ${
-                    !agentMode
+                    chatMode === opt.mode
                       ? 'bg-monastery-lantern text-monastery-dark-bg font-medium'
                       : 'bg-monastery-dark-surface text-monastery-text-secondary hover:text-monastery-text-primary'
                   }`}
                 >
-                  <MessageSquare size={11} /> Chat
+                  {opt.icon} {opt.label}
                 </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={agentMode}
-                  onClick={() => {
-                    if (hermesAvailable) {
-                      onToggleAgentMode(true);
-                    } else {
-                      // No Hermes connection — take the user to the place that fixes it.
-                      window.dispatchEvent(new CustomEvent('monastery:open-settings', { detail: { tab: 'hermes' } }));
-                    }
-                  }}
-                  title={hermesAvailable
-                    ? 'Route messages through the Hermes agent (tools, sub-agents)'
-                    : 'Requires a Hermes connection — opens Settings → Hermes Agent'}
-                  className={`flex items-center gap-1 px-2 py-0.5 text-[11px] transition-colors ${
-                    agentMode
-                      ? 'bg-monastery-lantern text-monastery-dark-bg font-medium'
-                      : hermesAvailable
-                      ? 'bg-monastery-dark-surface text-monastery-text-secondary hover:text-monastery-text-primary'
-                      : 'bg-monastery-dark-surface text-monastery-text-muted'
-                  }`}
-                >
-                  {hermesAvailable ? <Bot size={11} /> : <Settings size={11} />} Agent
-                </button>
-              </div>
+              ))}
             </div>
           )}
         </div>
@@ -868,11 +776,11 @@ export function ChatPane({
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={
-              activeAgentIds.length === 1
-                ? (quickActions.find(q => q.agentId === activeAgentIds[0])?.prompt ?? 'Ask anything...')
-                : activeEndpoint
-                ? "Ask anything... (Shift+Enter for new line)"
-                : "Connect an LLM endpoint to start chatting"
+              !activeEndpoint
+                ? "Connect an LLM endpoint to start chatting"
+                : chatMode === 'discuss'
+                ? "Ask a question or plan a change — nothing is written to files (Shift+Enter for new line)"
+                : "Describe what to build or change… (Shift+Enter for new line)"
             }
             disabled={!activeEndpoint && messages.length === 0}
             rows={1}
