@@ -1,3 +1,6 @@
+// HIDDEN since simplification Phase 1 (docs/SIMPLIFICATION_PLAN.md): agent roles were removed from the chat (Build/Discuss replaced them).
+// Nothing imports this module any more; it is kept so the feature can return quickly if
+// missed, and is deleted in Phase 3.
 import { useMemo } from 'react';
 
 interface AgentDefinition {

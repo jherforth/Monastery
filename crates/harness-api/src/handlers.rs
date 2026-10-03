@@ -2078,54 +2078,51 @@ pub struct WriteFileRequest {
     pub guard_partial_overwrite: bool,
 }
 
+/// Resolve a client-supplied relative path inside a project directory, refusing anything that
+/// could land outside it. Runs BEFORE anything is created on disk — the previous handlers called
+/// `create_dir_all` first and checked afterwards, so `../../x/y` created directories outside the
+/// project before being rejected. Lexical check first (no absolute paths, no `..`), then the
+/// deepest existing ancestor is canonicalized so a symlink inside the project (e.g. from a cloned
+/// repo) can't redirect the write elsewhere.
+fn safe_project_path(project_dir: &std::path::Path, rel: &str) -> Result<std::path::PathBuf, ApiError> {
+    use std::path::Component;
+    let mut clean = std::path::PathBuf::new();
+    for part in std::path::Path::new(rel).components() {
+        match part {
+            Component::Normal(p) => clean.push(p),
+            Component::CurDir => {}
+            _ => return Err(ApiError::Config("Path traversal not allowed".into())),
+        }
+    }
+    let base = project_dir.canonicalize()
+        .map_err(|_| ApiError::NotFound("Project directory not found".into()))?;
+    let full = base.join(&clean);
+    let mut existing = full.as_path();
+    while !existing.exists() {
+        match existing.parent() {
+            Some(p) => existing = p,
+            None => break,
+        }
+    }
+    let resolved = existing.canonicalize()
+        .map_err(|_| ApiError::Internal("Failed to resolve path".into()))?;
+    if !resolved.starts_with(&base) {
+        return Err(ApiError::Config("Path traversal not allowed".into()));
+    }
+    Ok(full)
+}
+
 pub async fn write_project_file(
     Path(project_id): Path<uuid::Uuid>,
     State(state): State<AppState>,
     Json(req): Json<WriteFileRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    use sqlx::Row;
-    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
-        .bind(project_id.to_string())
-        .fetch_optional(&*state.db)
-        .await?;
+    let project_dir = resolve_project_dir(&state, project_id).await?;
+    let full_path = safe_project_path(&project_dir, &req.path)?;
 
-    let project_name = match row {
-        Some(r) => r.get::<String, _>(0),
-        None => return Err(ApiError::NotFound("Project not found".into())),
-    };
-
-    let full_path = state.config.data_dir.join(&project_name).join(&req.path);
-
-    // Security: ensure the resolved path is within the project directory
-    let canonical_base = state.config.data_dir.join(&project_name).canonicalize()
-        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
-    
-    // Create parent directories if needed
     if let Some(parent) = full_path.parent() {
         tokio::fs::create_dir_all(parent).await
             .map_err(|e| ApiError::Internal(format!("Failed to create directories: {}", e)))?;
-    }
-    
-    // Security check: after creating dirs, canonicalize the path to verify it's within the project
-    // For new files, canonicalize will fail, so we check the parent
-    let resolved = if full_path.exists() {
-        full_path.canonicalize()
-            .map_err(|_| ApiError::Internal("Failed to resolve file path".into()))?
-    } else {
-        // For new files, check the parent directory is within the project
-        let parent = full_path.parent().unwrap_or(&full_path);
-        let canonical_parent = parent.canonicalize()
-            .map_err(|_| ApiError::Internal("Failed to resolve parent path".into()))?;
-        if !canonical_parent.starts_with(&canonical_base) {
-            return Err(ApiError::Config("Path traversal not allowed".into()));
-        }
-        // Use the full_path directly for writing (it's validated)
-        full_path.clone()
-    };
-    
-    // Final security check for existing files
-    if full_path.exists() && !resolved.starts_with(&canonical_base) {
-        return Err(ApiError::Config("Path traversal not allowed".into()));
     }
 
     if req.encoding.as_deref() == Some("base64") {
@@ -2456,6 +2453,129 @@ pub async fn project_preview(
     }
 }
 
+/// Programs the shell endpoint may launch (exact name match). The user runs these explicitly
+/// from a command block's "Run" button — model output is never executed automatically.
+const SHELL_PROGRAMS: &[&str] = &["npm", "npx", "node", "pnpm", "yarn", "git", "ls", "cat", "echo", "mkdir", "touch", "rm", "cp", "mv"];
+/// Build/test tooling the workflow Verify step may launch.
+const VERIFY_PROGRAMS: &[&str] = &["npm", "npx", "node", "pnpm", "yarn", "cargo", "python", "python3", "pytest", "go", "make", "tsc", "jest", "vitest"];
+const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Split one command into words without a shell: whitespace separates, quotes group. Shell
+/// operators are refused outright rather than passed through as literal arguments.
+fn split_command_words(segment: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    for c in segment.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None => match c {
+                ';' | '|' | '&' | '<' | '>' | '$' | '`' | '\n' | '\r' => {
+                    return Err(format!(
+                        "`{}` isn't supported — run one command at a time (`a && b` chains are fine), with no pipes, redirection, or substitution",
+                        c.escape_default()
+                    ));
+                }
+                '\'' | '"' => { quote = Some(c); in_word = true; }
+                c if c.is_whitespace() => {
+                    if in_word { words.push(std::mem::take(&mut cur)); in_word = false; }
+                }
+                _ => { cur.push(c); in_word = true; }
+            },
+        }
+    }
+    if quote.is_some() {
+        return Err("Unterminated quote in command".into());
+    }
+    if in_word { words.push(cur); }
+    Ok(words)
+}
+
+/// Parse a command line into argv steps for `run_command_steps`. Replaces the old `sh -c` +
+/// prefix check, which let `echo x; <anything>` straight through: there is no shell now, the
+/// program must be in `allowed` (exact match), and no argument may be an absolute path or
+/// climb out of the project with `..`. `a && b` runs `a` then `b`, stopping at the first failure.
+fn parse_command_line(cmd: &str, allowed: &[&str]) -> Result<Vec<Vec<String>>, String> {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return Err("Empty command".into());
+    }
+    let mut steps = Vec::new();
+    for segment in cmd.split("&&") {
+        let argv = split_command_words(segment)?;
+        let Some(program) = argv.first() else {
+            return Err("Empty command next to `&&`".into());
+        };
+        if !allowed.contains(&program.as_str()) {
+            return Err(format!("`{}` is not allowed. Allowed programs: {}", program, allowed.join(", ")));
+        }
+        for arg in &argv[1..] {
+            // Check `--flag=value` values too, not just bare arguments.
+            let value = arg.split_once('=').map(|(_, v)| v).unwrap_or(arg);
+            let b = value.as_bytes();
+            let absolute = value.starts_with('/')
+                || value.starts_with('\\')
+                || value.starts_with('~')
+                || (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/'));
+            if absolute || value.split(['/', '\\']).any(|part| part == "..") {
+                return Err(format!("Argument `{}` points outside the project — only project-relative paths are allowed", arg));
+            }
+        }
+        steps.push(argv);
+    }
+    Ok(steps)
+}
+
+struct CommandOutcome {
+    success: bool,
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+}
+
+/// Run parsed steps in `dir`, stopping at the first failure. tokio::process keeps a long build
+/// from blocking the async runtime; the overall timeout (with kill_on_drop) stops a command that
+/// never exits — e.g. a dev server — from hanging the request forever.
+async fn run_command_steps(
+    dir: &std::path::Path,
+    steps: &[Vec<String>],
+    timeout: std::time::Duration,
+) -> Result<CommandOutcome, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut outcome = CommandOutcome { success: true, stdout: String::new(), stderr: String::new(), exit_code: 0 };
+    for argv in steps {
+        let child = tokio::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .current_dir(dir)
+            .kill_on_drop(true)
+            .output();
+        let out = match tokio::time::timeout_at(deadline, child).await {
+            Err(_) => {
+                return Err(format!(
+                    "`{}` timed out after {}s — long-running commands such as dev servers aren't supported here",
+                    argv.join(" "), timeout.as_secs()
+                ));
+            }
+            Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!("`{}` isn't installed on the Monastery server", argv[0]));
+            }
+            Ok(Err(e)) => return Err(format!("Failed to run `{}`: {}", argv[0], e)),
+            Ok(Ok(out)) => out,
+        };
+        outcome.stdout.push_str(&String::from_utf8_lossy(&out.stdout));
+        outcome.stderr.push_str(&String::from_utf8_lossy(&out.stderr));
+        outcome.exit_code = out.status.code().unwrap_or(-1);
+        if !out.status.success() {
+            outcome.success = false;
+            break;
+        }
+    }
+    Ok(outcome)
+}
+
 /// Execute a shell command in a project directory
 #[derive(Debug, Deserialize)]
 pub struct ShellRequest {
@@ -2467,47 +2587,21 @@ pub async fn project_shell(
     State(state): State<AppState>,
     Json(req): Json<ShellRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    use sqlx::Row;
-    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
-        .bind(project_id.to_string())
-        .fetch_optional(&*state.db)
-        .await?;
+    let project_path = resolve_project_dir(&state, project_id).await?;
 
-    let project_name = match row {
-        Some(r) => r.get::<String, _>(0),
-        None => return Err(ApiError::NotFound("Project not found".into())),
+    let result = match parse_command_line(&req.command, SHELL_PROGRAMS) {
+        Ok(steps) => run_command_steps(&project_path, &steps, SHELL_TIMEOUT).await,
+        Err(e) => Err(e),
     };
-
-    let project_path = state.config.data_dir.join(&project_name);
-    
-    // Security: only allow safe commands
-    let safe_prefixes = ["npm", "npx", "node", "pnpm", "yarn", "git", "ls", "cat", "echo", "mkdir", "touch", "rm", "cp", "mv"];
-    let cmd_lower = req.command.trim().to_lowercase();
-    let is_safe = safe_prefixes.iter().any(|prefix| cmd_lower.starts_with(prefix));
-    
-    if !is_safe {
-        return Ok(Json(serde_json::json!({
-            "success": false,
-            "error": "Command not allowed for security reasons. Allowed: npm, git, ls, cat, echo, mkdir, touch, etc."
-        })));
+    match result {
+        Ok(o) => Ok(Json(serde_json::json!({
+            "success": o.success,
+            "output": o.stdout,
+            "stderr": o.stderr,
+            "exit_code": o.exit_code,
+        }))),
+        Err(e) => Ok(Json(serde_json::json!({ "success": false, "error": e }))),
     }
-    
-    let output = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&req.command)
-        .current_dir(&project_path)
-        .output()
-        .map_err(|e| ApiError::Internal(format!("Failed to execute command: {}", e)))?;
-    
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    
-    Ok(Json(serde_json::json!({
-        "success": output.status.success(),
-        "output": stdout,
-        "stderr": stderr,
-        "exit_code": output.status.code().unwrap_or(-1),
-    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -2695,23 +2789,13 @@ pub async fn verify_task(
     let mut meta = read_task_meta(&task_dir).ok_or_else(|| ApiError::NotFound("Task not found".into()))?;
     let command = req.command.or_else(|| meta.verify_command.clone())
         .unwrap_or_else(|| "npm run build".to_string());
-    // Safety allowlist (broader than project_shell — build/test tooling only).
-    let safe = ["npm", "npx", "node", "pnpm", "yarn", "cargo", "python", "python3", "pytest", "go", "make", "tsc", "jest", "vitest"];
-    let cl = command.trim().to_lowercase();
-    if !safe.iter().any(|p| cl.starts_with(p)) {
-        return Err(ApiError::Config(format!(
-            "Verify command not allowed: '{}'. Allowed prefixes: {}", command, safe.join(", ")
-        )));
-    }
-    let output = std::process::Command::new("sh")
-        .arg("-c").arg(&command)
-        .current_dir(&project_dir)
-        .output()
-        .map_err(|e| ApiError::Internal(format!("verify exec failed: {}", e)))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let code = output.status.code().unwrap_or(-1);
-    let passed = output.status.success();
+    // Same no-shell runner as project_shell, with a build/test-tooling allowlist.
+    let steps = parse_command_line(&command, VERIFY_PROGRAMS)
+        .map_err(|e| ApiError::Config(format!("Verify command not allowed: {}", e)))?;
+    let outcome = run_command_steps(&project_dir, &steps, VERIFY_TIMEOUT)
+        .await
+        .map_err(ApiError::Config)?;
+    let (stdout, stderr, code, passed) = (outcome.stdout, outcome.stderr, outcome.exit_code, outcome.success);
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
     let log_name = format!("verify-{}.log", ts);
     let log_body = format!(
@@ -2759,10 +2843,11 @@ pub async fn search_project(
     let max = params.max.unwrap_or(40);
     let mut matches: Vec<serde_json::Value> = Vec::new();
 
-    let rg = std::process::Command::new("rg")
+    let rg = tokio::process::Command::new("rg")
         .args(["--line-number", "--no-heading", "--color", "never", "--max-count", "5", "-i", &q])
         .current_dir(&project_dir)
-        .output();
+        .output()
+        .await;
     let used_rg = match rg {
         Ok(out) if !out.stdout.is_empty() => {
             let text = String::from_utf8_lossy(&out.stdout);
@@ -2785,14 +2870,15 @@ pub async fn search_project(
     if !used_rg {
         fn walk(dir: &std::path::Path, base: &std::path::Path, ql: &str, max: usize, out: &mut Vec<serde_json::Value>) {
             if out.len() >= max { return; }
-            let skip = ["node_modules", ".git", "target", "dist", "build", ".monastery"];
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for e in entries.flatten() {
                     if out.len() >= max { return; }
                     let p = e.path();
                     let name = e.file_name().to_string_lossy().to_string();
                     if p.is_dir() {
-                        if !skip.contains(&name.as_str()) { walk(&p, base, ql, max, out); }
+                        if !CONTEXT_SKIP_DIRS.contains(&name.as_str()) { walk(&p, base, ql, max, out); }
+                    } else if is_context_ignored_file(&name) {
+                        continue;
                     } else if let Ok(content) = std::fs::read_to_string(&p) {
                         for (i, line) in content.lines().enumerate() {
                             if line.to_lowercase().contains(ql) {
@@ -2838,6 +2924,26 @@ pub async fn read_all_project_files(
     Ok(Json(serde_json::json!({ "files": files })))
 }
 
+/// Directories never read into LLM context or searched: VCS internals, dependencies, build
+/// output, caches, editor settings, and Monastery's own task/deploy state. Mirrors bolt.diy's
+/// IGNORE_PATTERNS.
+const CONTEXT_SKIP_DIRS: &[&str] = &[
+    ".git", "node_modules", "target", "dist", "build", ".next", ".nuxt", ".svelte-kit", ".turbo",
+    "coverage", ".cache", ".monastery", ".vscode", ".idea", "__pycache__", ".venv", "venv",
+];
+/// Files never read into context. A lockfile alone can be bigger than a whole small site and
+/// push it over the scoped-context threshold, and the model has no use for it.
+const CONTEXT_SKIP_FILES: &[&str] = &[
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "bun.lockb", "Cargo.lock",
+    "composer.lock", "poetry.lock", "Gemfile.lock", ".DS_Store",
+];
+/// Generated/minified file suffixes never read into context.
+const CONTEXT_SKIP_SUFFIXES: &[&str] = &[".log", ".map", ".min.js", ".min.css"];
+
+fn is_context_ignored_file(name: &str) -> bool {
+    CONTEXT_SKIP_FILES.contains(&name) || CONTEXT_SKIP_SUFFIXES.iter().any(|s| name.ends_with(s))
+}
+
 fn read_files_recursive(
     base: &std::path::Path,
     current: &std::path::Path,
@@ -2849,12 +2955,14 @@ fn read_files_recursive(
         for entry in read_dir.flatten() {
             let path = entry.path();
             let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            if name == ".git" || name == "node_modules" || name == "target" { continue; }
-            
+
             let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
-            
+
             if path.is_dir() {
+                if CONTEXT_SKIP_DIRS.contains(&name.as_str()) { continue; }
                 read_files_recursive(base, &path, files, depth + 1);
+            } else if is_context_ignored_file(&name) {
+                continue;
             } else {
                 // Skip images/fonts outright: real binaries would fail read_to_string anyway,
                 // but files uploaded before base64 decoding existed are data-URL *text* and
@@ -2885,8 +2993,8 @@ fn walk_directory(base: &std::path::Path, current: &std::path::Path) -> Vec<serd
         for entry in read_dir.flatten() {
             let path = entry.path();
             let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            // Skip .git directory
-            if name == ".git" {
+            // Skip VCS internals and installed dependencies (thousands of entries nobody browses)
+            if name == ".git" || name == "node_modules" {
                 continue;
             }
             let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
@@ -5145,181 +5253,6 @@ services:
 }
 
 // ============================================================
-// Agent Run Handler
-// ============================================================
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct RunAgentRequest {
-    pub system_prompt: String,
-    pub task: String,
-    pub project_id: uuid::Uuid,
-}
-
-/// Run a built-in agent with a custom system prompt, streaming the result via SSE
-pub async fn run_agent(
-    State(state): State<AppState>,
-    Json(req): Json<RunAgentRequest>,
-) -> Response {
-    use futures::StreamExt;
-
-    // Look up the project
-    let proj_row = sqlx::query("SELECT name FROM projects WHERE id = ?")
-        .bind(req.project_id.to_string())
-        .fetch_optional(&*state.db)
-        .await;
-
-    let project_name = match proj_row {
-        Ok(Some(r)) => r.get::<String, _>(0),
-        _ => String::new(),
-    };
-
-    let project_path = state.config.data_dir.join(&project_name);
-
-    // Build project context from files
-    let mut project_context = String::new();
-    if project_path.exists() {
-        let mut files = Vec::new();
-        collect_files_for_context(&project_path, &project_path, &mut files);
-        // Cap at ~200KB for agent context
-        for (path, content) in files.iter().take(50) {
-            let ext = std::path::Path::new(path).extension()
-                .and_then(|e| e.to_str()).unwrap_or("");
-            project_context.push_str(&format!("### {}\n```{}\n{}\n```\n\n", path, ext, content));
-            if project_context.len() > 200_000 {
-                project_context.push_str("\n... [additional files truncated]\n");
-                break;
-            }
-        }
-    }
-
-    let full_system_prompt = format!(
-        "{}\n\n## Project Context\nProject: {}\n\n{}",
-        req.system_prompt, project_name, project_context
-    );
-
-    // Get the first available endpoint
-    let endpoint_row = sqlx::query(
-        "SELECT id, name, base_url, api_key, is_favorite, is_local, max_tokens, temperature, created_at FROM endpoints LIMIT 1"
-    )
-    .fetch_optional(&*state.db)
-    .await
-    .ok()
-    .flatten();
-
-    let endpoint_config = match endpoint_row {
-        Some(row) => {
-            let id: String = row.get(0);
-            let name: String = row.get(1);
-            let base_url: String = row.get(2);
-            let api_key: Option<String> = row.get(3);
-            let is_favorite: i64 = row.get(4);
-            let is_local: i64 = row.get(5);
-            let max_tokens: Option<i64> = row.get(6);
-            let temperature: Option<f64> = row.get(7);
-            let created_at: String = row.get(8);
-            harness_core::models::EndpointConfig {
-                id: uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-                name,
-                base_url,
-                api_key,
-                is_favorite: is_favorite != 0,
-                is_local: is_local != 0,
-                max_tokens: max_tokens.map(|v| v as u32),
-                temperature: temperature.map(|v| v as f32),
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
-                    .unwrap_or_else(|_| chrono::Utc::now().fixed_offset())
-                    .into(),
-            }
-        }
-        None => {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-                "error": "No LLM endpoint configured. Add an endpoint in Settings."
-            }))).into_response();
-        }
-    };
-
-    let client = harness_core::LLMClient::new(endpoint_config);
-
-    // Build messages
-    let messages: Vec<async_openai::types::ChatCompletionRequestMessage> = vec![
-        async_openai::types::ChatCompletionRequestSystemMessage {
-            content: async_openai::types::ChatCompletionRequestSystemMessageContent::Text(full_system_prompt),
-            name: None,
-        }.into(),
-        async_openai::types::ChatCompletionRequestUserMessage {
-            content: async_openai::types::ChatCompletionRequestUserMessageContent::Text(req.task),
-            name: None,
-        }.into(),
-    ];
-
-    let model_id = "deepseek-chat".to_string();
-    let stream = match client.chat_stream(messages, model_id).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("Agent stream failed: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
-                "error": e.to_string()
-            }))).into_response();
-        }
-    };
-
-    // Stream as SSE
-    use axum::response::Sse;
-    use std::time::Duration;
-
-    let event_stream = stream.map(|result| {
-        match result {
-            Ok(chunk) => {
-                let event = axum::response::sse::Event::default().data(sse_safe(chunk.content));
-                match chunk.chunk_type {
-                    harness_core::ChunkType::Reasoning => Ok(event.event("reasoning")),
-                    harness_core::ChunkType::Content => Ok(event),
-                    harness_core::ChunkType::FinishReason => Ok(event.event("finish_reason")),
-                    harness_core::ChunkType::Usage => Ok(event.event("usage")),
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Agent stream error: {}", e);
-                Err(axum::Error::new(e))
-            }
-        }
-    });
-
-    Sse::new(event_stream)
-        .keep_alive(
-            axum::response::sse::KeepAlive::new()
-                .interval(Duration::from_secs(15))
-                .text("keep-alive")
-        )
-        .into_response()
-}
-
-/// Collect files for agent context (recursive)
-fn collect_files_for_context(
-    base: &std::path::Path,
-    current: &std::path::Path,
-    files: &mut Vec<(String, String)>,
-) {
-    if let Ok(read_dir) = std::fs::read_dir(current) {
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name == ".git" || name == "node_modules" || name == "target" || name == ".next" || name == "dist" || name == "build" {
-                continue;
-            }
-            let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
-            if path.is_dir() {
-                collect_files_for_context(base, &path, files);
-            } else if let Ok(content) = std::fs::read_to_string(&path) {
-                if content.len() < 100_000 {
-                    files.push((rel_path, content));
-                }
-            }
-        }
-    }
-}
-
-// ============================================================
 // File Operations Handlers (user-initiated, no LLM needed)
 // ============================================================
 
@@ -5375,34 +5308,9 @@ pub async fn create_project_directory(
     Query(query): Query<FilePathQuery>,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    use sqlx::Row;
-    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
-        .bind(project_id.to_string())
-        .fetch_optional(&*state.db)
-        .await?;
-
-    let project_name = match row {
-        Some(r) => r.get::<String, _>(0),
-        None => return Err(ApiError::NotFound("Project not found".into())),
-    };
-
-    let project_path = state.config.data_dir.join(&project_name);
-    let canonical_base = project_path.canonicalize()
-        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
-
-    let full_path = project_path.join(&query.path);
-
-    // Security: check the parent directory is within the project
-    // The directory itself may not exist yet, so check its parent
-    if let Some(parent) = full_path.parent() {
-        if parent.exists() {
-            let canonical_parent = parent.canonicalize()
-                .map_err(|_| ApiError::Internal("Failed to resolve parent path".into()))?;
-            if !canonical_parent.starts_with(&canonical_base) {
-                return Err(ApiError::Config("Path traversal not allowed".into()));
-            }
-        }
-    }
+    let project_dir = resolve_project_dir(&state, project_id).await?;
+    // (The old check here was skipped entirely when the parent didn't exist yet.)
+    let full_path = safe_project_path(&project_dir, &query.path)?;
 
     if full_path.exists() {
         return Err(ApiError::Config(format!("Directory already exists: {}", query.path)));
@@ -5466,38 +5374,12 @@ pub async fn upload_project_file(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    use sqlx::Row;
-    let row = sqlx::query("SELECT name FROM projects WHERE id = ?")
-        .bind(project_id.to_string())
-        .fetch_optional(&*state.db)
-        .await?;
+    let project_dir = resolve_project_dir(&state, project_id).await?;
+    let full_path = safe_project_path(&project_dir, &query.path)?;
 
-    let project_name = match row {
-        Some(r) => r.get::<String, _>(0),
-        None => return Err(ApiError::NotFound("Project not found".into())),
-    };
-
-    let project_path = state.config.data_dir.join(&project_name);
-    let canonical_base = project_path.canonicalize()
-        .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
-
-    let full_path = project_path.join(&query.path);
-
-    // Create parent directories if needed
     if let Some(parent) = full_path.parent() {
         tokio::fs::create_dir_all(parent).await
             .map_err(|e| ApiError::Internal(format!("Failed to create directories: {}", e)))?;
-    }
-
-    // Security: check parent is within project
-    if let Some(parent) = full_path.parent() {
-        if parent.exists() {
-            let canonical_parent = parent.canonicalize()
-                .map_err(|_| ApiError::Internal("Failed to resolve parent path".into()))?;
-            if !canonical_parent.starts_with(&canonical_base) {
-                return Err(ApiError::Config("Path traversal not allowed".into()));
-            }
-        }
     }
 
     std::fs::write(&full_path, &body)
@@ -5535,7 +5417,6 @@ pub async fn move_project_file(
         .map_err(|_| ApiError::Internal("Project directory not found".into()))?;
 
     let source_path = project_path.join(&req.source);
-    let dest_path = project_path.join(&req.destination);
 
     // Verify source exists and is within project
     let canonical_source = source_path.canonicalize()
@@ -5544,16 +5425,11 @@ pub async fn move_project_file(
         return Err(ApiError::Config("Source path traversal not allowed".into()));
     }
 
-    // Verify destination parent is within project
+    // Validate the destination BEFORE creating its parent directories.
+    let dest_path = safe_project_path(&project_path, &req.destination)?;
     if let Some(parent) = dest_path.parent() {
-        // Create parent dirs if needed
         tokio::fs::create_dir_all(parent).await
             .map_err(|e| ApiError::Internal(format!("Failed to create target directories: {}", e)))?;
-        let canonical_parent = parent.canonicalize()
-            .map_err(|_| ApiError::Internal("Failed to resolve target parent path".into()))?;
-        if !canonical_parent.starts_with(&canonical_base) {
-            return Err(ApiError::Config("Destination path traversal not allowed".into()));
-        }
     }
 
     // Prevent moving into self (source is a prefix of destination = moving into own subtree)
@@ -5929,4 +5805,59 @@ pub async fn hermes_agent_run(
                 .text("keep-alive"),
         )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_line_splits_quotes_and_chains() {
+        let steps = parse_command_line(r#"npm install && git commit -m "fix: nav (mobile)""#, SHELL_PROGRAMS).unwrap();
+        assert_eq!(steps, vec![
+            vec!["npm".to_string(), "install".to_string()],
+            vec!["git".into(), "commit".into(), "-m".into(), "fix: nav (mobile)".into()],
+        ]);
+    }
+
+    #[test]
+    fn command_line_refuses_shell_operators() {
+        for cmd in ["echo x; curl evil.sh", "ls | sh", "echo $(id)", "echo `id`", "cat a > b", "npm i &", "echo a\nrm -rf x"] {
+            assert!(parse_command_line(cmd, SHELL_PROGRAMS).is_err(), "should refuse: {cmd}");
+        }
+    }
+
+    #[test]
+    fn command_line_requires_exact_program() {
+        // The old prefix check accepted these.
+        assert!(parse_command_line("nodeevil", SHELL_PROGRAMS).is_err());
+        assert!(parse_command_line("curl https://x", SHELL_PROGRAMS).is_err());
+        assert!(parse_command_line("git status", SHELL_PROGRAMS).is_ok());
+    }
+
+    #[test]
+    fn command_line_keeps_arguments_inside_the_project() {
+        for cmd in ["rm -rf /", "cat ../other/secret", "cp a ~/x", "npm install --prefix=/usr", r"cat C:\Windows\x"] {
+            assert!(parse_command_line(cmd, SHELL_PROGRAMS).is_err(), "should refuse: {cmd}");
+        }
+        assert!(parse_command_line("git diff HEAD..main", SHELL_PROGRAMS).is_ok());
+        assert!(parse_command_line("mkdir -p src/components", SHELL_PROGRAMS).is_ok());
+    }
+
+    #[test]
+    fn project_paths_reject_traversal_without_touching_disk() {
+        let root = std::env::temp_dir().join(format!("monastery-path-test-{}", uuid::Uuid::new_v4()));
+        let project = root.join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+
+        assert!(safe_project_path(&project, "../outside/file.txt").is_err());
+        assert!(safe_project_path(&project, "a/../../outside").is_err());
+        assert!(safe_project_path(&project, "/etc/passwd").is_err());
+        assert!(!root.join("outside").exists(), "rejected paths must not create anything");
+
+        let ok = safe_project_path(&project, "src/./new/index.html").unwrap();
+        assert!(ok.ends_with(std::path::Path::new("src").join("new").join("index.html")));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

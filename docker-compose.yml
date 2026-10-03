@@ -7,7 +7,6 @@ services:
       - "3000:3000"
     volumes:
       - harness_data:/app/data
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
       - DATA_DIR=/app/data
       - LOG_LEVEL=info

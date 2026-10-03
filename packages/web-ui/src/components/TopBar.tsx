@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, GitBranch, ArrowUp, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Plus, Trash2, Code, Rocket } from 'lucide-react';
+import { FolderGit2, Brain, Settings, ChevronLeft, ChevronRight, ArrowDown, Monitor, MonitorOff, Sun, Moon, ChevronDown, Cpu, Plus, Trash2, Code, Rocket, History } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { SettingsView, type SettingsTab } from './SettingsView';
 import { SourceShipDrawer } from './SourceShipDrawer';
@@ -43,7 +43,7 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
   const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined);
 
   // Anywhere in the app can deep-link into Settings via this event
-  // (e.g. "Open Settings" in the Agents tab targets the Hermes tab).
+  // (e.g. the drawer's "Create repo" action targets the Git Forges section).
   useEffect(() => {
     const handler = (e: Event) => {
       const tab = (e as CustomEvent).detail?.tab as SettingsTab | undefined;
@@ -54,17 +54,11 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
     return () => window.removeEventListener('monastery:open-settings', handler);
   }, []);
 
-  // The command palette (and anything else) can open the Source & Ship drawer via this event;
-  // the close event keeps it mutually exclusive with the task drawer (both dock right).
+  // The command palette (and anything else) can open the History & Ship drawer via this event.
   useEffect(() => {
     const openHandler = () => setSourceShipOpen(true);
-    const closeHandler = () => setSourceShipOpen(false);
     window.addEventListener('monastery:open-source-ship', openHandler);
-    window.addEventListener('monastery:close-source-ship', closeHandler);
-    return () => {
-      window.removeEventListener('monastery:open-source-ship', openHandler);
-      window.removeEventListener('monastery:close-source-ship', closeHandler);
-    };
+    return () => window.removeEventListener('monastery:open-source-ship', openHandler);
   }, []);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -142,17 +136,6 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
       ? selectedModelId
       : availableModels[0]?.id ?? null;
 
-  // Derive clean repo name by stripping known branch suffix
-  const getRepoName = () => {
-    if (!currentProject || !gitStatus?.branch || gitStatus.branch === 'unknown') {
-      return currentProject?.name || '';
-    }
-    const suffix = `-${gitStatus.branch}`;
-    if (currentProject.name.endsWith(suffix)) {
-      return currentProject.name.slice(0, -suffix.length);
-    }
-    return currentProject.name;
-  };
   
   return (
     <>
@@ -387,48 +370,30 @@ export function TopBar({ availableProjects = [], endpoints = [], availableModels
             </button>
           )}
 
-          {/* Source & Ship chip — status at a glance; the drawer holds the actions */}
+          {/* History & Ship chip — undo and deploy are first-class; git sync is in the drawer's
+              Advanced section. A "behind" count still shows here so a remote that moved ahead
+              (e.g. an external agent pushed) is noticed without opening anything. */}
           {currentProject && (
-            gitStatus ? (
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
-                title={`Source & Ship — pull, commit & push, snapshots, and DEPLOY. Branch ${gitStatus.branch}, ${gitStatus.changed_files.length} changed, ${gitStatus.ahead} ahead / ${gitStatus.behind} behind`}
-              >
-                <GitBranch size={14} className={gitStatus.is_clean ? 'text-green-400' : 'text-amber-400'} />
-                <span className="text-xs text-monastery-text-secondary">
-                  {getRepoName()}
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
+              title="History & Ship — deploy, undo changes, and git sync"
+            >
+              <History size={13} className="text-monastery-text-secondary" />
+              <span className="text-xs text-monastery-text-secondary">History</span>
+              <span className="h-3.5 w-px bg-monastery-dark-border" aria-hidden />
+              <Rocket size={12} className="text-monastery-lantern" />
+              <span className="text-xs text-monastery-text-secondary">Ship</span>
+              {gitStatus && gitStatus.behind > 0 && (
+                <span
+                  className="flex items-center text-xs text-amber-400"
+                  title={`origin/${gitStatus.branch} has ${gitStatus.behind} new commit(s) — pull from Advanced · Git sync`}
+                >
+                  <ArrowDown size={10} />{gitStatus.behind}
                 </span>
-                <span className="text-monastery-text-muted text-xs">•</span>
-                <span className="text-xs text-monastery-text-secondary font-medium">{gitStatus.branch}</span>
-                {!gitStatus.is_clean && (
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title={`${gitStatus.changed_files.length} changed files`} />
-                )}
-                {gitStatus.ahead > 0 && (
-                  <span className="flex items-center text-xs text-green-400">
-                    <ArrowUp size={10} />{gitStatus.ahead}
-                  </span>
-                )}
-                {gitStatus.behind > 0 && (
-                  <span className="flex items-center text-xs text-amber-400">
-                    <ArrowDown size={10} />{gitStatus.behind}
-                  </span>
-                )}
-                {/* Deployment lives behind this chip too — the rocket says so. */}
-                <span className="h-3.5 w-px bg-monastery-dark-border" aria-hidden />
-                <Rocket size={12} className="text-monastery-lantern" />
-                <ChevronDown size={12} className="text-monastery-text-muted" />
-              </button>
-            ) : (
-              <button
-                onClick={() => window.dispatchEvent(new CustomEvent('monastery:open-source-ship'))}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-monastery-dark-surface rounded-lg border border-monastery-dark-border hover:border-monastery-pine transition-colors"
-                title="Source & Ship — snapshots and deployment"
-              >
-                <Rocket size={14} className="text-monastery-lantern" />
-                <span className="text-xs text-monastery-text-secondary">Ship</span>
-              </button>
-            )
+              )}
+              <ChevronDown size={12} className="text-monastery-text-muted" />
+            </button>
           )}
         </div>
 

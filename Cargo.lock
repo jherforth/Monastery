@@ -792,23 +792,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "harness-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "harness-core",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "harness-api"
 version = "0.1.0"
 dependencies = [

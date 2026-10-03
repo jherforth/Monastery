@@ -1,3 +1,6 @@
+// HIDDEN since simplification Phase 1 (docs/SIMPLIFICATION_PLAN.md): the staged workflow (tasks, spec, gates) was replaced by Discuss mode + "Build this plan".
+// Nothing imports this module any more; it is kept so the feature can return quickly if
+// missed, and is deleted in Phase 3.
 import { useCallback, useState } from 'react';
 import useSWR from 'swr';
 import { fetcher, apiPost } from '../lib/fetch';

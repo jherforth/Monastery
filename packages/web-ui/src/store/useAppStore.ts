@@ -2,10 +2,12 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { AppState, Message, LLMEndpoint, Project, Session, SnapshotSummary, SnapshotDetail } from '../types';
 
+// Chat + Preview is the default workspace (the editor opens from the top-bar Code toggle), so
+// the chat gets a comfortable share and the preview takes the rest.
 const defaultLayout = {
-  chat: 25,
-  editor: 50,
-  preview: 25,
+  chat: 35,
+  editor: 30,
+  preview: 35,
 };
 
 interface AppStore extends AppState {
@@ -56,9 +58,9 @@ export const useAppStore = create<AppStore>()(
       theme: 'monastery-dark',
       sidebarCollapsed: true,
       // Preview open by default — app generation is the product, so the running app is
-      // visible from the first response.
+      // visible from the first response. Code is a toggle, not a default pane.
       previewCollapsed: false,
-      editorCollapsed: false,
+      editorCollapsed: true,
       paneLayout: defaultLayout,
       
       // Snapshot initial state
@@ -149,14 +151,16 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: 'monastery-storage',
-      version: 1,
+      version: 2,
       // v0 → v1: open the preview pane once for existing users, who all have
       // previewCollapsed: true persisted from when collapsed was the default.
+      // v1 → v2: Preview became the primary pane — hide the editor once (Code toggle reopens it).
       migrate: (persisted: any, version) => {
-        if (version === 0 && persisted) {
-          return { ...persisted, previewCollapsed: false };
-        }
-        return persisted;
+        if (!persisted) return persisted;
+        let next = persisted;
+        if (version < 1) next = { ...next, previewCollapsed: false };
+        if (version < 2) next = { ...next, editorCollapsed: true };
+        return next;
       },
       partialize: (state) => ({
         theme: state.theme,

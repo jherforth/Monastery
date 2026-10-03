@@ -1,3 +1,6 @@
+// HIDDEN since simplification Phase 1 (docs/SIMPLIFICATION_PLAN.md): the staged workflow (tasks, spec, gates) was replaced by Discuss mode + "Build this plan".
+// Nothing imports this module any more; it is kept so the feature can return quickly if
+// missed, and is deleted in Phase 3.
 import { useState } from 'react';
 import { ChevronRight, Plus, Play, Bot, FlaskConical, CheckCircle2, XCircle, Loader2, ArrowRight, X } from 'lucide-react';
 import { useWorkflow, STAGES, specHasAcDod, latestVerify, type Stage } from '../hooks/useWorkflow';

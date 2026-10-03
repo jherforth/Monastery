@@ -1,5 +1,8 @@
 # Implementation Summary: Environment Configuration & LLM Management
 
+> **Historical (June 2026).** Kept for reference; parts of it no longer match the code.
+> Current architecture: [../ARCHITECTURE.md](../ARCHITECTURE.md).
+
 ## Overview
 This implementation ensures that:
 1. **`.env.example` file exists** with comprehensive documentation

@@ -1,5 +1,11 @@
 # Agents — Architecture & Implementation
 
+> **Hidden since simplification Phase 1 (2026-10).** Agent mode, the role chips and the Hermes
+> Settings section are no longer in the UI — the chat is now one model with **Build** and
+> **Discuss** modes. The backend Hermes routes and stored connections still exist until Phase 3
+> removes them. To work alongside an external agent, see [EXTERNAL_AGENTS.md](EXTERNAL_AGENTS.md);
+> for the reasoning, [SIMPLIFICATION_PLAN.md](SIMPLIFICATION_PLAN.md) (decision D1).
+
 ## Overview
 
 Monastery's agent system dispatches specialized work (review, refactor, test, deploy) to an external **Hermes** agent framework. Hermes runs the agent loop, manages tools, sub-agents, and model calls. Monastery provides the project context and file surface — the UI is a thin dispatch layer with role labels for UX, but **all execution happens in Hermes**.

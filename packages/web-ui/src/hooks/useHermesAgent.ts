@@ -1,3 +1,6 @@
+// HIDDEN since simplification Phase 1 (docs/SIMPLIFICATION_PLAN.md): Hermes is no longer part of the chat loop (see docs/EXTERNAL_AGENTS.md).
+// Nothing imports this module any more; it is kept so the feature can return quickly if
+// missed, and is deleted in Phase 3.
 import { useCallback } from 'react';
 import useSWR from 'swr';
 import { apiPost, apiDelete } from '../lib/fetch';

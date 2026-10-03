@@ -1,5 +1,8 @@
 # Self-Host Wizard — Implementation Plan
 
+> **Historical (June 2026).** This was the original implementation plan; the wizard as built is
+> described in [COOLIFY_DEPLOYMENT.md](COOLIFY_DEPLOYMENT.md) and [../ARCHITECTURE.md](../ARCHITECTURE.md).
+
 ## Overview
 
 Guide users through deploying their AI-generated apps to self-hosted platforms:

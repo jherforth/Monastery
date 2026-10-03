@@ -1,21 +1,16 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { useAppStore } from '../store/useAppStore';
 import { buildSkillInstructions } from '../lib/skills';
-import { useWorkflow, WORKFLOW_ROLE_IDS, type Stage, type TaskMeta } from './useWorkflow';
 import { parseSSEStream } from '../lib/sse';
 import { Message, Project, FileChange } from '../types';
 import type { EditorTab } from './useEditorTabs';
 
+/** Build writes files; Discuss answers questions and plans, and never touches the project. */
+export type ChatMode = 'build' | 'discuss';
+
 // Below this total corpus size the whole project is sent as context; above it, only the
 // active file + working set (scoped mode).
 const SMALL_PROJECT_LIMIT = 96_000; // ~24K tokens
-// The workflow nudge is deliberately much higher and decoupled from context scoping — it should
-// only fire for GENUINELY large projects, not a single sizable HTML/CSS page. Suppressible too.
-const WORKFLOW_NUDGE_LIMIT = 400_000; // ~100K tokens
-export const WORKFLOW_NUDGE_SUPPRESS_KEY = 'monastery.suppressWorkflowNudge';
-
-// Active agent role(s) — a persistent "lens" applied to chat messages. Capped to keep focus.
-export const MAX_ACTIVE_ROLES = 2;
 
 // Auto-continue a response that hits the model's output-token cap (finish_reason="length"),
 // up to MAX_AUTO_CONTINUE times, then fall back to the manual Continue button. Capped on
@@ -26,6 +21,52 @@ const MAX_AUTO_CONTINUE = 5;
 // each round is a full extra request (not just an appended chunk). 4 allows the full
 // discovery chain in a complex project: search → read → (read more) → edit.
 const MAX_AUTO_READ_ROUNDS = 4;
+
+const NO_TOOL_CALLS_RULE =
+  '- You have NO native function/tool calling in this chat. NEVER emit tool-call markup of any kind (<|DSML|…>, <tool_call>, <|tool_calls_begin|>, JSON function calls) — it is not executed and breaks the conversation. To read a project file output a plain `@read path` line; to search, `@search term`.';
+
+// Build mode: how to change files, and how to finish the job in one response.
+const BUILD_RULES = `FILE EDITING RULES — read carefully, choose the right mode:
+
+1. EDITING part of an EXISTING file → use one or more SEARCH/REPLACE blocks inside a path-tagged code block. The SEARCH text must be copied EXACTLY from the file's current contents (enough surrounding lines to be unique); it is found and replaced in place, leaving the rest of the file untouched. This is the ONLY safe way to change a section — do NOT paste just the changed section as a whole-file block.
+
+   \`\`\`html:index.html
+   <<<<<<< SEARCH
+     <h1>Old title</h1>
+   =======
+     <h1>New title</h1>
+   >>>>>>> REPLACE
+   \`\`\`
+
+   Use several SEARCH/REPLACE blocks in the same code block for multiple edits to one file.
+
+2. CREATING a new file, or intentionally REWRITING a whole file → a path-tagged code block with the file's COMPLETE contents (no SEARCH/REPLACE markers):
+
+   \`\`\`tsx:src/NewThing.tsx
+   <full file contents>
+   \`\`\`
+
+CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTIRE contents. NEVER put just a section, fragment, or "…rest unchanged…" in one — the omitted parts are permanently deleted. If you are changing only part of a file, you MUST use mode 1. Monastery will reject a whole-file block that is only a slice of the existing file.
+- The path after the colon determines where the code is written; you can edit/create multiple files in one response.
+- For illustrative snippets you do NOT want saved to disk, use a plain code block with NO file path.
+- Shell commands (\`\`\`bash blocks) are NOT run automatically — the user decides whether to run them. Only suggest one when it is genuinely needed, and never rely on it having run.
+${NO_TOOL_CALLS_RULE}
+
+RESPONSE DISCIPLINE — this determines whether the user's request actually gets completed:
+1. Think through the ENTIRE request BEFORE writing. Then respond with EVERYTHING needed to complete it — ALL file changes, in this single response. NEVER stop after one file intending to "continue later": nothing runs later unless the user asks again.
+2. Prefer a COMPLETE-file block (mode 2) over SEARCH/REPLACE whenever the file is small (under ~150 lines) or you are changing most of it. Full contents always apply cleanly; SEARCH anchors can fail to match.
+3. NEVER write placeholders like "// rest of the code unchanged" or "…existing code…" inside a path-tagged block — every omitted line is permanently deleted.
+4. Keep prose minimal: at most a 2–4 line plan, then the code blocks. Do not narrate each edit.`;
+
+// Discuss mode (modeled on bolt.diy's discuss prompt): answer and plan, never implement.
+const DISCUSS_RULES = `DISCUSS MODE — you are helping the user understand this project and plan changes to it. You do NOT implement anything in this mode.
+
+1. Answer questions directly and concisely. Only write a plan when the user asks for a change, a new feature, or help debugging.
+2. When planning, write exactly ONE plan under a "## The Plan" heading: numbered steps, each naming the real file(s) involved (from the project tree) and describing in plain English what changes and why.
+3. NEVER write code, code blocks, or file contents — nothing you write in this mode is applied to the project. Describe changes in words (e.g. "in styles.css, turn the nav into a centered flex row").
+4. Mention any new dependencies, assets, or services the plan needs. If the request is ambiguous, ask one clarifying question instead of guessing.
+5. Keep it short. When the plan is ready, the user can click "Build this plan" to have it implemented.
+${NO_TOOL_CALLS_RULE}`;
 
 // Format one file for the PROJECT FILE CONTENTS context block.
 const fmtFile = (path: string, content: string) => {
@@ -127,25 +168,14 @@ const stitchContinuation = (base: string, cont: string): string => {
   return out;
 };
 
-interface AgentLike {
-  name: string;
-  role: string;
-  description: string;
-  icon: string;
-}
-
 interface ChatOrchestratorDeps {
   currentProject: Project | null;
   currentSession: { id: string } | null;
   createSession: (init?: { title?: string }) => Promise<{ id: string } | null | undefined>;
   addMessage: (m: { role: string; content: string }) => Promise<unknown>;
   availableModels: Array<{ id: string }>;
-  /** Default Hermes connection (or null) — enables Agent-mode routing. */
-  hermesConnection: unknown;
   /** Configured Pocketbase connection (or undefined) — its URL feeds the pocketbase skill. */
   pocketbaseBaseUrl?: string;
-  workflow: ReturnType<typeof useWorkflow>;
-  getAgent: (id: string) => AgentLike | undefined;
   projectFiles: any[];
   setProjectFiles: (files: any[]) => void;
   allFileContents: Record<string, string>;
@@ -169,10 +199,7 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
     createSession,
     addMessage,
     availableModels,
-    hermesConnection,
     pocketbaseBaseUrl,
-    workflow,
-    getAgent,
     projectFiles,
     setProjectFiles,
     allFileContents,
@@ -185,9 +212,7 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  // When on, chat messages are routed to the Hermes agent instead of plain LLM streaming.
-  // Only selectable when a default Hermes connection is configured.
-  const [agentMode, setAgentModeRaw] = useState(false);
+  const [chatMode, setChatMode] = useState<ChatMode>('build');
   // Toggle-triggered skills the user has switched on (see lib/skills.ts) — e.g. 'pocketbase'
   // injects backend + deployment instructions into the LLM context. Registry-driven: the
   // composer renders whatever skills exist, so new domains need no UI changes.
@@ -200,29 +225,11 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
       return want ? [...ids, id] : ids.filter(x => x !== id);
     });
   }, []);
-  const [autoContinue, setAutoContinue] = useState(true);
   // Context discipline: in large projects we don't dump the whole repo into every message. The
   // "working set" is the subset of files (beyond the active file) currently included in context —
-  // seeded by a task spec's affected-files later, and grown when the model emits `@read <path>`.
+  // grown when the user names a file or the model emits `@read <path>`.
   const [workingSetPaths, setWorkingSetPaths] = useState<string[]>([]);
-  const [activeAgentIds, setActiveAgentIds] = useState<string[]>([]);
-  const toggleActiveAgent = useCallback((id: string) => {
-    setActiveAgentIds(ids =>
-      ids.includes(id)
-        ? ids.filter(x => x !== id)
-        : ids.length < MAX_ACTIVE_ROLES ? [...ids, id] : ids
-    );
-  }, []);
-  // Roles live under Agent mode in the UI; clear them when it's switched off so an
-  // active role can't keep silently injecting once its chips are hidden.
-  const setAgentMode = useCallback((on: boolean) => {
-    setAgentModeRaw(on);
-    if (!on) setActiveAgentIds([]);
-  }, []);
   const abortRef = useRef<AbortController | null>(null);
-  // Workflow nudge: suggested at most once per session/project (reset below) when a freeform
-  // request hits a large project without an active task.
-  const workflowNudgeShownRef = useRef(false);
   // Holds the latest recoverFailedEdits so applyAssistantOutput (defined earlier) can invoke it
   // without a forward reference in its dependency array.
   const recoverFailedEditsRef = useRef<((failed: Array<{ path: string; hunks: EditHunk[] }>) => void) | null>(null);
@@ -252,22 +259,24 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
     '⚠️ No model is available from the active endpoint. Open the LLM menu in the top bar to pick a model, ' +
     'or validate the endpoint in Settings → Models (its /v1/models list may be empty or unreachable).';
 
-  // When a task is active, its stage roles are driven by the Workflow panel — drop any active
-  // stage-role chips so a now-hidden role can't keep silently injecting into context.
-  useEffect(() => {
-    if (workflow.activeTask) {
-      setActiveAgentIds(ids => ids.filter(id => !WORKFLOW_ROLE_IDS.includes(id)));
-    }
-  }, [workflow.activeTask?.id]);
+  // The one request path for every model call (initial send, auto-continue, context rounds,
+  // manual Continue, edit recovery): the active endpoint's OpenAI-compatible chat stream.
+  const postChat = useCallback((modelId: string, chatMessages: Array<{ role: string; content: string }>, signal?: AbortSignal) => {
+    const activeEndpoint = useAppStore.getState().activeEndpoint;
+    const params = new URLSearchParams();
+    if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
+    return fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: chatMessages }),
+      signal,
+    });
+  }, []);
 
-  // A new session or project gets one fresh chance to show the workflow nudge.
-  useEffect(() => {
-    workflowNudgeShownRef.current = false;
-  }, [currentProject?.id, currentSession?.id]);
-
-  // Parse an assistant response for code blocks / shell commands and apply them to
-  // the project on disk. Shared by the initial send and the manual "Continue" action
-  // so both paths write files identically.
+  // Parse an assistant response for path-tagged code blocks and apply them to the project on
+  // disk. Shared by the initial send and the manual "Continue" action so both paths write files
+  // identically. Shell blocks are deliberately NOT executed here — they get a Run button in the
+  // chat and only run when the user clicks it (runShellCommand).
   const applyAssistantOutput = useCallback((fullContent: string) => {
     if (!currentProject?.id) return;
 
@@ -339,16 +348,7 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
       }
     }
 
-    // --- Shell command detection ---
-    const shellRegex = /```(?:shell|bash|sh|zsh)\s*\n([\s\S]*?)\n```/gi;
-    let shellMatch;
-    const shellCommands: string[] = [];
-    while ((shellMatch = shellRegex.exec(fullContent)) !== null) {
-      const cmd = shellMatch[1].trim();
-      if (cmd) shellCommands.push(cmd);
-    }
-
-    if (fileWrites.length === 0 && fileEdits.length === 0 && shellCommands.length === 0) return;
+    if (fileWrites.length === 0 && fileEdits.length === 0) return;
 
     // Pre-apply contents, for the per-file diff cards on the feedback message.
     const beforeContents: Record<string, string> = {};
@@ -378,7 +378,7 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
       const editedContents: Record<string, string> = {};
       // Hunks that didn't match, per file — fed to the escalating recovery below.
       const failedHunksByFile: Record<string, EditHunk[]> = {};
-      const writes: Promise<WriteResult | void>[] = fileWrites.map(({ path: filePath, content: cleanCode }) =>
+      const writes: Promise<WriteResult>[] = fileWrites.map(({ path: filePath, content: cleanCode }) =>
         fetch(`/api/projects/${currentProject.id}/files/write`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -427,19 +427,6 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
         );
       }
 
-      for (const cmd of shellCommands) {
-        writes.push(
-          fetch(`/api/projects/${currentProject.id}/shell`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: cmd }),
-          }).then(async r => {
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok) console.error(`Shell failed: ${data.error || cmd}`);
-          }).catch(e => console.error(`Shell error:`, e))
-        );
-      }
-
       Promise.all(writes).then((results) => {
         // Refresh open file if it was modified
         if (currentFile) {
@@ -464,14 +451,8 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
             return next;
           });
         }
-        // Shell commands can touch arbitrary files — re-read everything to be safe.
-        if (shellCommands.length > 0) {
-          fetch(`/api/projects/${currentProject.id}/files/read-all`)
-            .then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
-        }
-
-        // Anything on disk may have changed — the live preview listens for this and reloads.
-        if (okResults.length > 0 || shellCommands.length > 0) {
+        // Files on disk changed — the live preview listens for this and reloads.
+        if (okResults.length > 0) {
           window.dispatchEvent(new CustomEvent('monastery:files-written'));
         }
 
@@ -536,67 +517,23 @@ export function useChatOrchestrator(deps: ChatOrchestratorDeps) {
     })();
   }, [currentProject?.id, currentFile, updateTabContentByPath, setProjectFiles, setAllFileContents]);
 
-  // Build the per-request system context: agent roles, editing rules, skills, task spec,
-  // file tree, and file contents. Shared by handleSendMessage AND the manual Continue path,
-  // so every request that can write files carries the same project grounding.
-  const buildSystemContext = useCallback((userMessageContent: string, extraPaths: string[] = []): string | null => {
+  // Build the per-request system context: mode rules, skills, file tree, and file contents.
+  // Shared by handleSendMessage AND the manual Continue path, so every request carries the
+  // same project grounding. Discuss mode swaps the editing rules for planning rules.
+  const buildSystemContext = useCallback((userMessageContent: string, extraPaths: string[] = [], mode: ChatMode = 'build'): string | null => {
     const contextParts: string[] = [];
-    // Inject the active agent role(s) silently as a leading system instruction.
-    const activeAgents = activeAgentIds
-      .map(id => getAgent(id))
-      .filter((a): a is NonNullable<typeof a> => !!a);
-    if (activeAgents.length === 1) {
-      const a = activeAgents[0];
-      contextParts.push(`AGENT ROLE: You are acting as the ${a.name} (${a.role}). ${a.description}. Approach the user's request in that capacity.`);
-    } else if (activeAgents.length > 1) {
-      const list = activeAgents.map(a => `${a.name} (${a.role}) — ${a.description}`).join('; ');
-      contextParts.push(`AGENT ROLES: Combine the perspectives of: ${list}. Address the user's request considering all of these roles.`);
-    }
     if (currentProject) {
-      contextParts.push(`You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
+      contextParts.push(mode === 'discuss'
+        ? `You are an expert web developer acting as a technical consultant for the project "${currentProject.name}". In this mode nothing you write is applied to the project.`
+        : `You are an expert coding assistant. You have full access to the project "${currentProject.name}". You can freely read, create, and modify any file. Your changes are automatically applied.`);
     }
-    contextParts.push(`FILE EDITING RULES — read carefully, choose the right mode:
-
-1. EDITING part of an EXISTING file → use one or more SEARCH/REPLACE blocks inside a path-tagged code block. The SEARCH text must be copied EXACTLY from the file's current contents (enough surrounding lines to be unique); it is found and replaced in place, leaving the rest of the file untouched. This is the ONLY safe way to change a section — do NOT paste just the changed section as a whole-file block.
-
-   \`\`\`html:index.html
-   <<<<<<< SEARCH
-     <h1>Old title</h1>
-   =======
-     <h1>New title</h1>
-   >>>>>>> REPLACE
-   \`\`\`
-
-   Use several SEARCH/REPLACE blocks in the same code block for multiple edits to one file.
-
-2. CREATING a new file, or intentionally REWRITING a whole file → a path-tagged code block with the file's COMPLETE contents (no SEARCH/REPLACE markers):
-
-   \`\`\`tsx:src/NewThing.tsx
-   <full file contents>
-   \`\`\`
-
-CRITICAL: a plain path-tagged block (no SEARCH/REPLACE) REPLACES the file's ENTIRE contents. NEVER put just a section, fragment, or "…rest unchanged…" in one — the omitted parts are permanently deleted. If you are changing only part of a file, you MUST use mode 1. Monastery will reject a whole-file block that is only a slice of the existing file.
-- The path after the colon determines where the code is written; you can edit/create multiple files in one response.
-- For illustrative snippets you do NOT want saved to disk, use a plain code block with NO file path.
-- You have NO native function/tool calling in this chat. NEVER emit tool-call markup of any kind (<|DSML|…>, <tool_call>, <|tool_calls_begin|>, JSON function calls) — it is not executed and breaks the conversation. To read a project file output a plain \`@read path\` line; to search, \`@search term\`.
-
-RESPONSE DISCIPLINE — this determines whether the user's request actually gets completed:
-1. Think through the ENTIRE request BEFORE writing. Then respond with EVERYTHING needed to complete it — ALL file changes, in this single response. NEVER stop after one file intending to "continue later": nothing runs later unless the user asks again.
-2. Prefer a COMPLETE-file block (mode 2) over SEARCH/REPLACE whenever the file is small (under ~150 lines) or you are changing most of it. Full contents always apply cleanly; SEARCH anchors can fail to match.
-3. NEVER write placeholders like "// rest of the code unchanged" or "…existing code…" inside a path-tagged block — every omitted line is permanently deleted.
-4. Keep prose minimal: at most a 2–4 line plan, then the code blocks. Do not narrate each edit.`);
+    contextParts.push(mode === 'discuss' ? DISCUSS_RULES : BUILD_RULES);
 
     // Skills (lazy-loaded expertise) — only the active ones are injected (see lib/skills.ts).
-    // The Pocketbase "toggle" is now skill #1; new domains can be added declaratively.
     buildSkillInstructions(
       activeSkillIds,
       { pocketbaseUrl: pocketbaseBaseUrl, userMessage: userMessageContent },
     ).forEach(block => contextParts.push(block));
-
-    // Active task spec — the workflow "system of record", referenced instead of re-derived.
-    if (workflow.activeTask && workflow.spec.trim()) {
-      contextParts.push(`CURRENT TASK [${workflow.activeTask.stage.toUpperCase()}] — "${workflow.activeTask.title}"\nThis spec is the source of truth; work to its Acceptance Criteria and Definition of Done:\n\n${workflow.spec}`);
-    }
 
     // The file tree (names only) is always cheap and tells the model what exists so it can
     // request files by path.
@@ -606,7 +543,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
     }
 
     // Context discipline (the token win): small projects still send everything; large projects
-    // send ONLY the active file + the working set (files pulled in via the spec or `@read`),
+    // send ONLY the active file + the working set (files the user named or the model `@read`),
     // instead of dumping the whole repo into every turn and exhausting the context window.
     // In BOTH branches the active file's content is overridden with the live editor buffer,
     // so the model always sees what the user is looking at (including unsaved edits).
@@ -622,9 +559,6 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       if (currentFile) include.add(currentFile);
       workingSetPaths.forEach(p => include.add(p));
       extraPaths.forEach(p => include.add(p));
-      // The task spec's affected files seed the working set — this is what lets the staged
-      // workflow pre-scope context so the model rarely needs to @read.
-      (workflow.activeTask?.affected_files || []).forEach(p => include.add(p));
       const picked = fileEntries
         .filter(([p]) => include.has(p))
         .map(([p, c]) => [p, withEditorOverride(p, c)] as const);
@@ -637,20 +571,13 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       );
     }
     return contextParts.length > 0 ? contextParts.join('\n\n') : null;
-  }, [activeAgentIds, getAgent, currentProject, activeSkillIds, pocketbaseBaseUrl, workflow.activeTask, workflow.spec, projectFiles, allFileContents, currentFile, activeTab, isImagePath, workingSetPaths]);
+  }, [currentProject, activeSkillIds, pocketbaseBaseUrl, projectFiles, allFileContents, currentFile, activeTab, isImagePath, workingSetPaths]);
 
   // Minimal one-shot LLM call that returns the full text (no UI message). Used by edit recovery.
   const streamChat = useCallback(async (chatMessages: Array<{ role: string; content: string }>): Promise<string> => {
-    const activeEndpoint = useAppStore.getState().activeEndpoint;
-    const params = new URLSearchParams();
-    if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
     const modelId = resolveModelId();
     if (!modelId) throw new Error('No model available from the active endpoint');
-    const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: chatMessages }),
-    });
+    const res = await postChat(modelId, chatMessages);
     if (!res.ok) throw new Error(`LLM request failed (HTTP ${res.status})`);
     const reader = res.body?.getReader();
     if (!reader) throw new Error('No response body');
@@ -659,7 +586,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       if (eventType !== 'finish_reason' && eventType !== 'usage' && eventType !== 'reasoning') full += data;
     }
     return full;
-  }, [availableModels]);
+  }, [resolveModelId, postChat]);
 
   // Apply one file's correction from an LLM retry response: SEARCH/REPLACE → edit endpoint,
   // otherwise a full-file block → write endpoint. Returns true if the file was changed.
@@ -713,13 +640,11 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
     // Now the loop closes: refresh, then hand the conversation back to the model to finish.
     const finishRecovery = (paths: string[]) => {
       window.dispatchEvent(new CustomEvent('monastery:files-written'));
-      if (autoContinue && continueTaskRef.current) {
+      if (continueTaskRef.current) {
         post('▶️ Continuing the task now that the edits are applied…', 'activity');
         continueTaskRef.current(
           `The edits to ${paths.map(p => `\`${p}\``).join(', ')} have now been applied successfully — the file contents shown in context are current. Continue the task from where you left off and complete ALL remaining steps in this response. If everything is already done, reply with a one-line confirmation.`
         );
-      } else {
-        post('Edits applied. Send "continue" to finish any remaining steps of the task.');
       }
     };
 
@@ -774,13 +699,16 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
     // --- Stage 3: need more information ---
     const files = nextRemaining.map(f => `\`${f.path}\``).join(', ');
     post(`❓ I need more information. I couldn't confidently apply the change to ${files} — the section I was trying to edit doesn't line up with what's currently in the file. Could you point me at the exact lines to change (or paste them here)? Nothing was left half-applied, and you can still abandon the earlier changes above.`);
-  }, [currentProject?.id, streamChat, applyCorrectionForFile, updateTabContentByPath, setAllFileContents, autoContinue]);
+  }, [currentProject?.id, streamChat, applyCorrectionForFile, updateTabContentByPath, setAllFileContents]);
 
   // Keep the ref current so applyAssistantOutput (defined earlier) can call the latest version.
   recoverFailedEditsRef.current = recoverFailedEdits;
   // (continueTaskRef is assigned right after handleSendMessage below.)
 
-  const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { preferHermes?: boolean }) => {
+  // `options.mode` overrides the composer's mode for this one send (e.g. "Build this plan" and
+  // edit-recovery always build, even if the composer is on Discuss).
+  const handleSendMessage = useCallback(async (content: string, attachments?: any[], options?: { mode?: ChatMode }) => {
+    const mode: ChatMode = options?.mode ?? chatMode;
     // Auto-create a session if none exists
     let sessionId = currentSession?.id;
     if (!sessionId && currentProject?.id) {
@@ -793,39 +721,16 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       }
     }
 
-    // Resolve any active agent role(s) — applied as a silent system instruction and shown as chips.
-    const activeAgents = activeAgentIds
-      .map(id => getAgent(id))
-      .filter((a): a is NonNullable<typeof a> => !!a);
-    const agentLabels = activeAgents.map(a => `${a.icon} ${a.name}`);
-
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
       content,
       timestamp: Date.now(),
       attachments,
-      agentLabels: agentLabels.length ? agentLabels : undefined,
+      mode: mode === 'discuss' ? 'discuss' : undefined,
     };
 
     setMessages((prev) => [...prev, userMessage]);
-
-    // Nudge toward the staged workflow: freeform one-shot edits on a GENUINELY large project are
-    // where out-of-context mistakes happen. A task's Plan stage picks the affected files up front.
-    // Fires at most once per session, only when no task is active, only above WORKFLOW_NUDGE_LIMIT,
-    // and never once the user has clicked "Don't show again" (persisted in localStorage).
-    const corpusSize = Object.values(allFileContents).reduce((n, c) => n + c.length, 0);
-    const nudgeSuppressed = localStorage.getItem(WORKFLOW_NUDGE_SUPPRESS_KEY) === '1';
-    if (!workflow.activeTask && corpusSize > WORKFLOW_NUDGE_LIMIT && !workflowNudgeShownRef.current && !nudgeSuppressed && currentProject?.id) {
-      workflowNudgeShownRef.current = true;
-      setMessages(prev => [...prev, {
-        id: `wf-nudge-${Date.now()}`,
-        role: 'system' as const,
-        content: `💡 **Tip:** this project is large, so freeform edits only see part of it. For multi-file changes, the **staged workflow** is more reliable — an Architect first plans which files are affected, and that plan scopes every later step.`,
-        timestamp: Date.now(),
-        suggestTaskTitle: content.slice(0, 80),
-      }]);
-    }
 
     setIsGenerating(true);
 
@@ -839,14 +744,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       addMessage({ role: 'user', content }).catch(console.error);
     }
 
-    // Try real backend connection, fall back to simulation
     try {
-      const activeEndpoint = useAppStore.getState().activeEndpoint;
-      const endpointId = activeEndpoint?.id;
-
-      const params = new URLSearchParams();
-      if (endpointId) params.set('endpoint_id', endpointId);
-
       // Any project file the user names in their message gets pulled into this request's
       // context and persisted to the working set — so "fix the nav in styles.css" works in
       // large (scoped-context) projects without the model having to @read first.
@@ -859,7 +757,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       }
 
       // Build system context from the current project (shared with the manual Continue path).
-      const systemContent = buildSystemContext(content, mentioned);
+      const systemContent = buildSystemContext(content, mentioned, mode);
       const systemMessage = systemContent ? { role: 'system' as const, content: systemContent } : null;
 
       // History goes out with older assistant code blocks collapsed to placeholders — the
@@ -885,10 +783,8 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         return;
       }
 
-      // Route to the Hermes agent when Agent mode is on, or an agent button forced it, and a
-      // connection exists; otherwise use the standard LLM chat stream. Both endpoints emit the
-      // same SSE event shape, so the streaming loop below is identical either way.
-      const useHermes = (agentMode || options?.preferHermes || activeAgents.length > 0) && !!hermesConnection;
+      // Discuss-mode replies are tagged so they never write files (and get "Build this plan").
+      const msgMode = mode === 'discuss' ? 'discuss' as const : undefined;
 
       // Create placeholder immediately so the user sees streaming output in real-time
       const aiMsgId = (Date.now() + 1).toString();
@@ -897,25 +793,13 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         role: 'assistant' as const,
         content: '',
         timestamp: Date.now(),
-        via: useHermes ? 'hermes' : 'llm',
+        mode: msgMode,
       }]);
 
       let fullContent = '';
       let reasoningContent = '';
 
-      const res = useHermes
-        ? await fetch('/api/hermes/run', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ messages: chatMessages, model: modelId, project_path: currentProject?.name }),
-            signal: controller.signal,
-          })
-        : await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ messages: chatMessages }),
-            signal: controller.signal,
-          });
+      const res = await postChat(modelId, chatMessages, controller.signal);
 
       if (!res.ok) {
         const errText = await res.text().catch(() => 'Unknown error');
@@ -923,7 +807,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         // Try to extract a JSON { error } message; otherwise include the raw body snippet.
         let detail = errText;
         try { detail = JSON.parse(errText).error || errText; } catch { /* keep raw */ }
-        throw new Error(`${useHermes ? 'Hermes' : 'LLM'} request failed (HTTP ${res.status}): ${String(detail).slice(0, 300)}`);
+        throw new Error(`LLM request failed (HTTP ${res.status}): ${String(detail).slice(0, 300)}`);
       }
 
       const reader = res.body?.getReader();
@@ -961,7 +845,6 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       let autoCount = 0;
       while (
         finishReason === 'length' &&
-        autoContinue &&
         autoCount < MAX_AUTO_CONTINUE &&
         !controller.signal.aborted
       ) {
@@ -977,16 +860,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         ];
         let contRes: Response;
         try {
-          contRes = useHermes
-            ? await fetch('/api/hermes/run', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: contMessages, model: modelId, project_path: currentProject?.name }),
-                signal: controller.signal,
-              })
-            : await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: contMessages }), signal: controller.signal,
-              });
+          contRes = await postChat(modelId, contMessages, controller.signal);
         } catch (e: any) {
           if (e?.name === 'AbortError') break;
           throw e;
@@ -1024,14 +898,14 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         if (sessionId) {
           addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
         }
-        applyAssistantOutput(fullContent);
+        if (mode === 'build') applyAssistantOutput(fullContent);
       }
 
       // Context discipline: honor any `@read path` requests the model made (it asks for files it
       // wasn't given in scoped mode). Add them to the working set, feed their contents straight
       // back in, and let the model pick up where it left off — up to MAX_AUTO_READ_ROUNDS times —
-      // instead of leaving the user to type "continue" themselves. Mirrors the token-cap
-      // auto-continue above: same autoContinue toggle, same "never loop forever" guarantee.
+      // instead of leaving the user to type "continue" themselves. Read-only, so Discuss mode uses
+      // it too. Mirrors the token-cap auto-continue above: same "never loop forever" guarantee.
       let pendingContent = fullContent;
       let pendingChatMessages = chatMessages;
       let readRounds = 0;
@@ -1106,7 +980,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
           searchQueries.length > 0 ? `🔎 Searched: ${searchQueries.map(q => `"${q}"`).join(', ')}` : '',
         ].filter(Boolean).join(' · ');
 
-        if (!autoContinue || readRounds >= MAX_AUTO_READ_ROUNDS) {
+        if (readRounds >= MAX_AUTO_READ_ROUNDS) {
           setMessages(prev => [...prev, {
             id: `ctx-${Date.now()}`,
             role: 'system' as const,
@@ -1145,22 +1019,13 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         ];
 
         const roundMsgId = `${aiMsgId}-read${readRounds}`;
-        setMessages(prev => [...prev, { id: roundMsgId, role: 'assistant' as const, content: '', timestamp: Date.now(), via: useHermes ? 'hermes' : 'llm' }]);
+        setMessages(prev => [...prev, { id: roundMsgId, role: 'assistant' as const, content: '', timestamp: Date.now(), mode: msgMode }]);
 
         let roundContent = '';
         let roundFinishReason = '';
         let roundUsage: Message['usage'] | undefined;
         try {
-          const roundRes = useHermes
-            ? await fetch('/api/hermes/run', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: pendingChatMessages, model: modelId, project_path: currentProject?.name }),
-                signal: controller.signal,
-              })
-            : await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ messages: pendingChatMessages }), signal: controller.signal,
-              });
+          const roundRes = await postChat(modelId, pendingChatMessages, controller.signal);
           if (!roundRes.ok) break;
           const roundReader = roundRes.body?.getReader();
           if (!roundReader) break;
@@ -1190,63 +1055,15 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         ));
         if (roundContent) {
           if (sessionId) addMessage({ role: 'assistant', content: roundContent }).catch(console.error);
-          applyAssistantOutput(roundContent);
+          if (mode === 'build') applyAssistantOutput(roundContent);
         }
         pendingContent = roundContent;
-      }
-
-      // If a Plan-stage response wrote the task spec, reload it so the panel + context pick it up.
-      if (workflow.activeTaskId && pendingContent.includes(`tasks/${workflow.activeTaskId}/spec.md`)) {
-        workflow.loadTask(workflow.activeTaskId).catch(() => {});
-      }
-
-      // Hermes writes files through its own tools, not through Monastery — on a shared
-      // workspace they land in this project's folder, invisibly to the chat stream. Re-read
-      // the project after every Hermes response so they appear immediately (not just on
-      // window refocus), and when Hermes CLAIMS writes that never landed here, say so —
-      // the classic un-bridged-workspace trap (files went to Hermes's own terminal.cwd).
-      if (useHermes && currentProject?.id) {
-        const transcript = `${fullContent}\n${pendingContent}`;
-        const claimsWrites =
-          /running tool `?(write|edit|create|save|apply|patch)/i.test(transcript) ||
-          /\b(created|wrote|saved|generated|built)\b[^.\n]{0,80}\b(files?|index\.html)/i.test(transcript);
-        try {
-          const sig = (m: Record<string, string>) =>
-            Object.keys(m).sort().map(k => `${k}:${m[k].length}`).join('|');
-          const beforeSig = sig(allFileContentsRef.current);
-          const [fRes, cRes] = await Promise.all([
-            fetch(`/api/projects/${currentProject.id}/files`),
-            fetch(`/api/projects/${currentProject.id}/files/read-all`),
-          ]);
-          if (fRes.ok) setProjectFiles(await fRes.json());
-          const contents = cRes.ok ? (await cRes.json())?.files : null;
-          if (contents) {
-            const changed = sig(contents) !== beforeSig;
-            setAllFileContents(contents);
-            if (changed) {
-              window.dispatchEvent(new CustomEvent('monastery:files-written'));
-            } else if (claimsWrites) {
-              setMessages(prev => [...prev, {
-                id: `hermes-ws-${Date.now()}`,
-                role: 'system' as const,
-                content:
-                  `⚠️ Hermes reported creating files, but nothing changed in this project's folder — ` +
-                  `it most likely wrote to its own workspace on the Hermes machine (its \`terminal.cwd\`). ` +
-                  `To make Hermes write directly into Monastery projects, set up the shared workspace ` +
-                  `(docs/HERMES_SHARED_WORKSPACE.md). To recover this run's files: on the Hermes machine, ` +
-                  `push its working directory to your git forge, then clone it here as a project ` +
-                  `(Settings → Git Forges → Browse).`,
-                timestamp: Date.now(),
-              }]);
-            }
-          }
-        } catch { /* refresh is best-effort */ }
       }
 
       setIsGenerating(false);
     } catch (err: any) {
       // A failed/aborted request can leave behind the empty streaming placeholder bubble —
-      // drop it so the chat doesn't show a blank "via Hermes" message.
+      // drop it so the chat doesn't show a blank assistant message.
       const dropEmptyPlaceholder = (msgs: Message[]) =>
         msgs.filter(m => !(m.role === 'assistant' && m.content === '' && !m.reasoning));
       // Don't show an error if the user intentionally stopped generation. Clear any in-progress
@@ -1257,7 +1074,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         return;
       }
       console.error('Chat request failed:', err);
-      // Surface the real error so the user can debug (e.g. a Hermes/LLM failure) instead of a
+      // Surface the real error so the user can debug (e.g. an endpoint failure) instead of a
       // misleading "simulated response".
       setMessages((prev) => [...dropEmptyPlaceholder(prev), {
         id: (Date.now() + 1).toString(),
@@ -1267,11 +1084,11 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       }]);
       setIsGenerating(false);
     }
-  }, [messages, currentSession, currentProject, createSession, addMessage, availableModels, applyAssistantOutput, agentMode, hermesConnection, activeAgentIds, getAgent, autoContinue, buildSystemContext, allFileContents, workflow.activeTaskId, workflow.loadTask]);
+  }, [chatMode, messages, currentSession, currentProject, createSession, addMessage, resolveModelId, postChat, applyAssistantOutput, buildSystemContext, allFileContents]);
 
   // Keep the ref current so edit-recovery (defined earlier) can resume the task through the
-  // normal send flow once its repairs land.
-  continueTaskRef.current = handleSendMessage;
+  // normal send flow once its repairs land — always in Build mode, since it's finishing edits.
+  continueTaskRef.current = (content: string) => handleSendMessage(content, undefined, { mode: 'build' });
 
   // Manually continue a response that was cut off by the model's output-token limit.
   // Triggered by the user clicking "Continue" on a truncated message — never automatic,
@@ -1289,10 +1106,10 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // A Discuss-mode reply continues as Discuss: same rules, and still never written to files.
+    const mode: ChatMode = targetMsg.mode === 'discuss' ? 'discuss' : 'build';
+
     try {
-      const activeEndpoint = useAppStore.getState().activeEndpoint;
-      const params = new URLSearchParams();
-      if (activeEndpoint?.id) params.set('endpoint_id', activeEndpoint.id);
       const modelId = resolveModelId();
       if (!modelId) {
         // Restore the truncated flag (cleared above) so the Continue button stays available.
@@ -1308,7 +1125,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       // project files or editing rules), then the conversation up to and including the
       // truncated message. Older assistant code blocks are stripped like in handleSendMessage;
       // the truncated message itself stays intact — the model continues from its own text.
-      const systemContent = buildSystemContext(targetMsg.content.slice(-2000));
+      const systemContent = buildSystemContext(targetMsg.content.slice(-2000), [], mode);
       const priorMessages = messages.slice(0, targetIndex + 1).map((m, i) => ({
         role: m.role,
         content: m.role === 'assistant' && i < targetIndex ? stripHistoryCodeBlocks(m.content) : m.content,
@@ -1319,12 +1136,7 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
         { role: 'user' as const, content: 'Continue exactly where you left off. Do not repeat any text you already wrote.' },
       ];
 
-      const res = await fetch(`/api/models/${modelId}/chat?${params.toString()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: chatMessages }),
-        signal: controller.signal,
-      });
+      const res = await postChat(modelId, chatMessages, controller.signal);
       if (!res.ok) throw new Error(`Backend returned ${res.status}`);
       const reader = res.body?.getReader();
       if (!reader) throw new Error('No response body');
@@ -1365,38 +1177,17 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       if (currentSession?.id) {
         addMessage({ role: 'assistant', content: fullContent }).catch(console.error);
       }
-      applyAssistantOutput(fullContent);
+      if (mode === 'build') applyAssistantOutput(fullContent);
     } catch (err: any) {
       if (err?.name !== 'AbortError') console.error('Continue failed:', err);
     } finally {
       setIsGenerating(false);
     }
-  }, [messages, availableModels, currentSession?.id, addMessage, applyAssistantOutput, buildSystemContext]);
-
-  // Shared agent trigger — used by ChatPane quick-actions and the editor toolbar. Agents run
-  // through the same chat flow as a normal message (so they get full project context and their
-  // returned code blocks are applied to files), and force routing to Hermes when connected.
-  const triggerAgent = useCallback((agentId: string, task: string) => {
-    if (!currentProject?.id) {
-      setMessages(prev => [...prev, {
-        id: `agent-guard-${Date.now()}`,
-        role: 'system' as const,
-        content: 'Select or create a project first — agents work on the active project.',
-        timestamp: Date.now(),
-      }]);
-      return;
-    }
-    const agent = getAgent(agentId);
-    const prompt = agent
-      ? `${agent.icon} Act as the ${agent.name} (${agent.role}). ${task}`
-      : task;
-    // preferHermes routes to Hermes when a connection exists; falls back to the local LLM otherwise.
-    handleSendMessage(prompt, undefined, { preferHermes: true });
-  }, [currentProject?.id, getAgent, handleSendMessage]);
+  }, [messages, resolveModelId, postChat, currentSession?.id, addMessage, applyAssistantOutput, buildSystemContext]);
 
   // Hand a failed deployment's build log to the connected LLM to fix (from the Self-Host Wizard).
   // Posts the log into chat as a fix request; the LLM's returned code blocks are applied to files,
-  // after which the user can redeploy.
+  // after which the user can redeploy. Always Build mode — the point is to change files.
   const handleFixBuildError = useCallback((logs: string, appName: string, opts?: { fallback?: boolean; status?: string }) => {
     const prompt = (opts?.fallback || !logs.trim())
       // Fallback: the platform couldn't return the build log (e.g. Dokploy's readLogs is broken for
@@ -1404,33 +1195,68 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
       // the full project (Dockerfile + files) in context, so ask it to review proactively.
       ? `The deployment of "${appName}" failed (status: ${opts?.status || 'error'}), but the build log could not be retrieved from the hosting platform (a known limitation reading logs from remote deploy servers). Without the log, carefully review THIS project's Dockerfile and build configuration for the most likely causes of a failed Docker build, and fix them. Check especially: files referenced by COPY/ADD that may not exist (e.g. package-lock.json, the build output/dist directory), the base image and the build/start commands, EXPOSE vs the port the server actually listens on, and the dependency-install steps. Apply concrete fixes as code blocks and briefly explain what you changed and why.`
       : `The deployment of "${appName}" failed during the build. Here is the build log:\n\n\`\`\`\n${logs}\n\`\`\`\n\nDiagnose the root cause and fix it directly in the project files (Dockerfile, package.json, build config, or source as appropriate). Apply the fixes as code blocks. Keep changes minimal and focused on making the build succeed.`;
-    handleSendMessage(prompt);
+    handleSendMessage(prompt, undefined, { mode: 'build' });
   }, [handleSendMessage]);
 
-  // Run a workflow stage through the chat flow. Each stage acts as its role and works against the
-  // task spec (already in context). preferHermes hands the stage to the Hermes agent (hybrid mode).
-  // taskOverride lets a caller run a stage on a JUST-created task before React state has caught up
-  // (used by the chat's "create a task & plan it" nudge button).
-  const runStage = useCallback((stage: Stage, preferHermes = false, taskOverride?: TaskMeta) => {
-    const task = taskOverride ?? workflow.activeTask;
-    if (!task) return;
-    const specText = taskOverride ? '' : workflow.spec;
-    let prompt = '';
-    switch (stage) {
-      case 'plan':
-        prompt = `🏗️ Act as the Architect for the task "${task.title}". Here is the current spec:\n\n${specText || '(empty)'}\n\nProduce the COMPLETE updated specification — fill in Goal, concrete checkable Acceptance Criteria, a Definition of Done, the Affected Files (real paths from the project tree), and the Approach. Output it as a single fenced code block written to the spec file:\n\n\`\`\`md:.monastery/tasks/${task.id}/spec.md\n<full spec here>\n\`\`\``;
-        break;
-      case 'implement':
-        prompt = `💻 Act as the Coder for the task "${task.title}". Implement strictly per the spec (in context). Make minimal, focused edits to the affected files only. Output each changed/new file as a fenced code block with its path (e.g. \`\`\`ts:src/foo.ts).`;
-        break;
-      case 'review':
-        prompt = `🔍 Act as the Reviewer for the task "${task.title}". Review the current code against the Acceptance Criteria and Definition of Done in the spec. List any gaps, bugs, or anti-patterns. If it fully meets the bar, reply with "APPROVED" and a one-line rationale.`;
-        break;
-      default:
-        return; // 'verify' runs the build/test command (panel button); 'done' has no stage prompt
+  // "Build this plan": hand a Discuss-mode plan to Build mode for implementation, and leave the
+  // composer in Build so follow-up tweaks keep building.
+  const buildPlan = useCallback((plan: string) => {
+    setChatMode('build');
+    const start = plan.search(/^#{1,3}\s+The Plan\b/mi);
+    const body = (start >= 0 ? plan.slice(start) : plan).trim();
+    handleSendMessage(`Implement this plan now, completing every step in this response:\n\n${body}`, undefined, { mode: 'build' });
+  }, [handleSendMessage]);
+
+  // Run a command block the user clicked "Run" on. Model output is never executed automatically —
+  // shell blocks stay inert until the user chooses to run them. Multi-line blocks run line by line
+  // (comments and blank lines skipped), stopping at the first failure. Each result is posted to
+  // the chat, so the model sees the output on the next turn.
+  const runShellCommand = useCallback(async (block: string) => {
+    if (!currentProject?.id) return;
+    const pid = currentProject.id;
+    const commands = block
+      .split('\n')
+      .map(l => l.trim().replace(/^\$\s+/, ''))
+      .filter(l => l && !l.startsWith('#'));
+    let anyRan = false;
+    for (const cmd of commands) {
+      let note: string;
+      let ok = false;
+      try {
+        const r = await fetch(`/api/projects/${pid}/shell`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || d.error) {
+          note = `❌ \`${cmd}\` — ${d.error || `HTTP ${r.status}`}`;
+        } else {
+          anyRan = true;
+          ok = !!d.success;
+          const out = [d.output, d.stderr].filter(Boolean).join('\n').trim();
+          const tail = out.length > 4000 ? `…${out.slice(-4000)}` : out;
+          note = `${ok ? '✅' : '❌'} \`${cmd}\` exited with code ${d.exit_code}` + (tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : '');
+        }
+      } catch (e) {
+        note = `❌ \`${cmd}\` — ${String(e)}`;
+      }
+      setMessages(prev => [...prev, {
+        id: `shell-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        role: 'system' as const,
+        content: note,
+        timestamp: Date.now(),
+      }]);
+      if (!ok) break;
     }
-    handleSendMessage(prompt, undefined, preferHermes ? { preferHermes: true } : undefined);
-  }, [workflow.activeTask, workflow.spec, handleSendMessage]);
+    // A command can touch any file — re-read the tree and the context map, then let the
+    // preview reload.
+    if (anyRan) {
+      fetch(`/api/projects/${pid}/files`).then(r => r.json()).then(f => setProjectFiles(f)).catch(() => {});
+      fetch(`/api/projects/${pid}/files/read-all`).then(r => r.json()).then(d => setAllFileContents(d.files || {})).catch(() => {});
+      window.dispatchEvent(new CustomEvent('monastery:files-written'));
+    }
+  }, [currentProject?.id, setProjectFiles, setAllFileContents]);
 
   const handleStopGeneration = useCallback(() => {
     abortRef.current?.abort();
@@ -1441,19 +1267,15 @@ RESPONSE DISCIPLINE — this determines whether the user's request actually gets
     messages,
     setMessages,
     isGenerating,
-    autoContinue,
-    setAutoContinue,
-    agentMode,
-    setAgentMode,
+    chatMode,
+    setChatMode,
     activeSkillIds,
     toggleSkill,
-    activeAgentIds,
-    toggleActiveAgent,
     handleSendMessage,
     handleContinueGeneration,
     handleStopGeneration,
-    triggerAgent,
     handleFixBuildError,
-    runStage,
+    buildPlan,
+    runShellCommand,
   };
 }

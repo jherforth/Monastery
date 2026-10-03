@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/harness-core",
     "crates/harness-api",
-    "crates/harness-agent",
 ]
 
 [workspace.package]
@@ -73,4 +72,3 @@ secrecy = "0.10"
 
 # Workspace crates
 harness-core = { path = "crates/harness-core" }
-harness-agent = { path = "crates/harness-agent" }

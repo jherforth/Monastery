@@ -1,3 +1,6 @@
+// HIDDEN since simplification Phase 1 (docs/SIMPLIFICATION_PLAN.md): the staged workflow (tasks, spec, gates) was replaced by Discuss mode + "Build this plan".
+// Nothing imports this module any more; it is kept so the feature can return quickly if
+// missed, and is deleted in Phase 3.
 /**
  * Task templates — starter `spec.md` skeletons per work type. A task is still a user-created unit
  * of work; a template just seeds the spec with type-specific Acceptance Criteria / Definition of

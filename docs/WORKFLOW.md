@@ -1,5 +1,12 @@
 # Coding Workflow — Tasks, Stages & Gates
 
+> **Hidden since simplification Phase 1 (2026-10).** The task drawer, templates, stages, gates and
+> the large-project nudge are no longer in the UI. Planning now happens in **Discuss** mode: ask for
+> a plan, then click **Build this plan**. Existing `.monastery/tasks/` files are left untouched, and
+> the task API still exists until Phase 3. The context-discipline notes below (`@read`, `@search`,
+> scoped context, SEARCH/REPLACE edits) still apply to every chat. See
+> [SIMPLIFICATION_PLAN.md](SIMPLIFICATION_PLAN.md) (decision D3).
+
 Monastery's **staged coding workflow** turns the chat from a single-shot "dump the whole repo and
 hope" loop into a disciplined, token-frugal pipeline. It's inspired by safe-agentic-workflow (SAW),
 distilled to a solo/homelab shape and kept **local-first** — all state lives in your project as
