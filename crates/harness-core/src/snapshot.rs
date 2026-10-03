@@ -256,7 +256,7 @@ mod tests {
         
         assert_eq!(file.file_path, "src/main.rs");
         assert!(!file.file_hash.is_empty());
-        assert_eq!(file.size_bytes, 13); // length of "fn main() {}"
+        assert_eq!(file.size_bytes, 12); // length of "fn main() {}"
     }
     
     #[test]

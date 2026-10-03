@@ -38,11 +38,5 @@ futures.workspace = true
 # mDNS discovery
 mdns-sd.workspace = true
 
-# HTTP types
-http.workspace = true
-
-# Secrets
-secrecy.workspace = true
-
 # Database
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }

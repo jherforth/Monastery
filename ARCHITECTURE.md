@@ -32,7 +32,7 @@ nginx :3000 ──► serves the built UI, proxies /api ──► harness (Rust/
 | Web UI | `packages/web-ui/` | React + TypeScript + Vite + Tailwind, Monaco editor. Chat, live preview, code editor (toggle), file tree, History & Ship drawer, Settings |
 | Chat turn | `crates/harness-api/src/chat/` | One request per message: builds the prompt from disk (`prompt.rs`), streams the reply, parses `<file>`/`<edit>`/`<read>` tags as they arrive (`parser.rs`), applies changes after one snapshot, continues past the output limit, serves reads, retries a failed edit (`mod.rs`) |
 | Chat UI | `packages/web-ui/src/hooks/useChatOrchestrator.ts`, `components/ChatPane.tsx` | Sends the turn and renders its events: text, file rows and diff cards, status lines, errors |
-| API server | `crates/harness-api/` | Axum routes (`src/main.rs`), handlers (`src/handlers.rs`), SQLite (`src/db.rs`), snapshots, starters, deploy manifest, Cloudflare routing |
+| API server | `crates/harness-api/` | Axum routes (`src/main.rs`); handlers in `src/handlers/` (one module per concern — files, git, snapshots, deploy/{coolify,dokploy}, …, with `ProjectCtx` resolving the project for each request); SQLite (`src/db.rs`), starters, deploy manifest, Cloudflare routing |
 | Core library | `crates/harness-core/` | OpenAI-compatible LLM client, config, mDNS discovery, snapshot model, git CLI wrapper |
 | Container | `docker/` | Multi-stage build → `nginx` runtime with the Rust binary (`entrypoint.sh` starts both) |
 

@@ -64,11 +64,5 @@ async-stream = "0.3"
 # mDNS discovery
 mdns-sd = "0.13"
 
-# HTTP types
-http = "1.0"
-
-# Secrets (match async-openai's version)
-secrecy = "0.10"
-
 # Workspace crates
 harness-core = { path = "crates/harness-core" }

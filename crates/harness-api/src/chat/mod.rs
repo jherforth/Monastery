@@ -138,6 +138,12 @@ pub async fn project_chat(
 type Ev = Result<Event, Infallible>;
 
 fn ev(name: &str, data: serde_json::Value) -> Ev {
+    // Logged so the edit success rate (a simplification-plan success measure) can be tracked.
+    match name {
+        "file" => tracing::info!(target: "monastery::chat", "applied {} to {}", data["kind"], data["path"]),
+        "edit_failed" => tracing::warn!(target: "monastery::chat", "edit failed for {}: {}", data["path"], data["message"]),
+        _ => {}
+    }
     // JSON payloads: no raw newlines or CRs in the data field (axum's encoder panics on `\r`).
     Ok(Event::default().event(name).data(data.to_string()))
 }

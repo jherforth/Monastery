@@ -360,20 +360,37 @@ Do this after Phase 1, because cutting Hermes, roles and tasks first shrinks wha
     `docs/AGENTS.md` and `docs/WORKFLOW.md`. The `hermes_connections` table is dropped on startup;
     existing `.monastery/tasks/` folders are left alone.
 
-### Phase 4 — Backend hygiene (ongoing, alongside 2–3)
+### Phase 4 — Backend hygiene (ongoing, alongside 2–3) — ✅ done 2026-10-02
 
-- [ ] **Split `handlers.rs`** into modules: `projects.rs`, `files.rs`, `chat.rs`, `sessions.rs`,
+- [x] **Split `handlers.rs`** into modules: `projects.rs`, `files.rs`, `chat.rs`, `sessions.rs`,
       `snapshots.rs`, `git.rs`, `deploy/{mod,coolify,dokploy,cloudflare,pocketbase}.rs`,
       `settings.rs`.
-- [ ] **Add one `ProjectCtx` extractor** (id → name → canonical dir) to replace the 22
+  - *Done:* `handlers/{error,fs,models,projects,sessions,snapshots,git,files,preview,shell,hosting}.rs`
+    and `handlers/deploy/{mod,coolify,dokploy,dockerfile}.rs`. The code moved verbatim and is all
+    re-exported from `handlers/mod.rs`, so routes are unchanged. Chat is its own top-level
+    `chat/` module since Phase 3. Cloudflare routing already lived in `cloudflare.rs`, and
+    Pocketbase is a few lines inside deploy, so neither got its own file. `settings.rs` became
+    `models.rs` + `hosting.rs`.
+- [x] **Add one `ProjectCtx` extractor** (id → name → canonical dir) to replace the 22
       copy-pasted lookups.
-- [ ] **Break `deploy_to_hosting` (~1,060 lines) into per-platform functions** behind a small
+  - *Done:* `ProjectCtx` in `handlers/fs.rs`. As an extractor it reads `:id`/`:project_id`;
+    `ProjectCtx::load` covers ids that arrive in a query string or body. One lookup remains:
+    the extractor's own.
+- [x] **Break `deploy_to_hosting` (~1,060 lines) into per-platform functions** behind a small
       trait or enum. Decide whether Dokploy stays first-class (D4).
-- [ ] **Add parser tests** for the new tag format, modeled on bolt.diy's
+  - *Done:* `deploy_to_hosting` resolves a `DeployContext` once and dispatches to
+    `deploy/coolify.rs` or `deploy/dokploy.rs`. An enum match was enough; no trait needed.
+    Dokploy keeps working but is marked maintenance-only (D4).
+- [x] **Add parser tests** for the new tag format, modeled on bolt.diy's
       `message-parser.spec.ts`: streaming chunks split mid-tag, fences inside files, multiple
       files, unterminated tags. This is the most bug-prone code, and it currently has no tests.
-- [ ] Add a CI job running `cargo test` and `npm run build` (the `docker-build.yml` workflow
+  - *Done (in Phase 3):* 13 parser tests and 6 prompt tests. Phase 4 adds 4 edit-matcher tests.
+    The suite is now 35 API tests and 3 core tests.
+- [x] Add a CI job running `cargo test` and `npm run build` (the `docker-build.yml` workflow
       currently only builds the image).
+  - *Done:* `.github/workflows/ci.yml` runs on pushes to main and on PRs. It publishes nothing.
+    The `harness-core` snapshot test that had always failed (it expected 13 bytes for a
+    12-byte string) is fixed so CI starts green.
 
 ### Phase 5 — Optional, only if wanted later
 
@@ -412,7 +429,8 @@ Use these to tell whether a change helped:
 - **Time to first preview:** from "build me a landing page for a bakery" to a rendered page.
   Target: one response, no follow-ups.
 - **Edit success rate:** the share of turns where every file change applied without recovery.
-  Log `file_edit_failed` events server-side to measure it.
+  Instrumented: the chat logs every applied change (`info`) and every failed edit (`warn`) under
+  the `monastery::chat` target.
 - **Concepts on screen** for a new user: target ≤ 6 (Project, Model, Chat mode, Preview,
   History, Ship).
 - **`useChatOrchestrator.ts`** under 300 lines; **largest Rust file** under 1,000 lines.
@@ -429,7 +447,7 @@ Record decisions here as they're made so future sessions don't re-litigate them.
 | D1 | Agents in the core loop? | Keep Hermes mode + roles / Hide / Remove | **Remove from the loop**; keep the git-bridge pattern as docs | **Decided 2026-10-02**: hidden in Phase 1, delete in Phase 3 |
 | D2 | Runtime for previews | A: static-first (CDN ES modules) · B: per-project Node runner container · C: in-browser bundler | **A now**, B or C later if React apps become a goal | **Decided 2026-10-02**: A (Phase 2) |
 | D3 | Staged workflow (tasks/spec/gates) | Keep / Replace with Discuss mode / Remove | **Replace with Discuss + "Build this plan"** | **Decided 2026-10-02**: replaced in Phase 1, delete in Phase 3 |
-| D4 | Deploy targets | Coolify + Dokploy + CF + Pocketbase / Coolify-first | **Coolify-first**, Dokploy maintenance-only | Open |
+| D4 | Deploy targets | Coolify + Dokploy + CF + Pocketbase / Coolify-first | **Coolify-first**, Dokploy maintenance-only | **Decided 2026-10-02** (per recommendation, Phase 4): Dokploy still works, no new features |
 | D5 | Output format | Keep fences / Tags | **Tags** (`<file>`, `<edit>`, `<read>`) | **Decided 2026-10-02**: tags (Phase 3) |
 | D6 | Where orchestration runs | Browser hook / Rust server | **Rust server** | **Decided 2026-10-02**: Rust server (Phase 3) |
 | D7 | Edit strategy | SEARCH/REPLACE-first / Whole-file-first | **Whole-file for small files**, SEARCH/REPLACE above ~150–200 lines | **Decided 2026-10-02**: whole-file under ~200 lines (Phase 3) |

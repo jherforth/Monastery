@@ -1,12 +1,8 @@
 //! LLM client with OpenAI-compatible API support
 
-use async_openai::Client;
-use async_openai::config::Config as OpenAIConfig;
 use async_openai::types::ChatCompletionRequestMessage;
 use futures::Stream;
 use std::pin::Pin;
-use secrecy::SecretBox;
-use http::header::HeaderMap;
 
 use crate::models::EndpointConfig;
 use crate::error::{Error, Result};
@@ -46,15 +42,6 @@ impl LLMClient {
         &self.config
     }
     
-    /// Create an OpenAI-compatible client for this endpoint
-    fn create_client(&self) -> Client<CustomOpenAIConfig> {
-        let custom_config = CustomOpenAIConfig {
-            api_key: SecretBox::new(self.config.api_key.clone().unwrap_or_default().into_boxed_str()),
-            base_url: self.config.base_url.clone(),
-        };
-        Client::with_config(custom_config)
-    }
-
     /// Send a chat completion request and stream the response.
     /// Uses a direct reqwest call for better control and error visibility.
     /// Emits `StreamChunk` values tagged as Reasoning or Content.
@@ -374,34 +361,5 @@ impl LLMClient {
         }).collect();
 
         Ok(models)
-    }
-}
-
-/// Custom OpenAI config that allows arbitrary base URLs
-#[derive(Clone)]
-struct CustomOpenAIConfig {
-    api_key: SecretBox<str>,
-    base_url: String,
-}
-
-impl OpenAIConfig for CustomOpenAIConfig {
-    fn api_key(&self) -> &SecretBox<str> {
-        &self.api_key
-    }
-    
-    fn api_base(&self) -> &str {
-        &self.base_url
-    }
-    
-    fn headers(&self) -> HeaderMap {
-        HeaderMap::new()
-    }
-    
-    fn url(&self, path: &str) -> String {
-        format!("{}{}", self.base_url.trim_end_matches('/'), path)
-    }
-    
-    fn query(&self) -> Vec<(&str, &str)> {
-        Vec::new()
     }
 }
