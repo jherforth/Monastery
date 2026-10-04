@@ -17,7 +17,7 @@ Where it's heading is in [docs/SIMPLIFICATION_PLAN.md](docs/SIMPLIFICATION_PLAN.
 Browser (React UI)
    │  HTTP + SSE
    ▼
-nginx :3000 ──► serves the built UI, proxies /api ──► harness (Rust/Axum) :8080
+nginx :3091 ──► serves the built UI, proxies /api ──► harness (Rust/Axum) :8080
                                                         │
                        ┌────────────────────────────────┼─────────────────────────┐
                        ▼                                ▼                         ▼

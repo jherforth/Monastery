@@ -30,5 +30,5 @@ for i in $(seq 1 30); do
 done
 
 # Start Nginx in the foreground
-echo "[nginx] Starting Nginx on port 3000..."
+echo "[nginx] Starting Nginx on port 3091..."
 exec nginx -g "daemon off;"

@@ -25,8 +25,8 @@ docker image prune -a -f 2>/dev/null || true
 
 echo ""
 echo "=== Monastery is running! ==="
-echo "Open: http://localhost:3000"
-echo "Health check: http://localhost:3000/api/health"
+echo "Open: http://localhost:3091"
+echo "Health check: http://localhost:3091/api/health"
 echo ""
 echo "To stop:  docker compose down"
 echo "To view logs: docker compose logs -f"

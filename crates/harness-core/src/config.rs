@@ -33,7 +33,7 @@ pub struct HarnessConfig {
 impl Default for HarnessConfig {
     fn default() -> Self {
         Self {
-            port: 3000,
+            port: 8080,
             data_dir: PathBuf::from("./data"),
             database_path: PathBuf::from("./data/harness.db"),
             endpoints: Vec::new(),

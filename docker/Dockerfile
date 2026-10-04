@@ -40,9 +40,9 @@ RUN mkdir -p /app/data && chmod 777 /app/data
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 3000
+EXPOSE 3091
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:3000/api/health || exit 1
+    CMD curl -f http://localhost:3091/api/health || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]

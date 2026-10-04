@@ -3,7 +3,7 @@ services:
     image: ghcr.io/jherforth/monastery:latest
     container_name: monastery
     ports:
-      - "3000:3000"
+      - "3091:3091"
     volumes:
       - harness_data:/app/data
     environment:
@@ -16,7 +16,7 @@ services:
       - homelab
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:3091/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3

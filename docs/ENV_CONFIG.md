@@ -12,7 +12,7 @@ A new `.env.example` file has been created to document all available environment
 
 ```bash
 # Server Configuration
-PORT=3000
+PORT=8080
 DATA_DIR=./data
 LOG_LEVEL=info
 
@@ -152,7 +152,7 @@ const { models, isLoading, isError } = useModels(endpointId);
    ```
 
 2. **Open UI**
-   - Navigate to `http://localhost:3000`
+   - Navigate to `http://localhost:3091`
    - See "No LLM connected • Click to configure" in top bar
 
 3. **Configure Endpoint**

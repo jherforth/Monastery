@@ -28,7 +28,7 @@ npm install
 npm run dev
 ```
 
-The development server starts on `http://localhost:3000` and proxies API requests to the backend at `http://localhost:8080`.
+The development server starts on `http://localhost:3091` and proxies API requests to the backend at `http://localhost:8080`.
 
 ### Build for Production
 

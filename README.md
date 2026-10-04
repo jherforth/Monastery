@@ -57,11 +57,11 @@ OPENAI_API_KEY=sk-...
 docker compose up -d
 ```
 
-The harness will be available at `http://localhost:3000`.
+The harness will be available at `http://localhost:3091`.
 
 ### 3. Connect to Your LLM
 
-1. Open the web UI at `http://localhost:3000`
+1. Open the web UI at `http://localhost:3091`
 2. Navigate to Settings → LLM Endpoints
 3. Add your LLM endpoint or use auto-discovery to find Ollama on your LAN
 4. Test the connection and start prompting!
@@ -95,7 +95,7 @@ The harness will be available at `http://localhost:3000`.
 
 | Environment Variable | Description | Default |
 |---------------------|-------------|---------|
-| `PORT` | Server port | `3000` |
+| `PORT` | API server port (in Docker, nginx serves the UI on 3091 and proxies `/api` to it) | `8080` |
 | `DATA_DIR` | Data directory path | `./data` |
 | `LOG_LEVEL` | Logging level | `info` |
 | `LLM_BASE_URL` | Default LLM endpoint | - |
